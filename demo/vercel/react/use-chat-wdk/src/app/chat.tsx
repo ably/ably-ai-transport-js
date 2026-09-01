@@ -132,14 +132,6 @@ function ChatInner({
     });
   }, []);
 
-  // This demo does no history hydration (the persistence story lives in the
-  // use-chat-db demo), so the adapter's wire indices seed empty: from here on
-  // it indexes live events, which is what a continuation needs to address the
-  // suspended run.
-  useEffect(() => {
-    chatTransport.seed([]);
-  }, [chatTransport]);
-
   // onToolCall fires while the send's stream is still being consumed; the
   // helpers it needs come from the useChat return below, so thread them
   // through a ref.
@@ -151,8 +143,9 @@ function ChatInner({
     // Rejoin an in-flight run's stream after a reload: the adapter classifies
     // the open run from channel history and replays it.
     resume: true,
-    // Auto-submit a continuation once a client-side tool result or a server-tool
-    // approval resolves, so the suspended run resumes (on a fresh workflow).
+    // Auto-submit a continuation once a client-side tool result or a
+    // server-tool approval resolves. The resolution carries no run id, so it
+    // wakes a fresh run (on a fresh workflow).
     sendAutomaticallyWhen: ({ messages: msgs }) =>
       lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
       lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
@@ -163,7 +156,7 @@ function ChatInner({
       ]);
       // Client-executed tools (no server `execute`): run them in the browser
       // and feed the output back; sendAutomaticallyWhen then publishes the
-      // resolution and resumes the suspended run.
+      // resolution, which wakes the answering run.
       if (!hasClientTool(toolCall.toolName)) return;
       void runClientTool(toolCall.toolName, toolCall.toolCallId, toolCall.input, recordClientTool).then((result) => {
         const add = addToolOutputRef.current;
@@ -210,6 +203,14 @@ function ChatInner({
 
   const isRunning = status === 'submitted' || status === 'streaming';
 
+  // Stop is two operations. `stop()` closes this client's stream; only
+  // `chatTransport.cancel()` puts `ai-cancel` on the channel, which is what
+  // aborts the workflow and tells every other participant the run is over.
+  const cancelRun = useCallback(async () => {
+    await stop();
+    await chatTransport.cancel();
+  }, [stop, chatTransport]);
+
   const ablyMessages = useAblyMessages();
 
   // Armed fault for the next turn. It rides a one-shot cookie the chat route
@@ -242,9 +243,7 @@ function ChatInner({
           onSend={(text) => {
             void sendMessage({ text });
           }}
-          onStop={() => {
-            void stop();
-          }}
+          onStop={() => void cancelRun()}
           onToolApprove={(toolPart) => {
             const id = toolPart.approval?.id;
             if (id) void addToolApprovalResponse({ id, approved: true });

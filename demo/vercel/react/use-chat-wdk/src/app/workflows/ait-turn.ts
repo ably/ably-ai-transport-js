@@ -31,10 +31,10 @@ export interface AitTurnInput {
  * the workflow dispatches one {@link toolActivity} per call (each its own
  * retryable process, each tool result its own AIT step) and loops a follow-up
  * inference. The settled outcome then goes to {@link terminalActivity}, which
- * gates on the run's wire state and publishes `ai-run-suspend` / `ai-run-end`
- * — unless the outcome is `settled`, which means another invocation (a client
- * continuation) already owns or finished the run and this workflow has nothing
- * left to publish.
+ * gates on the run's wire state and publishes `ai-run-end` — unless the
+ * outcome is `settled`, which means another invocation (a client continuation)
+ * already owns or finished the run and this workflow has nothing left to
+ * publish.
  *
  * A cancel is delivered over the channel (the client's Stop publishes
  * `ai-cancel`, which fires the in-flight activity's run `abortSignal`), so

@@ -31,10 +31,12 @@ export interface ToolCallInfo {
  *
  * The terminal `kind` values align with the SDK's `RunEndReason` vocabulary so
  * the activity's terminal publisher can pass `kind` straight through:
- * `complete` / `cancelled` / `error` map to `run.end({ reason: kind })` and
- * `suspend` maps to `run.suspend()`. `server-tools` is the only non-terminal
- * kind — the workflow loops on it, running its tool steps then a follow-up
- * inference.
+ * `complete` / `cancelled` / `error` map to `run.end({ reason: kind })`.
+ * `awaiting-client` ends the run complete — the useChat adapter publishes each
+ * tool resolution as a plain input carrying no run id, so the continuation
+ * opens a fresh run and a suspended one would never be resumed.
+ * `server-tools` is the only non-terminal kind — the workflow loops on it,
+ * running its tool steps then a follow-up inference.
  *
  * All terminal outcomes have already been published on the wire by the
  * activity's own transport before it returned. The workflow just decides
@@ -43,7 +45,7 @@ export interface ToolCallInfo {
 export type InferenceOutcome =
   | { kind: 'complete' }
   | { kind: 'server-tools'; serverToolCalls: ToolCallInfo[] }
-  | { kind: 'suspend' }
+  | { kind: 'awaiting-client' }
   | { kind: 'cancelled' }
   | { kind: 'error'; errorMessage: string };
 

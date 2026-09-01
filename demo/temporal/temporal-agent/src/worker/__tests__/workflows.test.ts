@@ -104,8 +104,8 @@ describe('chatWorkflow', () => {
     expect(calls).toEqual(['openRun', 'runInferenceStep', 'runToolStep', 'runToolStep', 'runInferenceStep']);
   });
 
-  it('suspend exits after the first runInferenceStep', async () => {
-    const { activities, calls } = makeWorker([{ kind: 'suspend' }]);
+  it('awaiting-client exits after the first runInferenceStep', async () => {
+    const { activities, calls } = makeWorker([{ kind: 'awaiting-client' }]);
     await runWorkflow(activities);
     expect(calls).toEqual(['openRun', 'runInferenceStep']);
     expect(activities.runToolStep).not.toHaveBeenCalled();

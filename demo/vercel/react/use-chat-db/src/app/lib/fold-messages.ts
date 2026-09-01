@@ -23,7 +23,7 @@
  * codec-message-id, but the part they resolve lives on the assistant message
  * that made the call.
  *
- * Both sides of the demo fold this way: the client folds the history gap
+ * Both sides of the demo fold this way: the client folds older history
  * during hydration, and the agent folds channel history into the model
  * context for `streamText`.
  */

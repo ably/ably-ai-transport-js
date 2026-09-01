@@ -116,7 +116,12 @@ describe('foldMessages', () => {
         ],
       }),
       messageEvent('cm-1', {
-        inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: true, reason: 'go ahead' } }],
+        inputs: [
+          {
+            kind: 'approval',
+            payload: { messageId: 'cm-1', toolCallId: 'call-1', approved: true, reason: 'go ahead' },
+          },
+        ],
       }),
     ]);
 
@@ -144,7 +149,7 @@ describe('foldMessages', () => {
   it('ignores events with no codec-message-id and empty buckets', async () => {
     const messages = await foldMessages([
       { kind: 'message', meta: { ...meta('cm-1'), codecMessageId: undefined }, inputs: [], outputs: [] },
-      messageEvent('cm-2', { inputs: [{ kind: 'regenerate' }] }),
+      messageEvent('cm-2', { inputs: [{ kind: 'regenerate', payload: { messageId: 'a1' } }] }),
     ]);
 
     expect(messages).toEqual([]);

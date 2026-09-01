@@ -13,22 +13,24 @@ Element.prototype.scrollIntoView = () => {};
 // The SDK's React entry points are mocked so the demo's React glue can be
 // exercised without bringing up an Ably client or the transport. useChat runs
 // for real against the mocked ChatTransport, so the demo's wiring into it —
-// send, stream consumption, seeding — is what these tests cover. A breaking
+// send, stream consumption, stop — is what these tests cover. A breaking
 // change to the SDK's public surface (renamed/removed export, changed hook
 // shape) is caught at module-load or render-time.
 // ---------------------------------------------------------------------------
 
 const mockSendMessages = vi.fn<ChatTransport['sendMessages']>();
-const mockSeed = vi.fn<ChatTransport['seed']>();
+const mockCancel = vi.fn<ChatTransport['cancel']>(async () => {});
 
 const mockChatTransport: ChatTransport = {
   sendMessages: mockSendMessages,
   // null is the AI SDK's "nothing to resume".
   reconnectToStream: async () => null,
-  seed: mockSeed,
+  readSince: async () => ({ messages: [], exhausted: true }),
+  cancel: mockCancel,
   close: () => {},
   streaming: false,
   onStreamingChange: () => () => {},
+  onForeignRun: () => () => {},
 };
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
@@ -84,7 +86,7 @@ const assistantTextChunks = (messageId: string, text: string): AI.UIMessageChunk
 describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessages.mockReset();
-    mockSeed.mockReset();
+    mockCancel.mockReset();
     mockSendMessages.mockResolvedValue(chunkStreamOf([]));
   });
 
@@ -95,10 +97,24 @@ describe('<Chat>', () => {
     cleanup();
   });
 
-  it('seeds the adapter empty on mount (no hydration) so live indexing opens', async () => {
+  it('cancels the run on the channel when Stop is pressed', async () => {
+    // A stream that never closes keeps useChat streaming, so Stop stays up.
+    mockSendMessages.mockResolvedValue(new ReadableStream<AI.UIMessageChunk>({ start: () => {} }));
+
     render(<Chat chatId="ai:test" />);
+    const input = screen.getByPlaceholderText('Type a message...');
+    const form = input.closest('form');
+    if (!form) throw new Error('input is not nested in a <form>');
+    fireEvent.change(input, { target: { value: 'hello' } });
+    fireEvent.submit(form);
+
+    const stop = await screen.findByLabelText('Stop');
+    fireEvent.click(stop);
+
+    // useChat.stop() only closes this client's stream. The channel cancel is
+    // what aborts the agent, so the demo must issue both.
     await waitFor(() => {
-      expect(mockSeed).toHaveBeenCalledWith([]);
+      expect(mockCancel).toHaveBeenCalledTimes(1);
     });
   });
 

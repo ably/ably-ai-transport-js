@@ -215,7 +215,7 @@ describe('foldMessages', () => {
       stream,
       messageEvent(
         { codecMessageId: 'wire-a1', runId: 'run-1' },
-        { inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: true } }] },
+        { inputs: [{ kind: 'approval', payload: { messageId: 'cm-a', toolCallId: 'call-1', approved: true } }] },
       ),
     ]);
     const approvedPart = toolPart(approved[0].message);
@@ -226,7 +226,14 @@ describe('foldMessages', () => {
       stream,
       messageEvent(
         { codecMessageId: 'wire-a1', runId: 'run-1' },
-        { inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: false, reason: 'User denied' } }] },
+        {
+          inputs: [
+            {
+              kind: 'approval',
+              payload: { messageId: 'cm-a', toolCallId: 'call-1', approved: false, reason: 'User denied' },
+            },
+          ],
+        },
       ),
     ]);
     const deniedPart = toolPart(denied[0].message);
@@ -256,7 +263,7 @@ describe('foldMessages', () => {
       ),
       messageEvent(
         { codecMessageId: 'wire-a1', runId: 'run-1' },
-        { inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: true } }] },
+        { inputs: [{ kind: 'approval', payload: { messageId: 'cm-a', toolCallId: 'call-1', approved: true } }] },
       ),
       messageEvent(
         { codecMessageId: 'wire-a2', runId: 'run-1' },

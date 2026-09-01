@@ -6,7 +6,7 @@ export const TEMPORAL_INTRO_TITLE = 'useChat + Temporal';
 export const TEMPORAL_INTRO_DESCRIPTION =
   'A useChat client over the Ably chat transport — but each turn runs the agent inside a Temporal workflow. ' +
   'The workflow drives a self-controlled agentic loop, one activity per transport step: open the run, call the ' +
-  'model, run a server tool, suspend for a client tool or approval, end the run. If an activity fails, Temporal ' +
+  'model, run a server tool, end the turn for a client tool or approval, end the run. If an activity fails, Temporal ' +
   'retries it under the same step id and the retried output supersedes the failed attempt on the channel — no ' +
   'duplicate output, and the reply still lands over Ably. Each item below exercises a specific piece; try them in order.';
 
@@ -35,10 +35,10 @@ export const TEMPORAL_SCENARIOS: readonly Scenario[] = [
   {
     id: 'client-weather',
     tag: 'Client tool',
-    title: 'Client-side tool call (suspend / resume)',
+    title: 'Client-side tool call (continuation)',
     prompt: `what's the weather?`,
     blurb:
-      'getLocation has no server execute, so the workflow suspends the run and terminates. Your browser resolves the location (permission prompt), publishes the tool output on the channel, and POSTs a continuation; a fresh workflow resumes the same run.',
+      'getLocation has no server execute, so the workflow ends the run and terminates. Your browser resolves the location (permission prompt), publishes the tool output on the channel, and POSTs a continuation; a fresh workflow answers on a new run.',
   },
   {
     id: 'approval-forecast',
@@ -55,7 +55,7 @@ export const TEMPORAL_SCENARIOS: readonly Scenario[] = [
       </>
     ),
     blurb:
-      'getWeatherForecast is approval-gated. The workflow suspends until you decide; approving POSTs a continuation and a fresh workflow resumes the run and runs the tool.',
+      'getWeatherForecast is approval-gated. The workflow ends the turn and waits for you to decide; approving POSTs a continuation and a fresh workflow runs the tool.',
   },
   {
     id: 'cancel',

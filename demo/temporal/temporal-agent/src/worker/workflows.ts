@@ -12,10 +12,10 @@
  * comes back asking for server tools, run those tools and infer again.
  *
  * Activities publish their own terminals. The inference activity already holds
- * an open transport on the run's channel, so publishing `ai-run-end` /
- * `ai-run-suspend` there costs nothing; doing it from here via `run.end()`
- * would pay a fresh activity with its own connect. The handle exposes `end()`
- * and `suspend()` for orchestrations that prefer it.
+ * an open transport on the run's channel, so publishing `ai-run-end` there
+ * costs nothing; doing it from here via `run.end()` would pay a fresh activity
+ * with its own connect. The handle exposes `end()` and `suspend()` for
+ * orchestrations that prefer it.
  *
  * Cancels need no signal or listener activity. When the client publishes
  * `ai-cancel` on the channel, whichever activity is attached picks it up through
@@ -80,7 +80,7 @@ export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
       }
 
       // Every other outcome is terminal, and the activity that produced it has
-      // already published `ai-run-end` / `ai-run-suspend` on the wire.
+      // already published `ai-run-end` on the wire.
     },
   );
 }

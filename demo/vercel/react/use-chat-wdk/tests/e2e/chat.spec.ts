@@ -124,14 +124,14 @@ test.describe('use-chat-wdk — durable text chat', () => {
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
   });
 
-  test('a server-tool approval suspends the run, then resumes on approve (over WDK)', async ({ page }) => {
+  test('a server-tool approval ends the turn, then a new run answers on approve (over WDK)', async ({ page }) => {
     await page.goto(freshChannelUrl('wdk-approval'));
 
     await page.getByPlaceholder('Type a message...').fill("What's the weather forecast for Tokyo?");
     await page.getByRole('button', { name: 'Send' }).click();
 
-    // The tool needs approval, so the run suspends (the terminal activity
-    // publishes ai-run-suspend) and the approval card appears.
+    // The tool needs approval, so the turn ends (the terminal activity
+    // publishes ai-run-end) and the approval card appears.
     const approve = page.getByRole('button', { name: 'Approve' });
     await expect(approve).toBeVisible({ timeout: 60_000 });
     await approve.click();
@@ -147,7 +147,10 @@ test.describe('use-chat-wdk — durable text chat', () => {
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
   });
 
-  test('a client-side tool suspends, executes in the browser, then resumes (over WDK)', async ({ page, context }) => {
+  test('a client-side tool ends the turn, executes in the browser, then a new run answers (over WDK)', async ({
+    page,
+    context,
+  }) => {
     await context.grantPermissions(['geolocation']);
     await context.setGeolocation({ latitude: 51.5074, longitude: -0.1278 });
     await page.goto(freshChannelUrl('wdk-client-tool'));
@@ -155,7 +158,7 @@ test.describe('use-chat-wdk — durable text chat', () => {
     await page.getByPlaceholder('Type a message...').fill("What's the weather like?");
     await page.getByRole('button', { name: 'Send' }).click();
 
-    // getLocation has no server execute, so the run suspends; the client runs
+    // getLocation has no server execute, so the turn ends; the client runs
     // navigator.geolocation, sends the result, a fresh workflow resumes the run,
     // and the weather sentence (which the mock returns once the location is
     // known) arrives over Ably.

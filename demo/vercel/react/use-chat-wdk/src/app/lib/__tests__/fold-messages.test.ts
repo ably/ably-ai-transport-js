@@ -175,7 +175,7 @@ describe('foldMessages', () => {
       ),
       messageEvent(
         { codecMessageId: 'a1' },
-        { inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: true } }] },
+        { inputs: [{ kind: 'approval', payload: { messageId: 'cm-a', toolCallId: 'call-1', approved: true } }] },
       ),
     ];
 
@@ -226,7 +226,7 @@ describe('foldMessages', () => {
         kind: 'run-lifecycle',
         event: { type: 'start', runId: 'r1', clientId: '', invocationId: '', serial: '001' },
       },
-      messageEvent({ codecMessageId: 'g1' }, { inputs: [{ kind: 'regenerate' }] }),
+      messageEvent({ codecMessageId: 'g1' }, { inputs: [{ kind: 'regenerate', payload: { messageId: 'a1' } }] }),
     ];
 
     const messages = await foldMessages(events);

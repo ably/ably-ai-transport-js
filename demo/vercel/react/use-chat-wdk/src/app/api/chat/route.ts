@@ -7,17 +7,15 @@ import { runAitTurn, type AitTurnInput } from '@/app/workflows/ait-turn';
  * Wake the durable agent.
  *
  * The AIT chat transport publishes the user input to the Ably channel, then
- * POSTs the invocation pointer `{ channelName, eventId, runId? }` here and
- * expects `{ runId }` back immediately — streaming happens over Ably
- * afterwards. Instead of running the agent inline, this route `start()`s a
- * Vercel Workflow whose activities open / infer / end the run across separate
- * processes, each publishing over the channel.
+ * POSTs the invocation pointer `{ channelName, eventId }` here. The POST only
+ * wakes the agent: the client resolves the run id off the channel and reads
+ * nothing from this response, and streaming happens over Ably. Instead of
+ * running the agent inline, this route `start()`s a Vercel Workflow whose
+ * activities open / infer / end the run across separate processes, each
+ * publishing over the channel.
  *
- * The response `runId` is derived exactly the way the open activity derives
- * it: a continuation echoes the run it resumes (`body.runId` — on the wire,
- * the trigger's own run-id header), and a fresh turn pins the run to the
- * stable workflow run id (`run:<workflowRunId>`) — the same pin the open
- * activity passes, so a fresh-process retry re-enters the same run.
+ * The workflow pins its run to the stable workflow run id
+ * (`run:<workflowRunId>`), so a fresh-process retry re-enters the same run.
  *
  * An armed demo fault rides a one-shot cookie (the transport owns the POST
  * body); this route consumes it into the workflow input and clears it.
@@ -29,8 +27,6 @@ interface ChatRequestBody {
   channelName: string;
   /** The `event-id` of the input event that triggered this invocation. */
   eventId: string;
-  /** The run to resume, for a tool-result or approval continuation. */
-  runId?: string;
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -43,13 +39,12 @@ export async function POST(req: Request): Promise<Response> {
     eventId: body.eventId,
     ...(fault === undefined ? {} : { fault }),
   };
-  const run = await start(runAitTurn, [input]);
+  await start(runAitTurn, [input]);
 
-  const runId = body.runId ?? `run:${run.runId}`;
-  return Response.json(
-    { runId },
+  return new Response('', {
+    status: 202,
     // Consume the armed fault: it applies to the turn that carried it, never
     // to a later send.
-    fault === undefined ? undefined : { headers: { 'set-cookie': CLEAR_FAULT_COOKIE } },
-  );
+    ...(fault === undefined ? {} : { headers: { 'set-cookie': CLEAR_FAULT_COOKIE } }),
+  });
 }

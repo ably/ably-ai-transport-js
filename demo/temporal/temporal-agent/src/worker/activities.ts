@@ -13,8 +13,8 @@
  * resolves the conversation's channel, creates an agent transport on it, and
  * re-enters the open run with `adoptRun` — attach without publishing, so
  * nothing reaches the wire until the activity publishes output or a terminal.
- * The activity that reaches a terminal outcome publishes it
- * (`ai-run-end` / `ai-run-suspend`) inline before returning; closing the
+ * The activity that reaches a terminal outcome publishes it (`ai-run-end`)
+ * inline before returning; closing the
  * transport publishes nothing, so a run left active stays open on the wire for
  * the next activity to re-enter.
  *
@@ -106,8 +106,10 @@ async function loadConversation(transport: Transport): Promise<UIMessage[]> {
 
 async function publishRunTerminal(run: Run, outcome: InferenceOutcome): Promise<void> {
   switch (outcome.kind) {
-    case 'suspend':
-      await run.suspend();
+    case 'awaiting-client':
+      // The client owes a tool result or an approval. Nothing resumes this
+      // run, so end it complete and let the resolution wake a new one.
+      await run.end({ reason: 'complete' });
       return;
     case 'server-tools':
       // The only non-terminal outcome — nothing to publish; the workflow loops
@@ -218,10 +220,10 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
     return { kind: outcome.reason };
   }
 
-  // Suspend outcome — classify from the streamed assistant message: fresh
-  // server-tool calls (have `execute` in the registry) become server-tool
-  // activities; anything else (client tools, approval-requested tools)
-  // suspends the run for the client to resolve. `pendingToolCalls` matches
+  // Stopped on tool calls — classify from the streamed assistant message:
+  // fresh server-tool calls (have `execute` in the registry) become
+  // server-tool activities; anything else (client tools, approval-requested
+  // tools) leaves the turn for the client. `pendingToolCalls` matches
   // `input-available` only, so a just-approved call is NOT caught here — the
   // follow-up workflow spawned by the `tool-approval-response` handles it via
   // the pre-check above.
@@ -231,7 +233,7 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
     return { kind: 'server-tools', serverToolCalls };
   }
 
-  return { kind: 'suspend' };
+  return { kind: 'awaiting-client' };
 }
 
 /** Fold a chunk stream through the AI SDK reducer and return the final message. */

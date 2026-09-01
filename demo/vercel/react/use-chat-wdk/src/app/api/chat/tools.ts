@@ -6,11 +6,11 @@
  * - `getWeatherForecast`: server-executed but **gated on user approval**.
  *   `needsApproval` returns `false` once the matching `toolCallId` has an
  *   approved `tool-approval-response` in the message stream — per-call approval,
- *   not per-tool-name. Until then the run suspends awaiting the decision.
+ *   not per-tool-name. Until then the turn ends awaiting the decision.
  *
- * - `getLocation`: **client-executed** — no `execute`. The model calls it, the
- *   run suspends, the client runs `navigator.geolocation` (see the
- *   `use-client-tools` hook) and sends the result back, and the run resumes.
+ * - `getLocation`: **client-executed** — no `execute`. The model calls it and
+ *   the turn ends; the client runs `navigator.geolocation` (see the
+ *   `use-client-tools` hook) and sends the result back, waking a fresh run.
  */
 
 import type { ModelMessage, Tool } from 'ai';

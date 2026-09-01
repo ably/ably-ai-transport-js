@@ -26,16 +26,15 @@
  * - {@link toolActivity} re-enters the same way and publishes one server-tool
  *   result under its own AIT step.
  * - {@link terminalActivity} re-enters the same way and publishes the run's
- *   `ai-run-suspend` / `ai-run-end`; {@link cleanupActivity} is its
- *   best-effort failure arm.
+ *   `ai-run-end`; {@link cleanupActivity} is its best-effort failure arm.
  *
  * Two rules keep the cross-process lifecycle sound:
  *
  * - **Gate before publishing.** Every re-entering activity folds the run's
  *   lifecycle from channel history first and publishes only while the run is
- *   still this workflow's to drive — a run that ended, suspended, or was
- *   resumed by another invocation (a client continuation) is left alone, so a
- *   slow retry never clobbers work that already moved on.
+ *   still this workflow's to drive — a run another invocation already ended
+ *   or resumed is left alone, so a slow retry never clobbers work that
+ *   already moved on.
  * - **Retries supersede.** An activity keys its AIT step on the WDK step id
  *   (stable across retries) and pins the run and response-message identity, so
  *   a fresh-process retry re-enters the SAME run and its output supersedes the
@@ -98,7 +97,7 @@ export interface ToolCallInfo {
  */
 export type InferenceOutcome =
   | { kind: 'complete' }
-  | { kind: 'suspend' }
+  | { kind: 'awaiting-client' }
   | { kind: 'cancelled' }
   | { kind: 'error'; errorMessage: string }
   | { kind: 'server-tools'; serverToolCalls: ToolCallInfo[] }
@@ -167,7 +166,7 @@ export async function openActivity(input: AitTurnInput, workflowRunId: string): 
  * server-tool activities, so the model sees their published outputs.
  *
  * The history fold is both gate and context. The gate: a run that ended,
- * suspended, or was resumed by another invocation is no longer this workflow's
+ * ended or was resumed by another invocation is no longer this workflow's
  * to drive — return the observed outcome (or `settled`) and publish nothing,
  * so a slow retry never re-runs the model over a continuation that already
  * moved on. The recovery reads: an approval that just landed dispatches the
@@ -215,7 +214,7 @@ export async function inferenceActivity(
       const unresolved = pendingToolCalls(messages);
       if (unresolved.length > 0) {
         const server = filterServerToolCalls(unresolved);
-        return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'suspend' };
+        return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'awaiting-client' };
       }
 
       // Demo fault: throw before anything is published, so the dead attempt
@@ -273,10 +272,10 @@ export async function inferenceActivity(
 
       // The model stopped on tool calls: server calls (execute in the
       // registry) become tool activities; anything else (client tools,
-      // approval-gated tools) suspends the run for the client to resolve.
+      // approval-gated tools) ends the turn for the client to resolve.
       const streamedMessage = await foldChunkList(streamedChunks);
       const server = filterServerToolCalls(pendingToolCalls(streamedMessage ? [streamedMessage] : []));
-      return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'suspend' };
+      return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'awaiting-client' };
     },
   );
 }
@@ -313,12 +312,14 @@ export async function toolActivity(
 }
 
 /**
- * TERMINAL: publish the run lifecycle event the inference outcome implies —
- * `ai-run-suspend` for a pending client tool or approval, `ai-run-end`
- * otherwise. Its own activity so a process that dies between producing the
- * outcome and publishing it is retried here alone, and the gate keeps the
- * retry honest: a run that already suspended, ended, or was resumed by a
- * client continuation gets nothing published.
+ * TERMINAL: publish the `ai-run-end` the inference outcome implies. A turn
+ * left waiting on the client (a client-executed tool, an unanswered approval)
+ * still ends: the useChat adapter publishes each resolution as a plain input
+ * carrying no run id, so the continuation opens a fresh run and a suspended
+ * one would never be resumed. Its own activity so a process that dies between
+ * producing the outcome and publishing it is retried here alone, and the gate
+ * keeps the retry honest: a run another invocation already ended or resumed
+ * gets nothing published.
  * @param input - The turn input (carries the channel name).
  * @param refs - The run refs from {@link openActivity}.
  * @param workflowRunId - The WDK workflow run id.
@@ -338,8 +339,10 @@ export async function terminalActivity(
 
     const run = transport.adoptRun(refs.runId, { invocationId: refs.invocationId });
     switch (outcome.kind) {
-      case 'suspend':
-        await run.suspend();
+      case 'awaiting-client':
+        // The client owes a tool result or an approval. Nothing resumes this
+        // run, so end it complete and let the resolution wake a new one.
+        await run.end({ reason: 'complete' });
         return;
       case 'error':
         await run.end({
@@ -357,7 +360,7 @@ export async function terminalActivity(
  * CLEANUP: the workflow-level failure terminal, scheduled from the workflow's
  * catch once an activity has failed past its retry policy. Publishes
  * `ai-run-end{error}` so observers' streams close instead of hanging. The
- * gate makes it safe: a run that already suspended, ended, or moved to a
+ * gate makes it safe: a run another invocation already ended or moved to a
  * continuation needs nothing. Best-effort: one attempt, no retries.
  * @param input - The turn input (carries the channel name).
  * @param refs - The run refs from {@link openActivity}.
@@ -393,7 +396,7 @@ cleanupActivity.maxRetries = 0;
 
 /**
  * Whether the run's latest lifecycle event says it is no longer this
- * workflow's to drive: it suspended or ended, or a different invocation (a
+ * workflow's to drive: it ended, or a different invocation (a
  * client continuation's workflow) re-entered it.
  */
 function isSettledOrTakenOver(latest: RunLifecycleEvent, refs: RunRefs): boolean {

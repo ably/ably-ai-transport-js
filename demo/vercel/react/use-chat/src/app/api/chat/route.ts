@@ -144,20 +144,21 @@ export async function POST(req: Request) {
         // this call, so each updateChecklist call chains straight into the next
         // inference pass. Client-executed tools (getLocation) and
         // approval-requested tools finish the call with
-        // `finishReason: 'tool-calls'`, which suspends the run below.
+        // `finishReason: 'tool-calls'`, which ends the turn below.
         stopWhen: stepCountIs(10),
       });
 
       const pipeResult = await openedRun.pipe(toUIMessageStream({ stream: result.fullStream }));
       const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-      if (outcome.reason === 'suspend') {
-        await openedRun.suspend();
-      } else {
-        // We choose to forward the run's terminal error so clients can show why
-        // the run failed; a server could omit it to avoid exposing internal
-        // failure detail.
-        await openedRun.end(outcome);
-      }
+      // A turn that stopped on tool calls is still terminal here. The useChat
+      // adapter publishes each resolution as a plain input carrying no run id,
+      // so the continuation opens a fresh run rather than resuming this one.
+      // Ending keeps the client's run bookkeeping honest across a reload.
+      //
+      // We choose to forward the run's terminal error so clients can show why
+      // the run failed; a server could omit it to avoid exposing internal
+      // failure detail.
+      await openedRun.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
     } catch (error) {
       // The run has already opened on the channel; end it so clients don't see
       // a permanently active run.
@@ -171,7 +172,8 @@ export async function POST(req: Request) {
     }
   });
 
-  // The adapter needs the run-id before the stream flows: it filters the
-  // channel's events into useChat's chunk stream by this id.
-  return Response.json({ runId: openedRun.runId });
+  // The POST only wakes the agent. The adapter resolves the run id off the
+  // channel, matching the `ai-run-start` that names the input it published,
+  // so nothing here is read from the response body.
+  return new Response('', { status: 202 });
 }

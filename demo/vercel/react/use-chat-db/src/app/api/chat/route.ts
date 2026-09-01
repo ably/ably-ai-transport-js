@@ -3,29 +3,28 @@
  * `createAgentTransport`.
  *
  * The client's HTTP POST names the channel and the `event-id` of the input
- * that woke this invocation (plus the run-id when it resumes a suspended
- * run). The route:
+ * that woke this invocation. The route:
  *
  * 1. Locates the triggering input in channel history (`locateInput`).
  * 2. Assembles the model context by folding the whole channel history —
  *    bounded at the attach point, which is after the trigger was published
  *    since the agent connects per-POST — through the same fold helper the
  *    client hydrates with (`lib/fold-messages.ts`).
- * 3. Opens the run (a fresh open publishes `ai-run-start`; a continuation
- *    named by the POST's run-id publishes `ai-run-resume`), responds with the
- *    run-id immediately, and pipes the `streamText` output to the channel in
- *    `after()`. Every start chunk names a `messageId`, so the client, the
- *    store, and the fold agree on each assistant message's domain id.
- * 4. Suspends or ends the run from the `vercelRunOutcome` of the pipe.
+ * 3. Opens a run anchored to that input, answers 202, and pipes the
+ *    `streamText` output to the channel in `after()`. Every start chunk names
+ *    a `messageId`, so the client, the store, and the fold agree on each
+ *    assistant message's domain id.
+ * 4. Ends the run from the `vercelRunOutcome` of the pipe.
  *
  * Tool patterns: server-executed tools (getWeather) run inline; a
  * client-executed tool (getLocation, no `execute`) or an approval-gated tool
  * (getWeatherForecast, `needsApproval`) leaves the finish reason at
- * `tool-calls`, so the run SUSPENDS and the client resumes it with a
- * continuation POST under the same run-id. On the continuation, the folded
- * history carries the tool output (a `{ kind: 'chunk' }` input) or the
- * approval decision (the `{ kind: 'approval' }` body, flipped onto the tool
- * part by the fold), so `streamText` executes the approved tool and answers.
+ * `tool-calls`. That turn still ends: the useChat adapter publishes each
+ * resolution as a plain input carrying no run id, so the continuation POST
+ * opens a fresh run. On it, the folded history carries the tool output (a
+ * `{ kind: 'chunk' }` input) or the approval decision (the
+ * `{ kind: 'approval' }` body, flipped onto the tool part by the fold), so
+ * `streamText` executes the approved tool and answers.
  *
  * Persistence is client-owned in this demo: the sender POSTs each completed
  * turn to `/api/messages` from useChat's `onFinish`.
@@ -82,8 +81,8 @@ export async function POST(req: Request) {
 
   // Model context: fold the whole channel history. Everything the model needs
   // is on the channel — prior turns, the triggering input, and (on a
-  // continuation) the suspended run so far with its tool resolution or
-  // approval decision.
+  // continuation) the earlier turn that asked for the tool, with its
+  // resolution or approval decision.
   const events: ChatTransportEvent[] = [];
   for (;;) {
     const batch = await transport.history();
@@ -92,10 +91,10 @@ export async function POST(req: Request) {
   }
   const conversation = (await foldMessages(events)).map((entry) => entry.message);
 
-  // The located input drives the open: a continuation input carries the
-  // run-id header of the run it resumes, and a fresh send carries none —
-  // the transport re-enters or starts accordingly, anchors the run to the
-  // trigger so cancels route, and threads its structure headers.
+  // Opening from the located input anchors the run to its trigger, which is
+  // what lets the client resolve the run id off the channel and lets a cancel
+  // route back to this run. Every input the useChat adapter publishes carries
+  // no run id, so each one opens a fresh run.
   const run = transport.openRun({ input: located }, { signal: req.signal });
 
   const result = streamText({
@@ -116,18 +115,16 @@ export async function POST(req: Request) {
         toUIMessageStream({ stream: result.fullStream, generateMessageId: () => crypto.randomUUID() }),
       );
       const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-      if (outcome.reason === 'suspend') {
-        // A client-executed or approval-gated tool suspends the run; the
-        // client resumes it with a continuation POST under the same run-id.
-        await run.suspend();
-      } else {
-        await run.end(outcome);
-      }
+      // A turn that stopped on tool calls is still terminal: the client's
+      // resolution wakes a new run rather than resuming this one.
+      await run.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
     } finally {
       transport.close();
       ably.close();
     }
   });
 
-  return Response.json({ runId: run.runId });
+  // The POST only wakes the agent. The adapter resolves the run id off the
+  // channel, matching the `ai-run-start` that names the input it published.
+  return new Response('', { status: 202 });
 }

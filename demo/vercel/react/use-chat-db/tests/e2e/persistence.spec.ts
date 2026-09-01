@@ -8,14 +8,13 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 // ChatTransport: sends publish to the channel and the run's output chunks
 // stream back off the subscription, while the agent route on
 // `createAgentTransport` streams each run. The client persists each completed
-// turn to the in-memory store from useChat's `onFinish`. Hydration happens
-// before the chat mounts: the REST seed plus the channel-history gap back to
-// the newest stored message seed `useChat({ messages })` in one shot, and the
-// same gap events seed the adapter's wire indices. These tests prove the
-// send/stream loop, the two-part hydration across a page reload, and the
-// suspend/resume continuations for a client-executed tool and an approval —
-// including a continuation issued after a reload, where the suspended run
-// lives only in the history gap.
+// turn to the in-memory store from useChat's `onFinish`, along with the
+// channel serial it is complete up to. Hydration happens before the chat
+// mounts: the REST store plus `chatTransport.readSince(latestSerial)` seed
+// `useChat({ messages })` in one shot. These tests prove the send/stream loop,
+// the two-part hydration across a page reload, and the tool continuations for
+// a client-executed tool and an approval — including a continuation issued
+// after a reload, where the unanswered turn is only on the channel.
 
 function seededChannelUrl(testTitle: string): string {
   const slug = testTitle
@@ -49,7 +48,7 @@ async function send(page: Page, text: string): Promise<void> {
 
 // Poll the page's total text length until it stops changing for three
 // successive intervals — the agent's stream finishes emitting well before the
-// run-end wire lands, so this lets a suspend/resume continuation fully publish
+// run-end wire lands, so this lets a tool continuation fully publish
 // before assertions run.
 async function awaitStreamingQuiesce(page: Page): Promise<void> {
   let lastLen = -1;
@@ -78,7 +77,7 @@ test.describe('use-chat-db - useChat persistence over the chat transport', () =>
     await expect(messages(page)).toHaveCount(2);
   });
 
-  test('reload hydration: the REST seed plus the history gap reconstruct the conversation once', async ({
+  test('reload hydration: the REST store plus the channel walk reconstruct the conversation once', async ({
     page,
   }, testInfo) => {
     const url = seededChannelUrl(testInfo.title);
@@ -91,8 +90,8 @@ test.describe('use-chat-db - useChat persistence over the chat transport', () =>
     // the client's store write has landed before the reload reconstructs.
     await page.waitForTimeout(3000);
 
-    // Reload: hydration fetches the store seed over REST, pages the channel
-    // gap back to the newest stored message, and seeds useChat with the merge.
+    // Reload: hydration fetches the store over REST, walks the channel forward
+    // from the serial it reports, and seeds useChat with the two lists joined.
     await page.goto(url);
     await expect(messages(page)).toHaveCount(2, { timeout: 60_000 });
     await page.waitForTimeout(3000);
@@ -108,13 +107,13 @@ test.describe('use-chat-db - useChat persistence over the chat transport', () =>
     await expect(assistantWith(page, 'ZULU')).toHaveCount(1);
   });
 
-  test('client-tool suspend/resume: getLocation suspends the run and the continuation streams the answer', async ({
+  test('client tool: getLocation ends the turn and the continuation streams the answer', async ({
     browser,
   }, testInfo) => {
     // "what's the weather like?" makes the agent call getLocation (a
-    // client-executed tool). The run SUSPENDS; the browser resolves
+    // client-executed tool), which ends the turn. The browser resolves
     // geolocation, useChat auto-submits, and the transport publishes the tool
-    // result under the suspended run's id and POSTs the continuation.
+    // result addressed to that assistant message, waking a fresh run.
     const context = await browser.newContext({
       permissions: ['geolocation'],
       geolocation: { latitude: 51.5074, longitude: -0.1278 },
@@ -152,11 +151,11 @@ test.describe('use-chat-db - useChat persistence over the chat transport', () =>
     }
   });
 
-  test('approval continuation: approving the forecast tool resumes the suspended run', async ({ page }, testInfo) => {
+  test('approval continuation: approving the forecast tool wakes the answering run', async ({ page }, testInfo) => {
     const url = seededChannelUrl(testInfo.title);
     await page.goto(url);
 
-    // The run suspends at approval-requested; approving publishes the
+    // The turn ends at approval-requested; approving publishes the
     // approval-decision body under the run's id and POSTs the continuation.
     await send(page, "what's the weather forecast for London?");
     const approveButton = page.getByRole('button', { name: /Approve/i }).first();
@@ -180,25 +179,24 @@ test.describe('use-chat-db - useChat persistence over the chat transport', () =>
     await expect(messages(page)).toHaveCount(countBeforeReload);
   });
 
-  test('continuation across a reload: a run suspended at approval resumes after the page reloads', async ({
+  test('continuation across a reload: an approval answered after the reload continues the thread', async ({
     page,
   }, testInfo) => {
     const url = seededChannelUrl(testInfo.title);
     await page.goto(url);
 
-    // Suspend the run at approval-requested, then reload before answering. A
-    // suspended run is never persisted, so on reload it lives only in the
-    // channel-history gap — hydration folds it and seeds the transport's wire
-    // indices with the suspended run's id.
+    // Stop at approval-requested, then reload before answering. A turn still
+    // waiting on the client is never persisted, so on reload it comes back
+    // from the channel walk alone.
     await send(page, "what's the weather forecast for London?");
     await expect(page.getByRole('button', { name: /Approve/i }).first()).toBeVisible({ timeout: 60_000 });
     await page.waitForTimeout(3000);
 
     await page.goto(url);
 
-    // The approval prompt is reconstructed from the gap; approving publishes
-    // the decision under the suspended run's id (recovered from the gap seed)
-    // and the continuation streams the forecast.
+    // The approval prompt comes back from the walk; approving publishes the
+    // decision addressed to that assistant message, which wakes a fresh run
+    // that streams the forecast.
     const approveButton = page.getByRole('button', { name: /Approve/i }).first();
     await expect(approveButton).toBeVisible({ timeout: 60_000 });
     await approveButton.click();

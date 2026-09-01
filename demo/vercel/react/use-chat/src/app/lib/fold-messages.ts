@@ -18,7 +18,8 @@
  *   input records the decision; after folding, the matching tool part flips
  *   from `approval-requested` to `approval-responded`.
  *
- * `kind: 'regenerate'` inputs carry no content and contribute nothing.
+ * `kind: 'regenerate'` inputs name the message the client asked to redo. The
+ * agent acts on that; the fold contributes nothing for them.
  * Messages are ordered by the first appearance of their codec-message-id in
  * the (chronological) event stream.
  */

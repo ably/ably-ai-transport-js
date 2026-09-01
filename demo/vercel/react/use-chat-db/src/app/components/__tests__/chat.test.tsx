@@ -41,7 +41,7 @@ vi.mock('@ai-sdk/react', () => ({
 }));
 
 const fakeTransport = new FakeClientTransport();
-const fakeChatTransport = { seed: vi.fn(), close: vi.fn() };
+const fakeChatTransport = { cancel: vi.fn().mockResolvedValue(undefined), close: vi.fn() };
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   useChatTransport: () => ({
@@ -94,7 +94,7 @@ function renderChat(overrides: Partial<ChatProps> = {}) {
   return render(
     <Chat
       chatId="ai:test"
-      // CAST: the fake implements the seed/close surface the Chat touches.
+      // CAST: the fake implements the cancel/close surface the Chat touches.
       chatTransport={fakeChatTransport as unknown as ChatProps['chatTransport']}
       initialMessages={mockMessages}
       initialHasOlder={false}
@@ -110,7 +110,7 @@ describe('<Chat>', () => {
     mockSetMessages.mockClear();
     mockAddToolOutput.mockClear();
     mockAddToolApprovalResponse.mockClear();
-    fakeChatTransport.seed.mockClear();
+    fakeChatTransport.cancel.mockClear();
     fakeTransport.historyBatches = [];
     fakeTransport.historyCount = 0;
     mockStatus = 'ready';
@@ -165,6 +165,9 @@ describe('<Chat>', () => {
     fireEvent.submit(form);
 
     await waitFor(() => expect(mockStop).toHaveBeenCalledTimes(1));
+    // stop() only closes this client's stream; the channel cancel is what
+    // aborts the agent, so the demo must issue both before the next send.
+    await waitFor(() => expect(fakeChatTransport.cancel).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(mockSendMessage).toHaveBeenCalledWith({ text: 'concurrent' }));
   });
 
@@ -235,14 +238,14 @@ describe('<Chat>', () => {
     expect(JSON.parse(String(init.body))).toEqual({ conversationId: 'ai:test', messages: turn });
   });
 
-  it('does not persist a suspended, aborted, or errored turn', () => {
+  it('does not persist an unresolved, aborted, or errored turn', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     renderChat();
 
     const onFinish = capturedUseChatOptions.onFinish as (options: Record<string, unknown>) => void;
-    const suspended = forecastApproval('a1', 'call-1', 'approval-1');
-    onFinish({ message: suspended, messages: [userMsg('u1', 'q'), suspended], isAbort: false, isError: false });
+    const unresolved = forecastApproval('a1', 'call-1', 'approval-1');
+    onFinish({ message: unresolved, messages: [userMsg('u1', 'q'), unresolved], isAbort: false, isError: false });
     const complete = assistantMsg('a2', 'done');
     onFinish({ message: complete, messages: [userMsg('u1', 'q'), complete], isAbort: true, isError: false });
     onFinish({ message: complete, messages: [userMsg('u1', 'q'), complete], isAbort: false, isError: true });

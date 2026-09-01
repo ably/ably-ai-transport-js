@@ -8,27 +8,29 @@ through the SDK's chat transport, and the streamed reply arrives back off the
 channel subscription. The agent route runs on `createAgentTransport`.
 
 The client persists each **completed** turn to a store (an in-memory stand-in
-for a real database, keyed by channel name) from useChat's `onFinish`.
-Hydration happens before the chat mounts, in two parts:
+for a real database, keyed by channel name) from useChat's `onFinish`, along
+with the **channel serial** the turn is complete up to. Hydration happens
+before the chat mounts, in two parts:
 
-1. a REST endpoint (`/api/messages`) serves the stored conversation as the
-   seed;
-2. the client pages channel history back to the newest stored message and
-   folds that gap — anything streamed since the last persisted turn — on top
-   of the seed, using the provider's own reducer (`readUIMessageStream`).
+1. a REST endpoint (`/api/messages`) serves the stored conversation and that
+   serial;
+2. `chatTransport.readSince(latestSerial)` walks the channel back only as far
+   as the serial and returns the messages published since, folded with the
+   provider's own reducer (`readUIMessageStream`).
 
-The merge seeds `useChat({ messages })` in one shot, and the same gap events
-seed the chat transport's wire indices (`chatTransport.seed`). A run suspended
-at the time of a reload is never in the store, so it is reconstructed purely
-from the history gap; the seed also recovers its run-id, which is what lets an
-approval given _after_ the reload resume the suspended run — without ever
-re-publishing a resolution an earlier session already published. `useChat`
-mounts with `resume: true`, so a run still streaming reconnects where the
-adapter can classify it from history.
+The two lists concatenate into `useChat({ messages })` in one shot. The serial
+is what keeps the walk short: without it every page load would re-page the
+whole channel.
+
+`readSince` withholds any message whose run has not ended and retains its
+events for `reconnectToStream`. `useChat` mounts with `resume: true`, so a run
+that was still streaming at page load is delivered by the resume path instead
+— exactly one producer builds each message, so nothing is rendered twice.
 
 The demo exercises the full tool set: a server tool (getWeather), a
-client-executed tool that suspends and resumes the run (getLocation), and an
-approval-gated tool (getWeatherForecast). Each fresh visit opens a new channel
+client-executed tool (getLocation), and an approval-gated tool
+(getWeatherForecast). A turn that stops on tool calls still ends; the client's
+resolution wakes a new run. Each fresh visit opens a new channel
 (`?channel=<name>` pins a specific one).
 
 ## The approval-decision body
@@ -76,7 +78,8 @@ pnpm dev
 ```
 
 Open <http://localhost:3000>, send a few messages, then reload — the
-conversation is restored from the REST seed plus the channel-history gap.
+conversation is restored from the REST store plus the channel walk since its
+serial.
 
 ## Tests
 

@@ -138,7 +138,7 @@ describe('foldMessages', () => {
       ]),
       inputEvent('cm-a', {
         kind: 'approval',
-        payload: { toolCallId: 'call-2', approved: false, reason: 'User denied' },
+        payload: { messageId: 'cm-a', toolCallId: 'call-2', approved: false, reason: 'User denied' },
       }),
     ]);
 
@@ -153,7 +153,7 @@ describe('foldMessages', () => {
   it('ignores regenerate inputs and events without a codec-message-id', async () => {
     const bare = metaOf('cm-x');
     const messages = await foldMessages([
-      inputEvent('cm-x', { kind: 'regenerate' }),
+      inputEvent('cm-x', { kind: 'regenerate', payload: { messageId: 'cm-a' } }),
       { kind: 'message', meta: { ...bare, codecMessageId: undefined }, inputs: [], outputs: [] },
       {
         kind: 'run-lifecycle',

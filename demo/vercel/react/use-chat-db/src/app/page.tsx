@@ -11,10 +11,10 @@ const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:
 
 /**
  * Hydrate the conversation under the provider, then mount the chat. The hook
- * connects the transport, merges the database seed with the channel-history
- * gap, and seeds the useChat adapter's wire indices — so `useChat` reads the
- * full conversation synchronously at init and a suspended run can resume
- * across the reload.
+ * connects the transport, reads the stored conversation, and walks the channel
+ * forward from the serial it is complete up to — so `useChat` reads the full
+ * conversation synchronously at init, and a run still streaming at page load
+ * is picked up by the adapter's resume path rather than rendered twice.
  */
 function HydratedChat({ channelName, clientId }: { channelName: string; clientId?: string }) {
   const state = useChatHydration({ channelName });

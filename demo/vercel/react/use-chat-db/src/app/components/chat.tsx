@@ -38,8 +38,8 @@ const TERMINAL_TOOL_STATES = new Set(['output-available', 'output-error', 'outpu
 /**
  * Whether an assistant message's turn is complete: every tool part is
  * resolved. A message carrying a pending client tool, an unanswered approval,
- * or an approved-but-unexecuted call belongs to a suspended run, and a
- * suspended run is never persisted.
+ * or an approved-but-unexecuted call is still waiting on this client, so it
+ * is not persisted — the next load rebuilds it from the channel walk.
  * @param message - The assistant message useChat finished streaming.
  * @returns True when the turn can be persisted.
  */
@@ -54,9 +54,9 @@ export interface ChatProps {
   chatId: string;
   /** This client's own clientId, shown in the header and avatar stack. */
   clientId?: string;
-  /** The provider's useChat adapter, connected and seeded by the hydration hook. */
+  /** The provider's useChat adapter, its history walk already run by the hydration hook. */
   chatTransport: ChatTransport;
-  /** The hydrated conversation useChat initializes from: store seed + history gap. */
+  /** The hydrated conversation useChat initializes from: store seed + the channel walk. */
   initialMessages: UIMessage[];
   /** Whether channel history older than the hydrated window remains unpaged. */
   initialHasOlder: boolean;
@@ -66,18 +66,29 @@ export interface ChatProps {
  * A linear chat driven exclusively by `useChat` over the SDK's chat transport:
  * every send publishes to the channel and the streamed reply arrives back
  * through the adapter's run stream. `useChat` initializes from the hydrated
- * conversation (database seed plus the channel-history gap) and owns the
- * message list from then on; `resume: true` reconnects a run still streaming
- * from before a reload. Each completed turn is POSTed to the demo's message
+ * conversation (the store plus the channel walk since its serial) and owns
+ * the message list from then on; `resume: true` reconnects a run still
+ * streaming from before a reload. Each completed turn is POSTed to the demo's message
  * store, which is what the next page load seeds from.
  *
  * The demo keeps the full tool surface: a server tool (getWeather), a
- * client-executed tool that suspends and resumes the run (getLocation), and
+ * client-executed tool (getLocation), and
  * an approval-gated tool (getWeatherForecast).
  * @param props - The conversation id, this client's id, the adapter, and the hydrated state.
  */
 export function Chat({ chatId, clientId, chatTransport, initialMessages, initialHasOlder }: ChatProps) {
   const { transport } = useChatTransport();
+  const ablyMessages = useAblyMessages();
+
+  // The serial the store is complete up to, persisted with each turn so the
+  // next page load walks the channel back only that far. Read from a ref
+  // because onFinish runs outside the render that produced the log. The demo
+  // is linear — handleSend stops any in-flight run first — so at onFinish
+  // every channel message up to here belongs to a turn now being persisted.
+  const latestSerialRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    latestSerialRef.current = ablyMessages.at(-1)?.serial ?? latestSerialRef.current;
+  }, [ablyMessages]);
 
   // -- Callback & status logging for the debug pane -------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -149,9 +160,9 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
         },
       ]);
       // Persist the completed turn: the last user message and everything the
-      // run streamed after it. A suspended run (pending tool or approval) is
-      // never persisted — it is reconstructed from the history gap instead —
-      // and neither is an aborted or errored one.
+      // run streamed after it. A turn still waiting on this client (pending
+      // tool or approval) is not persisted, and neither is an aborted or
+      // errored one; the next load rebuilds those from the channel walk.
       if (isAbort || isError || !isTurnComplete(message)) return;
       const lastUser = allMessages.findLastIndex((m) => m.role === 'user');
       const turn = allMessages.slice(Math.max(lastUser, 0));
@@ -160,7 +171,7 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
       void fetch('/api/messages', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ conversationId: chatId, messages: turn }),
+        body: JSON.stringify({ conversationId: chatId, messages: turn, latestSerial: latestSerialRef.current }),
       }).catch(() => undefined);
     },
     onError: (chatError) => {
@@ -212,18 +223,24 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
     })().catch(() => setHasOlder(false));
   }, [transport, setMessages]);
 
-  const ablyMessages = useAblyMessages();
+  // Stop is two operations. `stop()` closes this client's stream; only
+  // `chatTransport.cancel()` puts `ai-cancel` on the channel, which is what
+  // aborts the agent and tells every other participant the run is over.
+  const cancelRun = useCallback(async () => {
+    await stop();
+    await chatTransport.cancel();
+  }, [stop, chatTransport]);
 
   const handleSend = useCallback(
     (text: string) => {
       // Linear history: a new turn cancels any still-streaming response first,
       // so the transcript only ever holds complete (or cancelled) runs.
       void (async () => {
-        if (isRunning) await stop();
+        if (isRunning) await cancelRun();
         await sendMessage({ text });
       })();
     },
-    [isRunning, stop, sendMessage],
+    [isRunning, cancelRun, sendMessage],
   );
 
   return (
@@ -235,7 +252,7 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
       messages={messages}
       isRunning={isRunning}
       onSend={handleSend}
-      onStop={() => void stop()}
+      onStop={() => void cancelRun()}
       onToolApprove={(toolPart) => {
         const id = toolPart.approval?.id;
         if (id) void addToolApprovalResponse({ id, approved: true });

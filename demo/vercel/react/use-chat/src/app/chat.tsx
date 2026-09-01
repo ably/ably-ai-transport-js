@@ -89,18 +89,11 @@ function ChatInner({
     });
   }, []);
 
-  // This demo does no history hydration — useChat's live stream is the only
-  // message source. The empty seed opens the adapter's live event indexing,
-  // which it holds back until seeded, so a tool continuation can address the
-  // streamed assistant's wire identity.
-  useEffect(() => {
-    chatTransport.seed([]);
-  }, [chatTransport]);
-
   // useChat owns all message state; the adapter turns its sends into channel
   // publishes plus the wake-the-agent POST, and its streams come off the
-  // channel. `resume: true` reconnects to a live run after a reload via the
-  // adapter's reconnectToStream.
+  // channel. This demo does no history hydration — the live stream is the only
+  // message source. `resume: true` reconnects to a live run after a reload via
+  // the adapter's reconnectToStream.
   const { messages, sendMessage, stop, status, addToolOutput, addToolApprovalResponse } = useChat({
     id: chatId,
     transport: chatTransport,
@@ -158,8 +151,16 @@ function ChatInner({
   }, [status]);
 
   // Show Stop while useChat is mid-request (submitted before the stream
-  // starts, streaming while chunks arrive). useChat.stop() cancels the run.
+  // starts, streaming while chunks arrive).
   const isRunning = status === 'submitted' || status === 'streaming';
+
+  // Stop is two operations. `stop()` closes this client's stream; only
+  // `chatTransport.cancel()` puts `ai-cancel` on the channel, which is what
+  // aborts the agent and tells every other participant the run is over.
+  const onStop = useCallback(() => {
+    void stop();
+    void chatTransport.cancel();
+  }, [stop, chatTransport]);
 
   const ablyMessages = useAblyMessages();
 
@@ -173,7 +174,7 @@ function ChatInner({
       messages={messages}
       isRunning={isRunning}
       onSend={(text) => sendMessage({ text })}
-      onStop={() => void stop()}
+      onStop={onStop}
       onToolApprove={(toolPart) => {
         const id = toolPart.approval?.id;
         if (id) addToolApprovalResponse({ id, approved: true });

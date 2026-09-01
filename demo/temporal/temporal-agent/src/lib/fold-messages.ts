@@ -119,7 +119,8 @@ export const foldMessages = async (events: readonly VercelTransportEvent[]): Pro
           bucket.approvals.push(input.payload);
           break;
         default:
-          // 'regenerate' carries no body; its structure rides the meta.
+          // 'regenerate' names the message the client asked to redo. The agent
+          // acts on it; it contributes nothing to the folded conversation.
           break;
       }
     }

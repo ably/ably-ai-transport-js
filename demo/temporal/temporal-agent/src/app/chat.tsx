@@ -58,8 +58,8 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
     // Reconnect to a run that is still streaming when this page loads.
     resume: true,
     // Auto-submit after addToolOutput resolves tool calls OR
-    // addToolApprovalResponse resolves approvals — the continuation POST that
-    // starts a fresh workflow to resume the suspended run.
+    // addToolApprovalResponse resolves approvals. The resolution carries no
+    // run id, so its continuation POST starts a fresh workflow on a new run.
     sendAutomaticallyWhen: ({ messages: msgs }) =>
       lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
       lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
@@ -130,6 +130,15 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
   // streaming while chunks arrive).
   const isRunning = chat.status === 'submitted' || chat.status === 'streaming';
 
+  // Stop is two operations. `stop()` closes this client's stream; only
+  // `chatTransport.cancel()` puts `ai-cancel` on the channel, which is what
+  // aborts the running activity and tells every other participant the run is
+  // over.
+  const cancelRun = useCallback(async () => {
+    await chat.stop();
+    await chatTransport?.cancel();
+  }, [chat, chatTransport]);
+
   const ablyMessages = useAblyMessages();
 
   if (error) {
@@ -153,9 +162,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
       onSend={(text) => {
         void chat.sendMessage({ text });
       }}
-      onStop={() => {
-        void chat.stop();
-      }}
+      onStop={() => void cancelRun()}
       onToolApprove={(toolPart) => {
         const id = toolPart.approval?.id;
         if (id) void chat.addToolApprovalResponse({ id, approved: true });

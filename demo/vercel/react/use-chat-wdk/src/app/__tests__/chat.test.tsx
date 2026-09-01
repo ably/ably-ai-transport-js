@@ -15,19 +15,21 @@ Element.prototype.scrollIntoView = () => {};
 // renders without an Ably client or transport. Stubs live in vi.hoisted so the
 // (hoisted) vi.mock factories can reference them and `Chat` can import at the
 // top. A breaking change to the SDK's public hook surface is caught at render.
-const { mockSendMessages, mockSeed, mockChatTransport } = vi.hoisted(() => {
+const { mockSendMessages, mockCancel, mockChatTransport } = vi.hoisted(() => {
   const send = vi.fn<ChatTransport['sendMessages']>();
-  const seed = vi.fn<ChatTransport['seed']>();
+  const cancel = vi.fn<ChatTransport['cancel']>(async () => {});
   const chatTransport: ChatTransport = {
     sendMessages: send,
     // null is the AI SDK's "nothing to resume".
     reconnectToStream: async () => null,
-    seed,
+    readSince: async () => ({ messages: [], exhausted: true }),
+    cancel,
     close: () => {},
     streaming: false,
     onStreamingChange: () => () => {},
+    onForeignRun: () => () => {},
   };
-  return { mockSendMessages: send, mockSeed: seed, mockChatTransport: chatTransport };
+  return { mockSendMessages: send, mockCancel: cancel, mockChatTransport: chatTransport };
 });
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
@@ -52,7 +54,7 @@ const emptyChunkStream = (): ReadableStream<AI.UIMessageChunk> =>
 describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessages.mockReset();
-    mockSeed.mockClear();
+    mockCancel.mockClear();
     // Reset the fault cookie between tests (jsdom keeps document.cookie).
     document.cookie = `${FAULT_COOKIE}=; path=/; max-age=0`;
     // The WDK panel polls /api/wdk/runs; keep it inert.
@@ -65,14 +67,10 @@ describe('<Chat>', () => {
     };
   });
 
-  it('seeds the adapter empty on mount and sends the input via the chat transport', async () => {
+  it('sends the input via the chat transport', async () => {
     mockSendMessages.mockResolvedValue(emptyChunkStream());
 
     render(<Chat chatId="ai:test" />);
-
-    // No hydration in this demo: the adapter is seeded with an empty batch so
-    // its live indexing starts.
-    expect(mockSeed).toHaveBeenCalledWith([]);
 
     const input = screen.getByPlaceholderText('Type a message...');
     const form = input.closest('form');
@@ -87,6 +85,27 @@ describe('<Chat>', () => {
 
     // useChat appends the user message optimistically; the shared Chat renders it.
     expect(screen.queryByText('hello')).not.toBeNull();
+  });
+
+  it('cancels the run on the channel when Stop is pressed', async () => {
+    // A stream that never closes keeps useChat streaming, so Stop stays up.
+    mockSendMessages.mockResolvedValue(new ReadableStream({ start: () => {} }));
+
+    render(<Chat chatId="ai:test" />);
+    const input = screen.getByPlaceholderText('Type a message...');
+    const form = input.closest('form');
+    if (!form) throw new Error('input is not nested in a <form>');
+    fireEvent.change(input, { target: { value: 'hello' } });
+    fireEvent.submit(form);
+
+    const stop = await screen.findByLabelText('Stop');
+    fireEvent.click(stop);
+
+    // useChat.stop() only closes this client's stream. The channel cancel is
+    // what aborts the workflow, so the demo must issue both.
+    await waitFor(() => {
+      expect(mockCancel).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('arms a fault onto the one-shot cookie when a fault control is clicked', () => {

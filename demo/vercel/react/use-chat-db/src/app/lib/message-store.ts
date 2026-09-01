@@ -7,13 +7,28 @@ import type { UIMessage } from 'ai';
  * enough for the demo's dev server — and is lost on restart. A real app swaps
  * this for a durable store.
  *
- * It holds only **domain `UIMessage`s** (never the transport's internal
- * `codecMessageId`): the domain `message.id` is the only id shared between the
- * store and the channel, which is what lets hydration page the history gap
- * back to the newest stored message and merge without duplication (see
- * `lib/hydrate.ts`).
+ * Each conversation holds two things:
+ *
+ * - the **domain `UIMessage`s** (never the transport's internal
+ *   `codecMessageId`), which is what a client seeds `useChat` from;
+ * - the **channel serial** the stored messages are complete up to. Hydration
+ *   hands that serial to `ChatTransport.readSince`, which walks the channel
+ *   back only as far as it and returns the messages published since. Without
+ *   it every page load would re-page the whole channel.
  */
-const store = new Map<string, UIMessage[]>();
+const store = new Map<string, StoredConversation>();
+
+/** One conversation as the store holds it. */
+export interface StoredConversation {
+  /** The persisted messages, oldest-first. */
+  messages: UIMessage[];
+  /**
+   * The channel serial these messages are complete up to, or `undefined` when
+   * nothing has been persisted yet. Every channel message at or before it is
+   * accounted for in `messages`.
+   */
+  latestSerial?: string;
+}
 
 /**
  * Append a completed turn, **idempotent by domain `message.id`**.
@@ -26,21 +41,35 @@ const store = new Map<string, UIMessage[]>();
  * would.
  * @param conversationId - The conversation key (the channel name).
  * @param messages - The completed turn's messages, oldest-first.
+ * @param latestSerial - The channel serial the turn is complete up to. Only ever moves forward; an older serial is ignored.
  * @returns A promise that resolves once the turn is persisted.
  */
-export async function appendMessages(conversationId: string, messages: UIMessage[]): Promise<void> {
-  const byId = new Map((store.get(conversationId) ?? []).map((message) => [message.id, message]));
+export async function appendMessages(
+  conversationId: string,
+  messages: UIMessage[],
+  latestSerial?: string,
+): Promise<void> {
+  const current = store.get(conversationId);
+  const byId = new Map((current?.messages ?? []).map((message) => [message.id, message]));
   for (const message of messages) byId.set(message.id, message);
-  store.set(conversationId, [...byId.values()]);
+  // Turns can land out of order (a retried persist, a slow write); the stored
+  // serial is a watermark, so it only ever advances.
+  const advanced =
+    latestSerial !== undefined && (current?.latestSerial === undefined || latestSerial > current.latestSerial);
+  const nextSerial = advanced ? latestSerial : current?.latestSerial;
+  store.set(conversationId, {
+    messages: [...byId.values()],
+    ...(nextSerial === undefined ? {} : { latestSerial: nextSerial }),
+  });
 }
 
 /**
- * Load the persisted conversation for a key, oldest-first, or `[]` when none is
- * stored. This is the seed a client hydrates from before paging the
- * channel-history gap.
+ * Load the persisted conversation for a key, or an empty one when none is
+ * stored. This is the seed a client hydrates from before walking the channel
+ * forward from `latestSerial`.
  * @param conversationId - The conversation key (the channel name).
- * @returns The persisted messages, oldest-first.
+ * @returns The stored messages (oldest-first) and the serial they are complete up to.
  */
-export function loadMessages(conversationId: string): UIMessage[] {
-  return store.get(conversationId) ?? [];
+export function loadConversation(conversationId: string): StoredConversation {
+  return store.get(conversationId) ?? { messages: [] };
 }

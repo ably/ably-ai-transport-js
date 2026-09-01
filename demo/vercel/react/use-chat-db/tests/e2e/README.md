@@ -4,12 +4,11 @@ Playwright tests that drive the persistence demo in a browser and assert the
 user-visible behaviour over a real Ably channel: `useChat` runs over the SDK's
 chat transport, the client persists each completed turn to the store from
 `onFinish`, and on reload hydration seeds `useChat` from the store plus the
-channel-history gap, showing the conversation exactly once. The suite covers a
-plain text turn, reload hydration, a client-executed tool that suspends and
-resumes the run (getLocation), an approval-gated tool (getWeatherForecast)
-whose tool-call message stays shown as approved after hydration, and an
-approval continuation issued after a reload — where the suspended run lives
-only in the history gap.
+channel walk since its serial, showing the conversation exactly once. The
+suite covers a plain text turn, reload hydration, a client-executed tool
+(getLocation), an approval-gated tool (getWeatherForecast) whose tool-call
+message stays shown as approved after hydration, and an approval continuation
+issued after a reload — where the unanswered turn is only on the channel.
 
 The suite needs no secrets:
 
@@ -18,7 +17,7 @@ The suite needs no secrets:
   `nonprod:sandbox` endpoint, and the app gets an `ai` channel namespace with
   `mutableMessages` and persistence enabled.
 - **LLM**: a deterministic mock model replaces the provider. Only token
-  generation is mocked; `streamText`, tool execution, suspend/continuation,
+  generation is mocked; `streamText`, tool execution, continuations,
   the UI-message stream, the Ably publish, and the store write all run
   normally.
 
@@ -48,14 +47,14 @@ Unset (normal `pnpm dev`), the demo uses production Ably and a real LLM provider
 `src/app/api/chat/mock-model.ts` is a Vercel AI SDK `LanguageModel` whose output
 is scripted from the prompt, wired in by `createModel()` behind `MOCK_LLM`:
 
-| Prompt                              | Reply                                                   |
-| ----------------------------------- | ------------------------------------------------------- |
-| `Say "X"` / `... the word X`        | `X`                                                     |
-| `... marker X`                      | `Acknowledged marker X.`                                |
-| `what's the weather like?`          | `getLocation` (client tool, suspends), then a sentence  |
-| `... weather forecast for <place>?` | `getWeatherForecast` (approval, suspends), then a reply |
-| `... a long story about a dragon`   | a long, slowly streamed, abort-aware reply              |
-| anything else                       | `Done.`                                                 |
+| Prompt                              | Reply                                               |
+| ----------------------------------- | --------------------------------------------------- |
+| `Say "X"` / `... the word X`        | `X`                                                 |
+| `... marker X`                      | `Acknowledged marker X.`                            |
+| `what's the weather like?`          | `getLocation` (client tool), then a sentence        |
+| `... weather forecast for <place>?` | `getWeatherForecast` (approval-gated), then a reply |
+| `... a long story about a dragon`   | a long, slowly streamed, abort-aware reply          |
+| anything else                       | `Done.`                                             |
 
 ## CI
 

@@ -120,7 +120,7 @@ const toWireContent = (content: readonly WireDoneContentPart[] | undefined): Wir
  * drops that content and keeps only the fields the client cannot rebuild from
  * the deltas (`id`/`status`, a reasoning item's `encrypted_content`, and a
  * message's per-part `logprobs`). This keeps the streamed content from going on
- * the wire twice; a consumer's merge merges the deltas back into the finalised
+ * the wire twice; a consumer's merge applies the deltas back into the finalised
  * item.
  * Takes {@link DoneItem} — the real, rich `Responses.ResponseOutputItem`
  * OpenAI actually sends for an unsupported type, or the already-modelled
@@ -392,7 +392,7 @@ export const outputs = ({
   // and a reasoning item's done-only `encrypted_content`.
   //
   // Logprobs are sourced from the finalised item here because this is the one
-  // place they merge in type-safely. The finalised item's content is typed
+  // place they can be merged in type-safely. The finalised item's content is typed
   // `ResponseOutputText`, whose `logprobs` is the rich SDK shape (with `bytes`)
   // a merged message's content slot wants, so the merge is a plain, cast-free
   // assignment. The

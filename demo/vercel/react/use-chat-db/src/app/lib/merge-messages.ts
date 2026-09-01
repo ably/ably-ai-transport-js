@@ -118,7 +118,7 @@ const mergeChunks = async (transportMessageId: string, chunks: UIMessageChunk[])
   let last = seed;
   // A partial bucket (a history walk that stopped mid-stream) can present the
   // reducer chunks without their openers; swallow those per-chunk errors and
-  // keep what merged — the hydration merge drops partial remerges of stored
+  // keep what merged — the hydration merge drops partially-merged copies of stored
   // messages anyway.
   for await (const message of readUIMessageStream({ message: seed, stream, onError: () => undefined })) {
     last = message;

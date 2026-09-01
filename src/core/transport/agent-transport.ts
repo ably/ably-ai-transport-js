@@ -363,7 +363,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // The run's cancel controller: an accepted cancel aborts it, ending
     // in-flight pipes `'cancelled'` and firing the handle's `abortSignal`.
     const controller = new AbortController();
-    // The handle's abort signal merges in the caller's external signal, so
+    // The handle's abort signal combines the caller's external signal, so
     // either an accepted cancel or the caller's own abort ends the run's pipes.
     const signal = hooks?.signal ? AbortSignal.any([controller.signal, hooks.signal]) : controller.signal;
     // The handle's publish gate: 'open' accepts output, 'suspended' blocks it
@@ -784,7 +784,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     if (this._closed) return;
     // A failed decode drops the message (the receiver emitted `error`); its
     // raw `ably-message` is not emitted, and cancel dispatch does not run for
-    // a message the merge never applied.
+    // a message the merge never took.
     const delivery = this._receiver.deliverEvent(message);
     if (delivery.outcome === 'failed') return;
     if (delivery.outcome === 'classified') this._observeRunSteer(delivery.event);

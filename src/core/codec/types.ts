@@ -160,8 +160,9 @@ export interface EncoderOptions {
   /**
    * Fallback domain message id surfaced to output escape hatches as
    * `ctx.messageId` (e.g. the Vercel `start` hatch injects it when a chunk
-   * carries no `messageId` of its own). Unrelated to the wire
-   * transport-message-id transport header, which `WriteOptions.messageId` stamps.
+   * carries no `messageId` of its own). Unrelated to the
+   * `transport-message-id` wire header, which the transport tier owns and
+   * `WriteOptions.messageId` stamps.
    */
   messageId?: string;
 }

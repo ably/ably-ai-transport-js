@@ -23,7 +23,7 @@ import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-clien
 const codec = createUIMessageCodec();
 
 /**
- * Stamp run and transport-message-id transport headers on every outgoing message,
+ * Stamp the run-id and transport-message-id headers on every outgoing message,
  * as the transport layer would.
  * @param runId - The run ID to stamp.
  * @param messageId - The transport-message-id to stamp.

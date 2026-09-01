@@ -223,7 +223,7 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
   // channel normally duplicates the store seed, so loading it prepends nothing
   // — the affordance surfaces the paging path, and would recover any message
   // the store lost. Batches accumulate so a stream spanning batch boundaries
-  // remerges whole once its opener is paged in.
+  // merges again whole once its opener is paged in.
   const [hasOlder, setHasOlder] = useState(initialHasOlder);
   const olderEventsRef = useRef<ChatTransportEvent[]>([]);
   // One page at a time: the transport's history cursor is shared, so two
@@ -241,8 +241,8 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
         // Remerging the accumulated batches can improve a message already
         // prepended (its opener may only now have been paged in), so the
         // newer merge replaces by id rather than being filtered out.
-        const remerged = new Map(merged.map((entry) => [entry.message.id, entry.message]));
-        const kept = current.map((message) => remerged.get(message.id) ?? message);
+        const rebuilt = new Map(merged.map((entry) => [entry.message.id, entry.message]));
+        const kept = current.map((message) => rebuilt.get(message.id) ?? message);
         const currentIds = new Set(current.map((message) => message.id));
         const fresh = merged.map((entry) => entry.message).filter((message) => !currentIds.has(message.id));
         return fresh.length === 0 ? kept : [...fresh, ...kept];

@@ -107,7 +107,7 @@ export interface ReceiveTransport<TInput, TOutput> extends TransportReceiver<TIn
   /**
    * Classify one inbound wire message and emit its typed `event`. A decode
    * failure emits `error`, drops the message, and reports `failed` so the
-   * owner can skip follow-on processing of a message the merge never applied.
+   * owner can skip follow-on processing of a message the merge never took.
    * Does NOT emit `ably-message` — the owner calls {@link deliverAblyMessage}
    * so batch (history) and live paths control the raw emit independently.
    * @param rawMsg - The inbound Ably wire message.

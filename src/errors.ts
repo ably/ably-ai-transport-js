@@ -120,8 +120,9 @@ export enum ErrorCode {
 
   /**
    * The run's `onSteer` hook threw while the SDK was notifying it that a
-   * steering message merged into the run. The steering message has already
-   * merged in by then, so the run is unaffected — only the notification failed.
+   * steering message was delivered into the run. The steering message has
+   * already arrived by then, so the run is unaffected — only the notification
+   * failed.
    */
   RunSteerHandlerFailed = 104012,
 

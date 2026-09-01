@@ -29,7 +29,7 @@ export interface HistoryPagerOptions<TInput, TOutput> {
   channel: Ably.RealtimeChannel;
   /** Wire-message limit per Ably page. */
   pageSize: number;
-  /** The decoder to classify wires on — the transport's live decoder, so a stream spanning the attach boundary merges once. */
+  /** The decoder to classify wires on — the transport's live decoder, so a stream spanning the attach boundary is merged once. */
   decoder: Decoder<TInput, TOutput>;
   /** Logger for diagnostics. */
   logger?: Logger;

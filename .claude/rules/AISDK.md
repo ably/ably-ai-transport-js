@@ -18,7 +18,7 @@ type that is neither described nor an explicit `drop` throws at encode
 (`src/core/codec/output-descriptor-encoder.ts`), so a variant a future major
 adds fails loudly at runtime rather than being dropped silently.
 
-**The merge is the SDK's, not ours.** Hydration replays chunks through the
+**The reducer is the SDK's, not ours.** Hydration replays chunks through the
 provider's own reducer (`readUIMessageStream`) rather than reimplementing it;
 the adapter only does the demultiplexing a reducer cannot do for itself. That
 makes `ai` a runtime dependency of `src/`, not a types-only peer, so any value

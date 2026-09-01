@@ -246,7 +246,7 @@ export const createRunStepWriter = <TInput, TOutput>(
   // latched: start()'s mid-publish window, and a run.pipe's whole duration (its
   // implicit step opens lazily at first output, so there is no single publish to
   // bracket). Lets the guard reject a concurrent start()/pipe before the latch is
-  // set, and is merged into hasActiveStep() so run.suspend rejects across that
+  // set, and is included in hasActiveStep() so run.suspend rejects across that
   // window too.
   let opening = false;
 
@@ -509,7 +509,7 @@ export const createRunStepWriter = <TInput, TOutput>(
     // Drain the steers this pass answers and stamp them on THIS pipe's outputs.
     // Done per-pipe (not once at step open) so a step carrying more than one
     // pipe — the agent loops another inference pass into the same step for a
-    // steering message that merged in mid-stream — stamps each steering message
+    // steering message that arrived mid-stream — stamps each steering message
     // on the pipe that answers it. hasInput() moves a pending steering message
     // into the "recently processed" set this consume reads.
     step.steerIdsRef.value = ctx.consumeSteerStampIds?.() ?? [];

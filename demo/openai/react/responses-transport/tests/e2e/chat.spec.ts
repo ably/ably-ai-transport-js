@@ -280,7 +280,7 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     expect(await bubbleText(assistantBubbles(page).last())).toContain('remembered');
 
     // Reload: nothing is held in app state, so the client must page channel
-    // history and remerge the thread. Scope to the assistant bubble — the
+    // history and merge the thread again. Scope to the assistant bubble — the
     // prompt echoes the same word, so a plain text match is ambiguous.
     await page.goto(channelUrl(channel));
     await expect(assistantBubbles(page).filter({ hasText: 'remembered' })).toBeVisible({ timeout: 30_000 });

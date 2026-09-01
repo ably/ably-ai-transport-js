@@ -5,7 +5,7 @@
  * {@link TransportEvent}, returning one chronological batch per call.
  *
  * Each transport owns its cursor and decoder (both share their live stream's
- * decoder, so a stream spanning the attach boundary merges once) and the
+ * decoder, so a stream spanning the attach boundary is merged once) and the
  * single-flight serialisation of concurrent calls — this module owns only the
  * walk itself.
  */

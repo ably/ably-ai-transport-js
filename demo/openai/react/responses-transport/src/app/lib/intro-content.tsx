@@ -77,7 +77,7 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
     title: 'History on refresh',
     action: <>Reload the page — the conversation rebuilds from the channel.</>,
     blurb:
-      'Nothing is held in app state: the client pages channel history and remerges the thread — even mid-stream, where hydrated history and the live continuation merge to one message.',
+      'Nothing is held in app state: the client pages channel history and rebuilds the thread from it — even mid-stream, where hydrated history and the live continuation merge to one message.',
   },
   {
     tag: 'Observability',

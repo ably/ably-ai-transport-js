@@ -627,7 +627,7 @@ export interface OpenRunHooks<TOutput> {
    * - A throw from the `onCancel` handler (code `RunCancelHandlerFailed`). The run
    *   is NOT cancelled: the SDK never reaches the abort.
    * - A throw from the `onSteer` handler (code `RunSteerHandlerFailed`). The run is
-   *   unaffected — the steering message has already merged in, so only the
+   *   unaffected — the steering message has already arrived, so only the
    *   notification failed.
    * - A failed opening publish (`openRun` returns without awaiting it). The
    *   failure also rejects every later output verb through the shared open

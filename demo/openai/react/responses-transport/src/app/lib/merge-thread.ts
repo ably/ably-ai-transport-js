@@ -30,7 +30,7 @@
  *    REDUCED item — status plus the residue the deltas cannot rebuild
  *    (per-part `logprobs`, a reasoning item's `encrypted_content`) — while the
  *    accumulator's `done` case REPLACES the accumulated item wholesale, which
- *    would erase the streamed content. The merge merges those fields onto the
+ *    would erase the streamed content. The merge applies those fields onto the
  *    accumulated item instead of handing the event to the accumulator.
  *
  * The codec's two non-OpenAI output events (`function_call_output`,
@@ -176,21 +176,23 @@ const appendFunctionCallOutput = (merge: MessageMerge, item: Responses.ResponseI
 };
 
 /**
- * Merge a `message`-kind input body into the merge. The body arrives whole on
- * one wire event; message items merge into one item per merge with identical
- * parts deduplicated, so a redelivery of the same body adds nothing. Any
- * other item type appends with a whole-item dedupe.
+ * Merge a `message`-kind input body into one message's bucket. The body
+ * arrives whole on one wire event; message items merge into a single item per
+ * bucket with identical parts deduplicated, so a redelivery of the same body
+ * adds nothing. Any other item type appends with a whole-item dedupe.
+ * @param bucket - The per-message accumulator to merge into.
+ * @param payload - The message body the wire carried.
  */
-const mergeTurn = (merge: MessageMerge, payload: OpenAIMessage): void => {
+const mergeTurn = (bucket: MessageMerge, payload: OpenAIMessage): void => {
   for (const item of payload.items) {
     if (!isInputMessageItem(item)) {
-      if (!merge.appended.some((it) => sameJson(it, item))) merge.appended.push(item);
+      if (!bucket.appended.some((it) => sameJson(it, item))) bucket.appended.push(item);
       continue;
     }
-    const existing = merge.appended.find(isInputMessageItem);
+    const existing = bucket.appended.find(isInputMessageItem);
     if (!existing) {
       // Clone so later part merges never mutate the caller's payload.
-      merge.appended.push({ ...item, content: [...item.content] });
+      bucket.appended.push({ ...item, content: [...item.content] });
       continue;
     }
     for (const part of item.content) {
@@ -341,7 +343,7 @@ const roleOf = (meta: WireMeta, inputs: OpenAIInput[], outputs: OpenAIOutput[]):
 };
 
 /**
- * Create a {@link ThreadMerge}. One merge instance merges one channel's events;
+ * Create a {@link ThreadMerge}. One merge instance takes one channel's events;
  * create a fresh one to re-hydrate from scratch.
  */
 export const createThreadMerge = (): ThreadMerge => {

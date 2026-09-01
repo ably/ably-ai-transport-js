@@ -108,7 +108,7 @@ describe('mergeMessages', () => {
         },
       ),
       // The tool activity publishes the result as its own wire message (its
-      // own transport-message-id); the merge merges it onto the calling message.
+      // own transport-message-id); the merge applies it onto the calling message.
       messageEvent(
         { transportMessageId: 'tool-out', stepId: 's2', stepStartSerial: '002' },
         { outputs: [{ type: 'tool-output-available', toolCallId: 'call-1', output: { temperature: 72 } }] },

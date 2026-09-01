@@ -42,7 +42,7 @@ describe('resolvedCallIds', () => {
     expect([...resolved].toSorted()).toEqual(['c1', 'c2']);
   });
 
-  it('returns an empty set when no output has merged', () => {
+  it('returns an empty set when no output has been received', () => {
     const messages: OpenAIMessage[] = [{ role: 'assistant', items: [gatedCall('c1')] }];
     expect(resolvedCallIds(messages).size).toBe(0);
   });

@@ -288,7 +288,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       runId: typeof runId === 'string' ? runId : '(pending promise)',
     });
     // .then(): steer() returns its promise pair synchronously, so the open
-    // guard merges into the runId promise the coordinator awaits instead of
+    // guard chains onto the runId promise the coordinator awaits instead of
     // being awaited here. A promise-valued runId (e.g. a publishInput
     // result's) flattens through the .then, so the coordinator always awaits
     // one Promise<string>.

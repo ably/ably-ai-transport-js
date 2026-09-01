@@ -25,10 +25,15 @@ import { ResponsesCodec } from '../src/openai/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
 
-/** State-merging surface a wire codec must not carry. */
+/**
+ * State-merging surface a wire codec must not carry. A denylist, so both the
+ * current name and the one the removed reducer API used are listed — widening
+ * it costs nothing and keeps the historical name guarded.
+ */
 const REDUCER_SURFACE = [
   'init',
   'merge',
+  'fold',
   'getMessages',
   'createUserMessage',
   'createRegenerate',
@@ -38,7 +43,7 @@ const REDUCER_SURFACE = [
 ];
 
 describe('@ably/ai-transport/vercel', () => {
-  it('publishes a wire codec that encodes and decodes and merges no state', () => {
+  it('publishes a wire codec that encodes and decodes and holds no state', () => {
     const codec = createUIMessageCodec();
 
     expect(codec).toHaveProperty('createEncoder', expect.any(Function));
@@ -58,7 +63,7 @@ describe('@ably/ai-transport/vercel', () => {
 });
 
 describe('@ably/ai-transport/openai', () => {
-  it('publishes a wire codec that encodes and decodes and merges no state', () => {
+  it('publishes a wire codec that encodes and decodes and holds no state', () => {
     expect(ResponsesCodec).toHaveProperty('createEncoder', expect.any(Function));
     expect(ResponsesCodec).toHaveProperty('createDecoder', expect.any(Function));
     for (const method of REDUCER_SURFACE) {

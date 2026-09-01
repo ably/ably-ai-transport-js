@@ -15,7 +15,7 @@ describe('mergeMessages', () => {
     const events = [
       userEvent('wire-u1', 'u1'),
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           outputs: [
             { type: 'start', messageId: 'a1' },
@@ -31,18 +31,18 @@ describe('mergeMessages', () => {
 
     const messages = await mergeMessages(events);
 
-    expect(messages.map((entry) => ({ codecMessageId: entry.codecMessageId, id: entry.message.id }))).toEqual([
-      { codecMessageId: 'wire-u1', id: 'u1' },
-      { codecMessageId: 'wire-a1', id: 'a1' },
+    expect(messages.map((entry) => ({ transportMessageId: entry.transportMessageId, id: entry.message.id }))).toEqual([
+      { transportMessageId: 'wire-u1', id: 'u1' },
+      { transportMessageId: 'wire-a1', id: 'a1' },
     ]);
     expect(messages[1].message.role).toBe('assistant');
     expect(messages[1].message.parts).toContainEqual(expect.objectContaining({ type: 'text', text: 'hello there' }));
   });
 
-  it('routes chunks to their message by the wire codec-message-id', async () => {
+  it('routes chunks to their message by the wire transport-message-id', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           outputs: [
             { type: 'start', messageId: 'a1' },
@@ -52,7 +52,7 @@ describe('mergeMessages', () => {
         },
       ),
       messageEvent(
-        { codecMessageId: 'wire-a2', runId: 'run-2' },
+        { transportMessageId: 'wire-a2', runId: 'run-2' },
         {
           outputs: [
             { type: 'start', messageId: 'a2' },
@@ -61,7 +61,7 @@ describe('mergeMessages', () => {
           ],
         },
       ),
-      messageEvent({ codecMessageId: 'wire-a1', runId: 'run-1' }, { outputs: [{ type: 'text-end', id: 't1' }] }),
+      messageEvent({ transportMessageId: 'wire-a1', runId: 'run-1' }, { outputs: [{ type: 'text-end', id: 't1' }] }),
     ];
 
     const messages = await mergeMessages(events);
@@ -71,10 +71,10 @@ describe('mergeMessages', () => {
     expect(messages[1].message.parts).toContainEqual(expect.objectContaining({ type: 'text', text: 'second' }));
   });
 
-  it('falls back to the codec-message-id as the domain id when no start names one', async () => {
+  it('falls back to the transport-message-id as the domain id when no start names one', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           outputs: [
             { type: 'start' },
@@ -91,20 +91,20 @@ describe('mergeMessages', () => {
     expect(messages[0].message.id).toBe('wire-a1');
   });
 
-  it('merges wire-fanned message parts by codec-message-id and dedupes a repeated part', async () => {
+  it('merges wire-fanned message parts by transport-message-id and dedupes a repeated part', async () => {
     const events = [
       // The wire fans one part out per event; a redelivered event repeats the
       // first part verbatim.
       messageEvent(
-        { codecMessageId: 'wire-u1' },
+        { transportMessageId: 'wire-u1' },
         { inputs: [{ kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'one' }] } }] },
       ),
       messageEvent(
-        { codecMessageId: 'wire-u1' },
+        { transportMessageId: 'wire-u1' },
         { inputs: [{ kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'one' }] } }] },
       ),
       messageEvent(
-        { codecMessageId: 'wire-u1' },
+        { transportMessageId: 'wire-u1' },
         { inputs: [{ kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'two' }] } }] },
       ),
     ];
@@ -122,7 +122,7 @@ describe('mergeMessages', () => {
   it('applies a chunk-kind input (a client tool resolution) to the assistant it addresses', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           outputs: [
             { type: 'start', messageId: 'a1' },
@@ -133,7 +133,7 @@ describe('mergeMessages', () => {
       ),
       // The client publishes the resolution addressed to the assistant's wire id.
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           inputs: [
             { kind: 'chunk', payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { lat: 51.5 } } },
@@ -150,10 +150,10 @@ describe('mergeMessages', () => {
     expect(part.output).toEqual({ lat: 51.5 });
   });
 
-  it('routes a tool-output chunk streamed under a fresh codec-message-id to the calling message', async () => {
+  it('routes a tool-output chunk streamed under a fresh transport-message-id to the calling message', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           outputs: [
             { type: 'start', messageId: 'a1' },
@@ -169,7 +169,7 @@ describe('mergeMessages', () => {
       ),
       // The resumed run streams the execution's output under a new wire id.
       messageEvent(
-        { codecMessageId: 'wire-a2', runId: 'run-1' },
+        { transportMessageId: 'wire-a2', runId: 'run-1' },
         {
           outputs: [
             { type: 'start', messageId: 'a2' },
@@ -195,7 +195,7 @@ describe('mergeMessages', () => {
 
   it('flips an approval-requested tool part to approval-responded on an approval input', async () => {
     const stream = messageEvent(
-      { codecMessageId: 'wire-a1', runId: 'run-1' },
+      { transportMessageId: 'wire-a1', runId: 'run-1' },
       {
         outputs: [
           { type: 'start', messageId: 'a1' },
@@ -214,7 +214,7 @@ describe('mergeMessages', () => {
     const approved = await mergeMessages([
       stream,
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         { inputs: [{ kind: 'approval', payload: { messageId: 'cm-a', toolCallId: 'call-1', approved: true } }] },
       ),
     ]);
@@ -225,7 +225,7 @@ describe('mergeMessages', () => {
     const denied = await mergeMessages([
       stream,
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           inputs: [
             {
@@ -246,7 +246,7 @@ describe('mergeMessages', () => {
   it('leaves a resolved tool part alone when an approval input arrives after the output', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           outputs: [
             { type: 'start', messageId: 'a1' },
@@ -262,11 +262,11 @@ describe('mergeMessages', () => {
         },
       ),
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         { inputs: [{ kind: 'approval', payload: { messageId: 'cm-a', toolCallId: 'call-1', approved: true } }] },
       ),
       messageEvent(
-        { codecMessageId: 'wire-a2', runId: 'run-1' },
+        { transportMessageId: 'wire-a2', runId: 'run-1' },
         {
           outputs: [
             { type: 'start', messageId: 'a2' },
@@ -281,7 +281,7 @@ describe('mergeMessages', () => {
     expect(toolPart(messages[0].message).state).toBe('output-available');
   });
 
-  it('ignores lifecycle events and message events with no codec-message-id', async () => {
+  it('ignores lifecycle events and message events with no transport-message-id', async () => {
     const messages = await mergeMessages([
       runEndEvent('run-1'),
       messageEvent({}, { inputs: [{ kind: 'message', payload: userMessage('u1', 'orphan') }] }),

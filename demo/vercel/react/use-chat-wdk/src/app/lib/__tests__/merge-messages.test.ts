@@ -16,7 +16,7 @@ function meta(overrides: Partial<WireMeta> = {}): WireMeta {
     codec: {},
     headers: {},
     serial,
-    codecMessageId: undefined,
+    transportMessageId: undefined,
     runId: undefined,
     stepId: undefined,
     stepStartSerial: undefined,
@@ -29,9 +29,9 @@ function meta(overrides: Partial<WireMeta> = {}): WireMeta {
     parent: undefined,
     forkOf: undefined,
     regenerates: undefined,
-    inputCodecMessageId: undefined,
-    inputCodecMessageIds: undefined,
-    steerCodecMessageIds: undefined,
+    inputTransportMessageId: undefined,
+    inputTransportMessageIds: undefined,
+    steerTransportMessageIds: undefined,
     ...overrides,
   };
 }
@@ -64,9 +64,9 @@ function textOf(message: UIMessage): string {
 describe('mergeMessages', () => {
   it('merges a user input and an assistant output stream into two messages, in order', async () => {
     const events = [
-      messageEvent({ codecMessageId: 'u1', role: 'user' }, { inputs: [userInput('m-u1', 'hello')] }),
+      messageEvent({ transportMessageId: 'u1', role: 'user' }, { inputs: [userInput('m-u1', 'hello')] }),
       messageEvent(
-        { codecMessageId: 'a1', role: 'assistant', stepId: 's1', stepStartSerial: '001' },
+        { transportMessageId: 'a1', role: 'assistant', stepId: 's1', stepStartSerial: '001' },
         { outputs: textChunks('m-a1', 'hi there') },
       ),
     ];
@@ -79,10 +79,10 @@ describe('mergeMessages', () => {
     expect(textOf(messages[1])).toBe('hi there');
   });
 
-  it('dedupes a redelivered whole-message input (last payload wins per codec-message-id)', async () => {
+  it('dedupes a redelivered whole-message input (last payload wins per transport-message-id)', async () => {
     const events = [
-      messageEvent({ codecMessageId: 'u1' }, { inputs: [userInput('m-u1', 'hello')] }),
-      messageEvent({ codecMessageId: 'u1' }, { inputs: [userInput('m-u1', 'hello')] }),
+      messageEvent({ transportMessageId: 'u1' }, { inputs: [userInput('m-u1', 'hello')] }),
+      messageEvent({ transportMessageId: 'u1' }, { inputs: [userInput('m-u1', 'hello')] }),
     ];
 
     const messages = await mergeMessages(events);
@@ -93,7 +93,7 @@ describe('mergeMessages', () => {
   it('routes a tool output to the assistant bucket that owns the toolCallId, wherever it was published', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
+        { transportMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
         {
           outputs: [
             { type: 'start', messageId: 'm-a1' },
@@ -108,9 +108,9 @@ describe('mergeMessages', () => {
         },
       ),
       // The tool activity publishes the result as its own wire message (its
-      // own codec-message-id); the merge merges it onto the calling message.
+      // own transport-message-id); the merge merges it onto the calling message.
       messageEvent(
-        { codecMessageId: 'tool-out', stepId: 's2', stepStartSerial: '002' },
+        { transportMessageId: 'tool-out', stepId: 's2', stepStartSerial: '002' },
         { outputs: [{ type: 'tool-output-available', toolCallId: 'call-1', output: { temperature: 72 } }] },
       ),
     ];
@@ -126,7 +126,7 @@ describe('mergeMessages', () => {
   it('merges a client chunk input addressed to the assistant message', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
+        { transportMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
         {
           outputs: [
             { type: 'start', messageId: 'm-a1' },
@@ -136,7 +136,7 @@ describe('mergeMessages', () => {
         },
       ),
       messageEvent(
-        { codecMessageId: 'a1' },
+        { transportMessageId: 'a1' },
         {
           inputs: [
             {
@@ -158,7 +158,7 @@ describe('mergeMessages', () => {
   it('applies an approval decision against the matching approval request', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
+        { transportMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
         {
           outputs: [
             { type: 'start', messageId: 'm-a1' },
@@ -174,7 +174,7 @@ describe('mergeMessages', () => {
         },
       ),
       messageEvent(
-        { codecMessageId: 'a1' },
+        { transportMessageId: 'a1' },
         { inputs: [{ kind: 'approval', payload: { messageId: 'cm-a', toolCallId: 'call-1', approved: true } }] },
       ),
     ];
@@ -192,11 +192,11 @@ describe('mergeMessages', () => {
   it('merges only the canonical step attempt (latest step-start-serial supersedes)', async () => {
     const events = [
       messageEvent(
-        { codecMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
+        { transportMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
         { outputs: textChunks('m-dead', 'dead attempt') },
       ),
       messageEvent(
-        { codecMessageId: 'a2', stepId: 's1', stepStartSerial: '002' },
+        { transportMessageId: 'a2', stepId: 's1', stepStartSerial: '002' },
         { outputs: textChunks('m-live', 'retried attempt') },
       ),
     ];
@@ -208,9 +208,9 @@ describe('mergeMessages', () => {
 
   it('drops an excluded step entirely, keeping everything else', async () => {
     const events = [
-      messageEvent({ codecMessageId: 'u1' }, { inputs: [userInput('m-u1', 'hello')] }),
+      messageEvent({ transportMessageId: 'u1' }, { inputs: [userInput('m-u1', 'hello')] }),
       messageEvent(
-        { codecMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
+        { transportMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
         { outputs: textChunks('m-a1', 'about to be superseded') },
       ),
     ];
@@ -226,7 +226,7 @@ describe('mergeMessages', () => {
         kind: 'run-lifecycle',
         event: { type: 'start', runId: 'r1', clientId: '', invocationId: '', serial: '001' },
       },
-      messageEvent({ codecMessageId: 'g1' }, { inputs: [{ kind: 'regenerate', payload: { messageId: 'a1' } }] }),
+      messageEvent({ transportMessageId: 'g1' }, { inputs: [{ kind: 'regenerate', payload: { messageId: 'a1' } }] }),
     ];
 
     const messages = await mergeMessages(events);

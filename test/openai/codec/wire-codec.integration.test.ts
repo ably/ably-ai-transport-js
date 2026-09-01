@@ -5,13 +5,13 @@
  * shapes; these tests prove the same mapping over real Ably serialization,
  * where streamed groups ride genuine `message.append` deliveries. A
  * subscriber decodes every inbound message on the wire codec's decoder and
- * buckets by codec-message-id — the application's demultiplexing — and the
+ * buckets by transport-message-id — the application's demultiplexing — and the
  * assertions check the decoded event sequences a consumer would merge.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { HEADER_CODEC_MESSAGE_ID } from '../../../src/constants.js';
+import { HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { ResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getTransportHeaders } from '../../../src/utils.js';
@@ -19,7 +19,7 @@ import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { eventsOfType, functionCallArgsRun, stampHeaders, textRun } from './fixtures.js';
 
-/** One decoded bucket: the outputs and inputs decoded under a codec-message-id. */
+/** One decoded bucket: the outputs and inputs decoded under a transport-message-id. */
 interface Bucket {
   /** The decoded output events, in delivery order. */
   outputs: OpenAIOutput[];
@@ -29,7 +29,7 @@ interface Bucket {
 
 /**
  * Subscribe a decoding collector to a fresh channel pair: every inbound
- * message decodes on one decoder and lands in its codec-message-id bucket.
+ * message decodes on one decoder and lands in its transport-message-id bucket.
  * @param channelName - The test's unique channel name.
  * @returns The publisher channel, the buckets, and a waiter for a predicate.
  */
@@ -51,7 +51,7 @@ const setupCollector = async (
 
   await subChannel.subscribe((msg) => {
     const decoded = decoder.decode(msg);
-    const id = getTransportHeaders(msg)[HEADER_CODEC_MESSAGE_ID];
+    const id = getTransportHeaders(msg)[HEADER_TRANSPORT_MESSAGE_ID];
     if (id === undefined) return;
     const bucket = buckets.get(id) ?? { outputs: [], inputs: [] };
     buckets.set(id, bucket);

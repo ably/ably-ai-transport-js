@@ -21,7 +21,7 @@
  * channel when it gets there".
  *
  * Nothing about the run travels back over HTTP: the client resolves the run id
- * off the channel by matching `input-codec-message-id` on `ai-run-start`.
+ * off the channel by matching `input-transport-message-id` on `ai-run-start`.
  */
 
 import type * as AI from 'ai';

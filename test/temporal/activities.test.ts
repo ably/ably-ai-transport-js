@@ -97,12 +97,12 @@ const lifecycle = (type: 'start' | 'suspend' | 'resume' | 'end', runId: string):
 /**
  * A located trigger with the given wire identity.
  * @param meta - The identity fields the activities read.
- * @param meta.codecMessageId - The trigger's codec-message-id.
+ * @param meta.transportMessageId - The trigger's transport-message-id.
  * @param meta.runId - The run-id header, set on a continuation trigger.
  * @returns The located input.
  */
-const located = (meta: { codecMessageId?: string; runId?: string }): LocatedInput<TestInput> =>
-  // CAST: the activities read only codecMessageId and runId off the meta.
+const located = (meta: { transportMessageId?: string; runId?: string }): LocatedInput<TestInput> =>
+  // CAST: the activities read only transportMessageId and runId off the meta.
   ({ meta, inputs: [{ kind: 'user-message' }] }) as unknown as LocatedInput<TestInput>;
 
 let transport: StubTransport;
@@ -148,7 +148,7 @@ beforeEach(() => {
       return () => handlers.delete(handler);
     },
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    locateInput: vi.fn(() => Promise.resolve(located({ codecMessageId: 'cm-1' }))),
+    locateInput: vi.fn(() => Promise.resolve(located({ transportMessageId: 'cm-1' }))),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     history: vi.fn(() => Promise.resolve({ events: [lifecycle('start', 'run-1')], exhausted: true })),
     openRun: vi.fn((opts?: OpenRunOptions) => {
@@ -188,7 +188,7 @@ describe('openRun', () => {
       expect.objectContaining({
         runId: 'wf-1',
         invocationId: 'wf-1',
-        input: located({ codecMessageId: 'cm-1' }),
+        input: located({ transportMessageId: 'cm-1' }),
       }),
       expect.anything(),
     );
@@ -224,14 +224,14 @@ describe('openRun', () => {
   });
 
   it('re-enters the run a continuation trigger names', async () => {
-    transport.locateInput.mockResolvedValue(located({ codecMessageId: 'cm-1', runId: 'run-existing' }));
+    transport.locateInput.mockResolvedValue(located({ transportMessageId: 'cm-1', runId: 'run-existing' }));
 
     const result = await activities().openRun({ invocation, invocationId: 'wf-2' });
 
     expect(transport.openRun).toHaveBeenCalledWith(
       expect.objectContaining({
         invocationId: 'wf-2',
-        input: located({ codecMessageId: 'cm-1', runId: 'run-existing' }),
+        input: located({ transportMessageId: 'cm-1', runId: 'run-existing' }),
       }),
       expect.anything(),
     );

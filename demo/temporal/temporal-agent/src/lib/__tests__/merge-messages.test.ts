@@ -12,13 +12,13 @@ import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 
 import { mergeMessages, type VercelTransportEvent } from '../merge-messages';
 
-/** A complete WireMeta stub carrying only the codec-message-id the merge reads. */
-const meta = (codecMessageId: string): WireMeta => ({
+/** A complete WireMeta stub carrying only the transport-message-id the merge reads. */
+const meta = (transportMessageId: string): WireMeta => ({
   transport: {},
   codec: {},
   headers: {},
   serial: undefined,
-  codecMessageId,
+  transportMessageId,
   runId: undefined,
   stepId: undefined,
   stepStartSerial: undefined,
@@ -31,17 +31,17 @@ const meta = (codecMessageId: string): WireMeta => ({
   parent: undefined,
   forkOf: undefined,
   regenerates: undefined,
-  inputCodecMessageId: undefined,
-  inputCodecMessageIds: undefined,
-  steerCodecMessageIds: undefined,
+  inputTransportMessageId: undefined,
+  inputTransportMessageIds: undefined,
+  steerTransportMessageIds: undefined,
 });
 
 const messageEvent = (
-  codecMessageId: string,
+  transportMessageId: string,
   parts: { inputs?: VercelInput[]; outputs?: VercelOutput[] },
 ): VercelTransportEvent => ({
   kind: 'message',
-  meta: meta(codecMessageId),
+  meta: meta(transportMessageId),
   inputs: parts.inputs ?? [],
   outputs: parts.outputs ?? [],
 });
@@ -135,7 +135,7 @@ describe('mergeMessages', () => {
     );
   });
 
-  it('orders messages by first-seen codec-message-id', async () => {
+  it('orders messages by first-seen transport-message-id', async () => {
     const messages = await mergeMessages([
       messageEvent('cm-user', { inputs: [{ kind: 'message', payload: userMessage('u1', 'question') }] }),
       messageEvent('cm-assistant', { outputs: textChunks('a1', 'answer') }),
@@ -146,9 +146,9 @@ describe('mergeMessages', () => {
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
   });
 
-  it('ignores events with no codec-message-id and empty buckets', async () => {
+  it('ignores events with no transport-message-id and empty buckets', async () => {
     const messages = await mergeMessages([
-      { kind: 'message', meta: { ...meta('cm-1'), codecMessageId: undefined }, inputs: [], outputs: [] },
+      { kind: 'message', meta: { ...meta('cm-1'), transportMessageId: undefined }, inputs: [], outputs: [] },
       messageEvent('cm-2', { inputs: [{ kind: 'regenerate', payload: { messageId: 'a1' } }] }),
     ]);
 

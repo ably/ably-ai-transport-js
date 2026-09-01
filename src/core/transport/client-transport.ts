@@ -16,7 +16,7 @@
  * stateless `ai-cancel` envelope for a run the caller names. `steer` publishes
  * a steering input into an open run through the {@link SteerCoordinator},
  * which resolves `published` from the publish acknowledgement's serial,
- * accumulates the `steer-codec-message-ids` stamps the agent puts on the
+ * accumulates the `steer-transport-message-ids` stamps the agent puts on the
  * run's outputs, and resolves each steer's `outcome` by id membership at the
  * run's next lifecycle bracket. A channel state listener drains in-flight
  * steers on continuity loss — post-loss the channel will not deliver the
@@ -28,9 +28,9 @@
  * double-decoded.
  *
  * The transport holds no run registry: a consumer keys its own send on the
- * returned `codecMessageId` and sources a cancel's or steer's `runId` from
+ * returned `transportMessageId` and sources a cancel's or steer's `runId` from
  * `publishInput`'s returned `runId` promise (resolved from the first
- * `ai-run-start` whose `input-codec-message-id` matches the publish) or from
+ * `ai-run-start` whose `input-transport-message-id` matches the publish) or from
  * the receive stream's run-lifecycle events.
  */
 
@@ -114,7 +114,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   private readonly _steer: SteerCoordinator<TInput>;
   /**
    * Pending {@link PublishInputResult.runId} watches, keyed by the publish's
-   * codec-message-id. An array per key: repeat publishes under one pinned id
+   * transport-message-id. An array per key: repeat publishes under one pinned id
    * each get their own promise, all resolved by the same run-start. Entries
    * resolve on the first matching `ai-run-start` and reject on `close()` or
    * continuity loss; an input that triggers no run leaves its watch pending
@@ -166,7 +166,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       if (delivery.outcome === 'classified') this._resolveRunIdWatches(delivery.event);
       this._receiver.deliverAblyMessage(message);
       // Feed the steer ledger every delivered message: it accumulates
-      // `steer-codec-message-ids` stamps and resolves steer outcomes on
+      // `steer-transport-message-ids` stamps and resolves steer outcomes on
       // run-suspend / run-end. The publish serial comes from the publish
       // acknowledgement, not from here.
       this._steer.observeMessage(message);
@@ -212,10 +212,10 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     this._logger.trace('ClientTransport.publishInput();');
     await this._requireOpen('publishInput');
 
-    // codec-message-id: the explicit option (an input amending an existing
+    // transport-message-id: the explicit option (an input amending an existing
     // message), or a fresh id. The options are the one source of addressing —
     // the input body carries none.
-    const codecMessageId = opts?.codecMessageId ?? crypto.randomUUID();
+    const transportMessageId = opts?.transportMessageId ?? crypto.randomUUID();
     const eventId = crypto.randomUUID();
 
     const parent = opts?.parent;
@@ -225,7 +225,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     const headers = buildTransportHeaders({
       role: 'user',
       runId: opts?.runId,
-      codecMessageId,
+      transportMessageId,
       runClientId: this._clientId,
       ...(parent !== undefined && { parent }),
       ...(forkOf !== undefined && { forkOf }),
@@ -247,16 +247,16 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     );
     // The run's id: a continuation already names it in the options, so it
     // resolves immediately — an addressed run answers with `ai-run-resume`,
-    // which carries no input-codec-message-id for a watch to match. A fresh
+    // which carries no input-transport-message-id for a watch to match. A fresh
     // publish watches for the `ai-run-start` that will name it. Watch before
     // the publish so a run-start racing the publish's own ack can never slip
     // past; a failed publish removes the watch again.
     const { runId, unwatch } =
       opts?.runId === undefined
-        ? this._watchRunId(codecMessageId)
+        ? this._watchRunId(transportMessageId)
         : { runId: Promise.resolve(opts.runId), unwatch: noopUnwatch };
     try {
-      await encoder.publishInput(event, { extras: { headers }, messageId: codecMessageId });
+      await encoder.publishInput(event, { extras: { headers }, messageId: transportMessageId });
     } catch (error) {
       unwatch();
       const cause = errorCause(error);
@@ -273,8 +273,8 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       await encoder.close();
     }
 
-    this._logger.debug('ClientTransport.publishInput(); published', { codecMessageId, eventId });
-    return { codecMessageId, eventId, runId };
+    this._logger.debug('ClientTransport.publishInput(); published', { transportMessageId, eventId });
+    return { transportMessageId, eventId, runId };
   }
 
   async cancel(runId: string): Promise<void> {
@@ -345,44 +345,44 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
 
   /**
    * Register a {@link PublishInputResult.runId} watch for a publish under
-   * `codecMessageId`. The returned promise carries a pre-attached no-op
+   * `transportMessageId`. The returned promise carries a pre-attached no-op
    * rejection handler, so a caller that never observes it cannot leak an
    * unhandled rejection when the watch is drained.
-   * @param codecMessageId - The publish's codec-message-id to match against
-   *   incoming run-starts' `input-codec-message-id`.
+   * @param transportMessageId - The publish's transport-message-id to match against
+   *   incoming run-starts' `input-transport-message-id`.
    * @returns The runId promise and an `unwatch` to deregister it (used when
    *   the publish itself fails).
    */
-  private _watchRunId(codecMessageId: string): { runId: Promise<string>; unwatch: () => void } {
+  private _watchRunId(transportMessageId: string): { runId: Promise<string>; unwatch: () => void } {
     const { promise: runId, resolve, reject } = Promise.withResolvers<string>();
     runId.catch(() => {
       /* the caller may ignore runId entirely */
     });
     const entry = { resolve, reject };
-    const entries = this._runIdWatches.get(codecMessageId) ?? [];
+    const entries = this._runIdWatches.get(transportMessageId) ?? [];
     entries.push(entry);
-    this._runIdWatches.set(codecMessageId, entries);
+    this._runIdWatches.set(transportMessageId, entries);
     return {
       runId,
       unwatch: () => {
-        const current = this._runIdWatches.get(codecMessageId);
+        const current = this._runIdWatches.get(transportMessageId);
         if (!current) return;
         const idx = current.indexOf(entry);
         if (idx !== -1) current.splice(idx, 1);
-        if (current.length === 0) this._runIdWatches.delete(codecMessageId);
+        if (current.length === 0) this._runIdWatches.delete(transportMessageId);
       },
     };
   }
 
   /**
    * Resolve pending runId watches from a classified live event: the first
-   * `ai-run-start` whose `input-codec-message-id` matches a watched publish's
-   * codec-message-id resolves every watch under that key with the run's id.
+   * `ai-run-start` whose `input-transport-message-id` matches a watched publish's
+   * transport-message-id resolves every watch under that key with the run's id.
    * @param event - The classified transport event to inspect.
    */
   private _resolveRunIdWatches(event: TransportEvent<TInput, TOutput>): void {
     if (event.kind !== 'run-lifecycle' || event.event.type !== 'start') return;
-    const key = event.event.inputCodecMessageId;
+    const key = event.event.inputTransportMessageId;
     if (key === undefined) return;
     const entries = this._runIdWatches.get(key);
     if (!entries) return;
@@ -390,7 +390,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     const startedRunId = event.event.runId;
     this._logger.debug('ClientTransport._resolveRunIdWatches(); run started for published input', {
       runId: startedRunId,
-      inputCodecMessageId: key,
+      inputTransportMessageId: key,
     });
     for (const { resolve } of entries) resolve(startedRunId);
   }

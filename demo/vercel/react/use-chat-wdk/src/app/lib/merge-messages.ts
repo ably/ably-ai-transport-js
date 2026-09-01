@@ -3,7 +3,7 @@
  * every workflow activity shares when it needs conversation state (model
  * context, pending-tool classification).
  *
- * The merge buckets `message` events by their wire `codec-message-id` in
+ * The merge buckets `message` events by their wire `transport-message-id` in
  * first-seen order and reduces each bucket with the AI SDK's own reducer
  * (`readUIMessageStream`):
  *
@@ -13,7 +13,7 @@
  *   result as its own wire message, but the result belongs on the assistant
  *   message that made the call).
  * - A `kind: 'message'` input carries a `UIMessage`. The codec fans a
- *   multi-part turn out one wire event per part under one codec-message-id,
+ *   multi-part turn out one wire event per part under one transport-message-id,
  *   so carriers merge by part rather than replacing, and an echo of a part
  *   already held is dropped.
  * - A `kind: 'approval'` input has no chunk shape of its own; it is applied as
@@ -41,7 +41,7 @@ export interface MergeMessagesOptions {
   excludeStepId?: string;
 }
 
-/** One bucket of chunk-shaped content plus any whole-message payload, keyed by codec-message-id. */
+/** One bucket of chunk-shaped content plus any whole-message payload, keyed by transport-message-id. */
 interface Bucket {
   /** The whole `UIMessage` a `kind: 'message'` input carried; last payload wins. */
   message?: UIMessage;
@@ -75,7 +75,7 @@ const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(can
 
 /**
  * Merge a whole-message input into the bucket. A `UIMessage` input is a batch
- * — the codec fans one wire event per part under a single codec-message-id —
+ * — the codec fans one wire event per part under a single transport-message-id —
  * so replacing rather than merging would keep only the last part of a
  * multi-part turn. Parts already present are dropped, which is what merges an
  * redelivery of a part already held into the message that has it.
@@ -141,7 +141,7 @@ export async function mergeMessages(events: WdkTransportEvent[], opts?: MergeMes
     if (prior === undefined || stepStartSerial > prior) canonicalAttempt.set(stepId, stepStartSerial);
   }
 
-  // Pass 2: bucket by codec-message-id, routing tool resolutions to the bucket
+  // Pass 2: bucket by transport-message-id, routing tool resolutions to the bucket
   // that owns their toolCallId.
   const buckets = new Map<string, Bucket>();
   const bucketByToolCallId = new Map<string, Bucket>();
@@ -163,7 +163,7 @@ export async function mergeMessages(events: WdkTransportEvent[], opts?: MergeMes
   for (const event of events) {
     if (event.kind !== 'message') continue;
     const { meta } = event;
-    const key = meta.codecMessageId ?? meta.serial ?? crypto.randomUUID();
+    const key = meta.transportMessageId ?? meta.serial ?? crypto.randomUUID();
     const excluded = opts?.excludeStepId !== undefined && meta.stepId === opts.excludeStepId;
     const superseded =
       meta.stepId !== undefined &&

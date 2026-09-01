@@ -34,8 +34,8 @@ import type { ThreadMessage } from '../lib/merge-thread';
 
 /** One tool call's resolution: the inputs to publish and the call they answer. */
 export interface ToolResolution {
-  /** The codec-message-id of the assistant message holding the `function_call` being answered. */
-  codecMessageId: string;
+  /** The transport-message-id of the assistant message holding the `function_call` being answered. */
+  transportMessageId: string;
   /** The run the call belongs to — the continuation the wake resumes. */
   runId: string;
   /** The `call_id` this resolution answers. */
@@ -82,7 +82,7 @@ export function useToolResolution(options: UseToolResolutionOptions) {
   const answeredRef = useRef(new Set<string>());
 
   return useCallback(
-    async ({ codecMessageId, runId, callId, inputs }: ToolResolution): Promise<void> => {
+    async ({ transportMessageId, runId, callId, inputs }: ToolResolution): Promise<void> => {
       if (!transport) return;
 
       // Record the answer and decide whether it was the last one in a single
@@ -99,7 +99,7 @@ export function useToolResolution(options: UseToolResolutionOptions) {
           // Address the resolution at the message holding the call, under the
           // suspended run's id, so the merge amends that message and the agent's
           // continuation resumes the right run.
-          const result = await transport.publishInput(input, { codecMessageId, runId });
+          const result = await transport.publishInput(input, { transportMessageId, runId });
           eventId = result.eventId;
         }
       } catch (error) {

@@ -3,14 +3,14 @@
  * conversation the route feeds to the model.
  *
  * The wire carries three shapes that matter here, all on `kind: 'message'`
- * events and all bucketed by `meta.codecMessageId`:
+ * events and all bucketed by `meta.transportMessageId`:
  *
  * - A user message fans out as one wire event per part, each carrying the
  *   whole-message envelope (id, role) plus that one part. Merging the parts
- *   of every event sharing a codec-message-id rebuilds the message; identical
+ *   of every event sharing a transport-message-id rebuilds the message; identical
  *   parts (e.g. a redelivered wire) are deduplicated.
  * - Assistant output chunks stream under the assistant message's
- *   codec-message-id. Each bucket merges through the AI SDK's own reducer
+ *   transport-message-id. Each bucket merges through the AI SDK's own reducer
  *   (`readUIMessageStream`); the last yielded message is the merged result.
  * - A client's tool resolution (`kind: 'chunk'`) is a `tool-output-*` chunk
  *   addressed to the assistant it amends, so it appends into that assistant's
@@ -20,7 +20,7 @@
  *
  * `kind: 'regenerate'` inputs name the message the client asked to redo. The
  * agent acts on that; the merge contributes nothing for them.
- * Messages are ordered by the first appearance of their codec-message-id in
+ * Messages are ordered by the first appearance of their transport-message-id in
  * the (chronological) event stream.
  */
 
@@ -85,11 +85,11 @@ function applyApprovals(message: UIMessage, approvals: Map<string, VercelApprova
  * @returns The conversation messages, oldest first.
  */
 export async function mergeMessages(events: VercelEvent[]): Promise<UIMessage[]> {
-  /** codec-message-ids in first-appearance order. */
+  /** transport-message-ids in first-appearance order. */
   const order: string[] = [];
-  /** User messages under assembly, keyed by codec-message-id. */
+  /** User messages under assembly, keyed by transport-message-id. */
   const users = new Map<string, { message: UIMessage; partKeys: Set<string> }>();
-  /** Assistant chunk buckets, keyed by codec-message-id. */
+  /** Assistant chunk buckets, keyed by transport-message-id. */
   const chunkBuckets = new Map<string, UIMessageChunk[]>();
   /** Published approval decisions, keyed by toolCallId. */
   const approvals = new Map<string, VercelApprovalDecision>();
@@ -125,7 +125,7 @@ export async function mergeMessages(events: VercelEvent[]): Promise<UIMessage[]>
 
   for (const event of events) {
     if (event.kind !== 'message') continue;
-    const id = event.meta.codecMessageId;
+    const id = event.meta.transportMessageId;
     if (id === undefined) continue;
     for (const input of event.inputs) {
       switch (input.kind) {

@@ -365,7 +365,7 @@ const dedupeBySerial = <TMetadata, TDataParts extends AI.UIDataTypes, TTools ext
  *
  * The SDK owns the merge; the only work here is the demultiplexing a provider
  * reducer cannot do for itself, which the caller has already done by bucketing
- * on codec-message-id.
+ * on transport-message-id.
  * @param chunks - The bucket's chunks, in wire order.
  * @returns The last message state the reducer yields, or `undefined` for a bucket that produced none.
  */
@@ -672,9 +672,9 @@ class DefaultChatTransport<
     // The last publish is the one the POST points at: the agent locates that
     // input and the earlier actions are already on the channel ahead of it.
     return this._send(abortSignal, async () => {
-      let sent = await this._transport.publishInput(first, { codecMessageId: assistant.id });
+      let sent = await this._transport.publishInput(first, { transportMessageId: assistant.id });
       for (const action of rest) {
-        sent = await this._transport.publishInput(action, { codecMessageId: assistant.id });
+        sent = await this._transport.publishInput(action, { transportMessageId: assistant.id });
       }
       return sent;
     });
@@ -715,7 +715,7 @@ class DefaultChatTransport<
       const sent = await publish();
       await this._postChat(sent.eventId);
       // The run id is resolved from the channel, off the first `ai-run-start`
-      // whose input-codec-message-id matches this publish. It never comes out
+      // whose input-transport-message-id matches this publish. It never comes out
       // of the POST response: the route only wakes the agent.
       //
       // Deliberately not awaited: useChat needs the stream back now, and the
@@ -853,7 +853,7 @@ class DefaultChatTransport<
    * Merge the walked events into messages, skipping the withheld runs.
    *
    * Client inputs are already whole `UIMessage`s and pass straight through.
-   * Agent output is bucketed by codec-message-id — the demultiplexing a
+   * Agent output is bucketed by transport-message-id — the demultiplexing a
    * provider reducer cannot do for itself — and each bucket merged by the SDK.
    * @param walked - The walked events, oldest first.
    * @param openRuns - The runs whose messages are withheld.
@@ -869,8 +869,8 @@ class DefaultChatTransport<
 
     for (const event of dropSupersededAttempts(walked)) {
       if (event.kind !== 'message') continue;
-      const { codecMessageId, runId } = event.meta;
-      if (codecMessageId === undefined) continue;
+      const { transportMessageId, runId } = event.meta;
+      if (transportMessageId === undefined) continue;
       if (runId !== undefined && openRuns.has(runId)) continue;
 
       for (const input of event.inputs) {
@@ -888,10 +888,10 @@ class DefaultChatTransport<
         existing.parts.push(...input.payload.parts);
       }
       if (event.outputs.length === 0) continue;
-      const bucket = buckets.get(codecMessageId);
+      const bucket = buckets.get(transportMessageId);
       if (bucket === undefined) {
-        order.push(codecMessageId);
-        buckets.set(codecMessageId, [...event.outputs]);
+        order.push(transportMessageId);
+        buckets.set(transportMessageId, [...event.outputs]);
       } else {
         bucket.push(...event.outputs);
       }

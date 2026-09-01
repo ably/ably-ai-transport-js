@@ -142,7 +142,7 @@ const fetchPageWithRetry = async (
  * Newest-first within each yielded page (matching Ably's native ordering).
  * Caller drives the cursor — calling `next()` until it returns `undefined`
  * or stopping early when a domain-specific stop condition is met
- * (e.g. complete-message counter satisfied, target codec-message-id found,
+ * (e.g. complete-message counter satisfied, target transport-message-id found,
  * parent chain walk reaches root).
  *
  * The initial Ably history call is awaited eagerly so the returned cursor

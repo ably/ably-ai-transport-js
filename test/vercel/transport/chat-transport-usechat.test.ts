@@ -70,7 +70,7 @@ describe('ChatTransport drives useChat with no external message state', () => {
     await flush();
     fake.emit(
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
+        { transportMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
         {
           outputs: [
             { type: 'start', messageId: 'a1' },
@@ -108,7 +108,7 @@ describe('ChatTransport drives useChat with no external message state', () => {
     await flush();
     fake.emit(
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
+        { transportMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
         {
           outputs: [
             { type: 'start', messageId: 'a1' },
@@ -139,12 +139,12 @@ describe('ChatTransport drives useChat with no external message state', () => {
       kind: 'chunk',
       payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { city: 'Berlin' }, dynamic: true },
     });
-    expect(action?.opts).toEqual({ codecMessageId: 'a1' });
+    expect(action?.opts).toEqual({ transportMessageId: 'a1' });
 
     await flush();
     fake.emit(
       messageEvent(
-        { codecMessageId: 'wire-a2', runId: 'run-2', role: 'assistant' },
+        { transportMessageId: 'wire-a2', runId: 'run-2', role: 'assistant' },
         {
           outputs: [
             { type: 'start', messageId: 'a2' },
@@ -176,7 +176,7 @@ describe('ChatTransport drives useChat with no external message state', () => {
         events: [
           runStartEvent('run-1'),
           messageEvent(
-            { codecMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
+            { transportMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
             {
               outputs: [
                 { type: 'start', messageId: 'a1' },
@@ -202,7 +202,7 @@ describe('ChatTransport drives useChat with no external message state', () => {
     await flush();
     fake.emit(
       messageEvent(
-        { codecMessageId: 'wire-a1', runId: 'run-1' },
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
         {
           outputs: [
             { type: 'text-delta', id: 't1', delta: 'and the rest' },

@@ -12,15 +12,15 @@ type VercelEvent = TransportEvent<VercelInput, VercelOutput>;
 
 let serialCounter = 0;
 
-/** A minimal WireMeta for one wire event; only codecMessageId matters to the merge. */
-function metaOf(codecMessageId: string): WireMeta {
+/** A minimal WireMeta for one wire event; only transportMessageId matters to the merge. */
+function metaOf(transportMessageId: string): WireMeta {
   serialCounter += 1;
   return {
     transport: {},
     codec: {},
     headers: {},
     serial: `serial-${String(serialCounter)}`,
-    codecMessageId,
+    transportMessageId,
     runId: undefined,
     stepId: undefined,
     stepStartSerial: undefined,
@@ -33,23 +33,23 @@ function metaOf(codecMessageId: string): WireMeta {
     parent: undefined,
     forkOf: undefined,
     regenerates: undefined,
-    inputCodecMessageId: undefined,
-    inputCodecMessageIds: undefined,
-    steerCodecMessageIds: undefined,
+    inputTransportMessageId: undefined,
+    inputTransportMessageIds: undefined,
+    steerTransportMessageIds: undefined,
   };
 }
 
-function inputEvent(codecMessageId: string, input: VercelInput): VercelEvent {
-  return { kind: 'message', meta: metaOf(codecMessageId), inputs: [input], outputs: [] };
+function inputEvent(transportMessageId: string, input: VercelInput): VercelEvent {
+  return { kind: 'message', meta: metaOf(transportMessageId), inputs: [input], outputs: [] };
 }
 
-function outputEvent(codecMessageId: string, chunks: UIMessageChunk[]): VercelEvent {
-  return { kind: 'message', meta: metaOf(codecMessageId), inputs: [], outputs: chunks };
+function outputEvent(transportMessageId: string, chunks: UIMessageChunk[]): VercelEvent {
+  return { kind: 'message', meta: metaOf(transportMessageId), inputs: [], outputs: chunks };
 }
 
 /** One fanned-out user-message wire event: the whole-message envelope plus one part. */
-function userPartEvent(codecMessageId: string, id: string, part: { type: 'text'; text: string }): VercelEvent {
-  return inputEvent(codecMessageId, { kind: 'message', payload: { id, role: 'user', parts: [part] } });
+function userPartEvent(transportMessageId: string, id: string, part: { type: 'text'; text: string }): VercelEvent {
+  return inputEvent(transportMessageId, { kind: 'message', payload: { id, role: 'user', parts: [part] } });
 }
 
 const assistantTextChunks = (messageId: string, text: string): UIMessageChunk[] => [
@@ -65,7 +65,7 @@ const assistantTextChunks = (messageId: string, text: string): UIMessageChunk[] 
 // ---------------------------------------------------------------------------
 
 describe('mergeMessages', () => {
-  it('merges a fanned-out user message by codec-message-id and dedupes identical parts', async () => {
+  it('merges a fanned-out user message by transport-message-id and dedupes identical parts', async () => {
     const messages = await mergeMessages([
       userPartEvent('cm-1', 'u1', { type: 'text', text: 'hello' }),
       userPartEvent('cm-1', 'u1', { type: 'text', text: 'world' }),
@@ -95,7 +95,7 @@ describe('mergeMessages', () => {
     expect(messages[0].parts).toEqual(expect.arrayContaining([expect.objectContaining({ text: 'Hi there' })]));
   });
 
-  it('orders messages by first appearance of their codec-message-id', async () => {
+  it('orders messages by first appearance of their transport-message-id', async () => {
     const messages = await mergeMessages([
       userPartEvent('cm-u', 'u1', { type: 'text', text: 'question' }),
       outputEvent('cm-a', assistantTextChunks('a1', 'answer')),
@@ -150,11 +150,11 @@ describe('mergeMessages', () => {
     });
   });
 
-  it('ignores regenerate inputs and events without a codec-message-id', async () => {
+  it('ignores regenerate inputs and events without a transport-message-id', async () => {
     const bare = metaOf('cm-x');
     const messages = await mergeMessages([
       inputEvent('cm-x', { kind: 'regenerate', payload: { messageId: 'cm-a' } }),
-      { kind: 'message', meta: { ...bare, codecMessageId: undefined }, inputs: [], outputs: [] },
+      { kind: 'message', meta: { ...bare, transportMessageId: undefined }, inputs: [], outputs: [] },
       {
         kind: 'run-lifecycle',
         event: { type: 'start', runId: 'r1', serial: 's', clientId: '', invocationId: '' },

@@ -21,7 +21,7 @@ import type { Responses } from 'openai/resources/responses/responses';
  * surfaces tool output only as model *input* on the next turn — so the codec
  * gives it its own output event. The agent emits it between `/responses` calls
  * in its agentic loop; a consumer merges it into the message
- * named by its codec-message-id. Because each `pipe`/`send` mints a fresh id,
+ * named by its transport-message-id. Because each `pipe`/`send` mints a fresh id,
  * an output published on its own `send` lands in its own message, separate from
  * the one holding the `function_call`; a renderer pairs them by `call_id`.
  */
@@ -42,7 +42,7 @@ export interface FunctionCallOutputEvent {
  * over the raw `function_call`, so this event carries the same fields — a
  * client can render the approval prompt from the request alone, without having
  * received the streamed `function_call`. A consumer merges it into the
- * per-`call_id` tool-call state of the message its codec-message-id names,
+ * per-`call_id` tool-call state of the message its transport-message-id names,
  * marking the call `pending`. The client answers with its own
  * approval-decision input body — inputs are application-defined and the codec
  * carries them opaquely.

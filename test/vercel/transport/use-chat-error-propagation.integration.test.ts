@@ -89,7 +89,7 @@ describe('useChat error propagation', () => {
     await clientTransport.connect();
 
     // The route opens the run from the located input, which is what stamps
-    // `input-codec-message-id` on `ai-run-start` — the header the client
+    // `input-transport-message-id` on `ai-run-start` — the header the client
     // matches its own publish against to learn the run id. Nothing about the
     // run comes back over HTTP.
     const { promise: opened, resolve: runOpened } = Promise.withResolvers<ReturnType<typeof agentTransport.openRun>>();

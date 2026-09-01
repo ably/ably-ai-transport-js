@@ -31,7 +31,7 @@ const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
   codec: {},
   headers: {},
   serial: 's-1',
-  codecMessageId: undefined,
+  transportMessageId: undefined,
   runId: undefined,
   stepId: undefined,
   stepStartSerial: undefined,
@@ -44,22 +44,22 @@ const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
   parent: undefined,
   forkOf: undefined,
   regenerates: undefined,
-  inputCodecMessageId: undefined,
-  inputCodecMessageIds: undefined,
-  steerCodecMessageIds: undefined,
+  inputTransportMessageId: undefined,
+  inputTransportMessageIds: undefined,
+  steerTransportMessageIds: undefined,
   ...overrides,
 });
 
-const outputEvent = (codecMessageId: string, outputs: OpenAIOutput[], meta: Partial<WireMeta> = {}): Event => ({
+const outputEvent = (transportMessageId: string, outputs: OpenAIOutput[], meta: Partial<WireMeta> = {}): Event => ({
   kind: 'message',
-  meta: makeMeta({ codecMessageId, role: 'assistant', runId: 'r1', ...meta }),
+  meta: makeMeta({ transportMessageId, role: 'assistant', runId: 'r1', ...meta }),
   inputs: [],
   outputs,
 });
 
-const inputEvent = (codecMessageId: string, inputs: OpenAIInput[], meta: Partial<WireMeta> = {}): Event => ({
+const inputEvent = (transportMessageId: string, inputs: OpenAIInput[], meta: Partial<WireMeta> = {}): Event => ({
   kind: 'message',
-  meta: makeMeta({ codecMessageId, role: 'user', ...meta }),
+  meta: makeMeta({ transportMessageId, role: 'user', ...meta }),
   inputs,
   outputs: [],
 });
@@ -169,7 +169,7 @@ const userTurnInput = (text: string): OpenAIInput => ({
   payload: { role: 'user', items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }] },
 });
 
-const runStart = (runId: string, inputCodecMessageId?: string): Event => ({
+const runStart = (runId: string, inputTransportMessageId?: string): Event => ({
   kind: 'run-lifecycle',
   event: {
     type: 'start',
@@ -177,7 +177,7 @@ const runStart = (runId: string, inputCodecMessageId?: string): Event => ({
     clientId: 'agent',
     invocationId: 'inv-1',
     serial: 's-run',
-    ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
+    ...(inputTransportMessageId !== undefined && { inputTransportMessageId }),
   },
 });
 
@@ -198,12 +198,12 @@ const runEnd = (runId: string, reason: 'complete' | 'cancelled'): Event => ({
  * unconditionally synthesised opening bracket prepended), the deltas, the
  * rebuilt close, and the reduced `output_item.done`.
  */
-const streamedText = (codecMessageId: string, itemId: string, pieces: string[]): Event[] => [
-  outputEvent(codecMessageId, [itemAdded(messageItem(itemId))]),
-  outputEvent(codecMessageId, [itemAdded(messageItem(itemId)), partAdded(itemId, 0, 0)]),
-  ...pieces.map((piece) => outputEvent(codecMessageId, [textDelta(itemId, 0, piece)])),
-  outputEvent(codecMessageId, [textDone(itemId, 0, 0, pieces.join(''))]),
-  outputEvent(codecMessageId, [itemDone({ type: 'message', id: itemId, status: 'completed' })]),
+const streamedText = (transportMessageId: string, itemId: string, pieces: string[]): Event[] => [
+  outputEvent(transportMessageId, [itemAdded(messageItem(itemId))]),
+  outputEvent(transportMessageId, [itemAdded(messageItem(itemId)), partAdded(itemId, 0, 0)]),
+  ...pieces.map((piece) => outputEvent(transportMessageId, [textDelta(itemId, 0, piece)])),
+  outputEvent(transportMessageId, [textDone(itemId, 0, 0, pieces.join(''))]),
+  outputEvent(transportMessageId, [itemDone({ type: 'message', id: itemId, status: 'completed' })]),
 ];
 
 const mergeAll = (events: Event[]) => {
@@ -231,7 +231,7 @@ describe('createThreadMerge', () => {
     const messages = merge.messages();
     expect(messages).toHaveLength(1);
     const message = messages[0];
-    expect(message.codecMessageId).toBe('m1');
+    expect(message.transportMessageId).toBe('m1');
     expect(message.role).toBe('assistant');
     expect(message.runId).toBe('r1');
     expect(message.items).toHaveLength(1);
@@ -332,7 +332,7 @@ describe('createThreadMerge', () => {
     expect(mergeAll(reassembled).messages()).toEqual(mergeAll(events).messages());
   });
 
-  it('dedupes identical parts a redelivered wire event repeats under one codec-message-id', () => {
+  it('dedupes identical parts a redelivered wire event repeats under one transport-message-id', () => {
     const events = [
       inputEvent('m0', [userTurnInput('hi')], { serial: 's-1', clientId: 'client-a' }),
       // A redelivered event repeats the same turn verbatim.
@@ -432,7 +432,7 @@ describe('createThreadMerge', () => {
     const events = [
       outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getLocation', '{}'))]),
       outputEvent('m1', [itemDone({ type: 'function_call', id: 'fc1', status: 'completed' })]),
-      // The client's resolution amends the assistant message by codec-message-id.
+      // The client's resolution amends the assistant message by transport-message-id.
       inputEvent('m1', [{ kind: 'item', payload: fco }]),
     ];
     const items = mergeAll(events).messages()[0].items;
@@ -446,7 +446,7 @@ describe('createThreadMerge', () => {
     merge.apply(runStart('r1', 'm0'));
     expect(merge.isRunning()).toBe(true);
     expect(merge.activeRunId()).toBe('r1');
-    expect(merge.runs().get('r1')).toEqual({ status: 'active', inputCodecMessageId: 'm0' });
+    expect(merge.runs().get('r1')).toEqual({ status: 'active', inputTransportMessageId: 'm0' });
 
     merge.apply(runLifecycle('suspend', 'r1'));
     expect(merge.isRunning()).toBe(false);
@@ -459,7 +459,7 @@ describe('createThreadMerge', () => {
     expect(merge.isRunning()).toBe(false);
     expect(merge.runs().get('r1')?.status).toBe('complete');
     // The trigger stamp survives the lifecycle transitions.
-    expect(merge.runs().get('r1')?.inputCodecMessageId).toBe('m0');
+    expect(merge.runs().get('r1')?.inputTransportMessageId).toBe('m0');
   });
 
   it('records the terminal error message on an errored run-end', () => {
@@ -487,10 +487,15 @@ describe('createThreadMerge', () => {
     }).toThrow(/no accumulated item for item_id never-opened/);
   });
 
-  it('ignores foreign carriers: no codec-message-id, or no decoded events', () => {
+  it('ignores foreign carriers: no transport-message-id, or no decoded events', () => {
     const merge = createThreadMerge();
     merge.apply({ kind: 'message', meta: makeMeta({}), inputs: [], outputs: [] });
-    merge.apply({ kind: 'message', meta: makeMeta({ codecMessageId: 'm9', runId: 'r9' }), inputs: [], outputs: [] });
+    merge.apply({
+      kind: 'message',
+      meta: makeMeta({ transportMessageId: 'm9', runId: 'r9' }),
+      inputs: [],
+      outputs: [],
+    });
     expect(merge.messages()).toEqual([]);
   });
 });

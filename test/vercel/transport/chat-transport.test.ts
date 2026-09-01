@@ -107,13 +107,17 @@ const executedAssistant = (id = 'a1'): AI.UIMessage => ({
 /**
  * An output-carrying wire event under a run.
  * @param runId - The run the output belongs to.
- * @param codecMessageId - The wire message the chunks accumulate on.
+ * @param transportMessageId - The wire message the chunks accumulate on.
  * @param chunks - The decoded output chunks.
  * @param serial - The event's channel serial.
  * @returns The event.
  */
-const outputEvent = (runId: string, codecMessageId: string, chunks: AI.UIMessageChunk[], serial = 'serial-1'): Event =>
-  messageEvent({ runId, codecMessageId, role: 'assistant', serial }, { outputs: chunks });
+const outputEvent = (
+  runId: string,
+  transportMessageId: string,
+  chunks: AI.UIMessageChunk[],
+  serial = 'serial-1',
+): Event => messageEvent({ runId, transportMessageId, role: 'assistant', serial }, { outputs: chunks });
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -328,7 +332,7 @@ describe('ChatTransport', () => {
       const stream = await chat.sendMessages(sendOptions([userMessage('u1', 'hi')]));
       await Promise.resolve();
 
-      fake.emit(messageEvent({ runId: 'run-1', codecMessageId: 'wire-a1', stepId: 's1' }, { outputs: [] }));
+      fake.emit(messageEvent({ runId: 'run-1', transportMessageId: 'wire-a1', stepId: 's1' }, { outputs: [] }));
       fake.emit(stepStartEvent('run-1', 's1', 'serial-200'));
 
       await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.RunAttemptSuperseded);
@@ -476,7 +480,7 @@ describe('ChatTransport', () => {
             kind: 'approval',
             payload: { messageId: 'a1', toolCallId: 'tc-1', approved: true },
           },
-          opts: { codecMessageId: 'a1' },
+          opts: { transportMessageId: 'a1' },
         },
       ]);
     });
@@ -494,7 +498,7 @@ describe('ChatTransport', () => {
             kind: 'chunk',
             payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 4 } },
           },
-          opts: { codecMessageId: 'a1' },
+          opts: { transportMessageId: 'a1' },
         },
       ]);
     });
@@ -521,7 +525,7 @@ describe('ChatTransport', () => {
       expect(fake.published).toEqual([
         {
           event: { kind: 'chunk', payload: { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'boom' } },
-          opts: { codecMessageId: 'a1' },
+          opts: { transportMessageId: 'a1' },
         },
       ]);
     });
@@ -563,7 +567,7 @@ describe('ChatTransport', () => {
       await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: assistant.id }));
 
       expect(fake.published.map((p) => p.event.kind)).toEqual(['chunk', 'approval']);
-      expect(fake.published.every((p) => p.opts?.codecMessageId === 'a1')).toBe(true);
+      expect(fake.published.every((p) => p.opts?.transportMessageId === 'a1')).toBe(true);
       // The POST points at the last publish: the earlier actions are already
       // on the channel ahead of it when the agent locates this one.
       const init = fetchMock.mock.calls[0]?.[1] as { body?: string } | undefined;
@@ -630,7 +634,7 @@ describe('ChatTransport', () => {
         {
           events: [
             messageEvent(
-              { codecMessageId: 'wire-u1', role: 'user', serial: 'serial-10' },
+              { transportMessageId: 'wire-u1', role: 'user', serial: 'serial-10' },
               { inputs: [{ kind: 'message', payload: userMessage('u1', 'forecast?') }] },
             ),
             runStartEvent('run-1', 'serial-11'),
@@ -713,7 +717,7 @@ describe('ChatTransport', () => {
         {
           events: [
             messageEvent(
-              { codecMessageId: 'wire-u1', role: 'user', serial: 'serial-10' },
+              { transportMessageId: 'wire-u1', role: 'user', serial: 'serial-10' },
               {
                 inputs: [
                   { kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'look at ' }] } },
@@ -721,7 +725,7 @@ describe('ChatTransport', () => {
               },
             ),
             messageEvent(
-              { codecMessageId: 'wire-u1', role: 'user', serial: 'serial-11' },
+              { transportMessageId: 'wire-u1', role: 'user', serial: 'serial-11' },
               {
                 inputs: [
                   { kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'this' }] } },
@@ -751,7 +755,7 @@ describe('ChatTransport', () => {
             messageEvent(
               {
                 runId: 'run-1',
-                codecMessageId: 'wire-dead',
+                transportMessageId: 'wire-dead',
                 role: 'assistant',
                 serial: 'serial-11',
                 stepId: 's1',
@@ -762,7 +766,7 @@ describe('ChatTransport', () => {
             messageEvent(
               {
                 runId: 'run-1',
-                codecMessageId: 'wire-a1',
+                transportMessageId: 'wire-a1',
                 role: 'assistant',
                 serial: 'serial-12',
                 stepId: 's1',
@@ -927,7 +931,7 @@ describe('ChatTransport', () => {
             messageEvent(
               {
                 runId: 'run-2',
-                codecMessageId: 'wire-dead',
+                transportMessageId: 'wire-dead',
                 role: 'assistant',
                 serial: 'serial-21',
                 stepId: 's1',
@@ -938,7 +942,7 @@ describe('ChatTransport', () => {
             messageEvent(
               {
                 runId: 'run-2',
-                codecMessageId: 'wire-live',
+                transportMessageId: 'wire-live',
                 role: 'assistant',
                 serial: 'serial-22',
                 stepId: 's1',
@@ -1065,7 +1069,7 @@ describe('ChatTransport', () => {
         messageEvent(
           {
             runId: 'run-1',
-            codecMessageId: 'wire-dead',
+            transportMessageId: 'wire-dead',
             serial: 'serial-101',
             stepId: 's1',
             stepStartSerial: 'serial-100',
@@ -1082,7 +1086,7 @@ describe('ChatTransport', () => {
         messageEvent(
           {
             runId: 'run-1',
-            codecMessageId: 'wire-live',
+            transportMessageId: 'wire-live',
             serial: 'serial-104',
             stepId: 's1',
             stepStartSerial: 'serial-103',

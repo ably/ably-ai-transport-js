@@ -52,7 +52,7 @@ executes the approved tool on the continuation.
 
 The adapter's own `readSince` walk does not apply it. That walk merges message
 inputs and agent outputs; an approval, and a client tool resolution addressed
-to the assistant message rather than the wire's own codec-message-id, both
+to the assistant message rather than the wire's own transport-message-id, both
 merge to nothing there. A turn inside the walk window that ended on a client
 tool or an unanswered approval therefore hydrates with the tool part still
 open, and the client answers it again. That is why the store holds the whole

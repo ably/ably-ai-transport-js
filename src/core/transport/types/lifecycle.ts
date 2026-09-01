@@ -54,15 +54,15 @@ export type RunLifecycleEvent =
        * in practice it is present.
        */
       serial: string | undefined;
-      /** The codec-message-id of the parent message, if known. Omitted for root runs. */
+      /** The transport-message-id of the parent message, if known. Omitted for root runs. */
       parent?: string;
       /**
-       * The codec-message-id of the user prompt being forked, when the run is an
+       * The transport-message-id of the user prompt being forked, when the run is an
        * edit. Carried verbatim from the `fork-of` wire header.
        */
       forkOf?: string;
       /**
-       * The codec-message-id of the assistant message this run regenerates, when
+       * The transport-message-id of the assistant message this run regenerates, when
        * the run is a regenerate continuation. Carried verbatim from the
        * `msg-regenerate` wire header. A regenerate is a continuation (no
        * `forkOf` at the run level); a consumer reconstructing conversation
@@ -70,16 +70,16 @@ export type RunLifecycleEvent =
        */
       regenerates?: string;
       /**
-       * The codec-message-id of the input event that triggered this run — the
-       * `input-codec-message-id` wire header the agent stamps on run-start. It
+       * The transport-message-id of the input event that triggered this run — the
+       * `input-transport-message-id` wire header the agent stamps on run-start. It
        * is the handle the client owns at send time (before the agent mints the
        * `runId`): the client transport resolves `PublishInputResult.runId`
        * from it, and a consumer reconstructing conversation structure can
-       * reconcile optimistic state keyed by this same codec-message-id onto
+       * reconcile optimistic state keyed by this same transport-message-id onto
        * the agent-minted `runId`. Absent on a
        * fresh-send / regenerate run-start whose trigger backs no reply run.
        */
-      inputCodecMessageId?: string;
+      inputTransportMessageId?: string;
     })
   | (RunLifecycleBase & {
       /** The run paused without ending; a resume may re-open it. */

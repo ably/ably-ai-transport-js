@@ -93,7 +93,7 @@ The receive side has one classifier and the send sides are split by role:
 - **ClientTransport** — publish input, cancel, steer, subscribe to the
   classified event stream, and page history backwards from the attach point.
   Publishing emits nothing locally: the sender's own input comes back as the
-  ordinary channel delivery, keyed by the returned `codecMessageId`, so a
+  ordinary channel delivery, keyed by the returned `transportMessageId`, so a
   consumer that wants optimistic UI renders its own and reconciles on that id.
   A steer's `published` resolves from the publish acknowledgement's serial,
   not from the steer's own echo, so steering works with `echoMessages: false`.
@@ -197,5 +197,5 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     transport subscribes its own listener and never detaches it.
 11. **No message assembly in the SDK** — no reducer, no merge driver, no
     projection type. The application demultiplexes a batch's `message` events
-    by their codec-message-id and merges each bucket with the provider's own
+    by their transport-message-id and merges each bucket with the provider's own
     machinery.

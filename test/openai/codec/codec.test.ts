@@ -479,8 +479,8 @@ describe('OpenAI codec roundtrip (offline)', () => {
     const input = messages.find((m) => m.name === EVENT_AI_INPUT);
     expect(input).toBeDefined();
     // One discrete message; the body rides the data as JSON, and the
-    // transport's codec-message-id stamp survives.
-    expect(input && getTransportHeaders(input)['codec-message-id']).toBe('m-1');
+    // transport's transport-message-id stamp survives.
+    expect(input && getTransportHeaders(input)['transport-message-id']).toBe('m-1');
     expect(input?.data).toBe(JSON.stringify(body));
 
     expect(decodeInputs(messages)).toEqual([body]);

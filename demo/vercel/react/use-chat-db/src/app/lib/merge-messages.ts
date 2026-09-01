@@ -4,7 +4,7 @@
  *
  * The standalone transports deliver decoded events without assembling
  * messages — aggregation is the consumer's job. This module is that consumer:
- * it buckets every `message`-kind event by its wire codec-message-id (delivery
+ * it buckets every `message`-kind event by its wire transport-message-id (delivery
  * order is conversation order, so first-seen order is message order), then
  * merges each bucket:
  *
@@ -13,14 +13,14 @@
  *   published by a client), so they append to the same chunk list — one merge
  *   path covers both directions;
  * - `{ kind: 'message' }` inputs carry whole `UIMessage`s, one part per wire
- *   event, merged by codec-message-id (part-equality dedupes a redelivered
+ *   event, merged by transport-message-id (part-equality dedupes a redelivered
  *   wire event, which repeats identical parts);
  * - `{ kind: 'approval' }` inputs are the one non-provider body: a small step
  *   flips the matching tool part to its approval-responded state.
  *
  * Tool resolutions are routed by `toolCallId` to the bucket holding the tool
  * call: a resumed run streams its `tool-output-*` chunks under a fresh
- * codec-message-id, but the part they resolve lives on the assistant message
+ * transport-message-id, but the part they resolve lives on the assistant message
  * that made the call.
  *
  * Both sides of the demo merge this way: the client merges older history
@@ -36,17 +36,17 @@ import type { VercelApprovalDecision, VercelInput, VercelOutput } from '@ably/ai
 /** One classified event off the demo's client or agent transport. */
 export type ChatTransportEvent = TransportEvent<VercelInput, VercelOutput>;
 
-/** One merged message, paired with the wire codec-message-id it merged under. */
+/** One merged message, paired with the wire transport-message-id it merged under. */
 export interface MergedMessage {
-  /** The wire codec-message-id the message's events shared. */
-  codecMessageId: string;
+  /** The wire transport-message-id the message's events shared. */
+  transportMessageId: string;
   /** The assembled message. */
   message: UIMessage;
 }
 
-/** One codec-message-id's accumulated content before merging. */
+/** One transport-message-id's accumulated content before merging. */
 interface Bucket {
-  codecMessageId: string;
+  transportMessageId: string;
   /** Provider chunks, in delivery order: agent outputs plus client tool-resolution chunk inputs. */
   chunks: UIMessageChunk[];
   /** The merged `{ kind: 'message' }` payload, when the bucket is a client turn. */
@@ -86,7 +86,7 @@ const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(can
  * Merge one wire-fanned part-carrier into the bucket's message: same domain
  * id, parts appended in wire order, deduped by part identity (a redelivered
  * wire event carries identical parts). A `UIMessage` input is a batch — the
- * codec fans one wire event per part under a single codec-message-id — so
+ * codec fans one wire event per part under a single transport-message-id — so
  * replacing rather than merging would keep only the last part of a
  * multi-part turn.
  * @param existing - The message merged so far, or `undefined` for the first carrier.
@@ -101,14 +101,14 @@ const mergeMessage = (existing: UIMessage | undefined, incoming: UIMessage): UIM
 };
 /**
  * Merge a bucket's chunk list through the provider's reducer. The seed message
- * carries the codec-message-id as a fallback domain id; a `start` chunk that
+ * carries the transport-message-id as a fallback domain id; a `start` chunk that
  * names a `messageId` overrides it.
- * @param codecMessageId - The bucket's wire codec-message-id.
+ * @param transportMessageId - The bucket's wire transport-message-id.
  * @param chunks - The bucket's chunks, in delivery order.
  * @returns The last message state the reducer yielded.
  */
-const mergeChunks = async (codecMessageId: string, chunks: UIMessageChunk[]): Promise<UIMessage> => {
-  const seed: UIMessage = { id: codecMessageId, role: 'assistant', parts: [] };
+const mergeChunks = async (transportMessageId: string, chunks: UIMessageChunk[]): Promise<UIMessage> => {
+  const seed: UIMessage = { id: transportMessageId, role: 'assistant', parts: [] };
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(chunk);
@@ -155,18 +155,18 @@ const applyApproval = (message: UIMessage, decision: VercelApprovalDecision): UI
 /**
  * Merge events (oldest-first) into messages via the provider's reducer.
  * @param events - Classified transport events in oldest-first order.
- * @returns The assembled messages paired with their codec-message-ids, in delivery order.
+ * @returns The assembled messages paired with their transport-message-ids, in delivery order.
  */
 export async function mergeMessages(events: ChatTransportEvent[]): Promise<MergedMessage[]> {
   const buckets = new Map<string, Bucket>();
   /** Which bucket holds each tool call's part, for routing its resolution chunks. */
   const toolCallBuckets = new Map<string, Bucket>();
 
-  const bucketFor = (codecMessageId: string): Bucket => {
-    let bucket = buckets.get(codecMessageId);
+  const bucketFor = (transportMessageId: string): Bucket => {
+    let bucket = buckets.get(transportMessageId);
     if (!bucket) {
-      bucket = { codecMessageId, chunks: [], message: undefined, approvals: [] };
-      buckets.set(codecMessageId, bucket);
+      bucket = { transportMessageId, chunks: [], message: undefined, approvals: [] };
+      buckets.set(transportMessageId, bucket);
     }
     return bucket;
   };
@@ -177,7 +177,7 @@ export async function mergeMessages(events: ChatTransportEvent[]): Promise<Merge
     if (toolCallId !== undefined) {
       // A tool-input chunk introduces the call here; a tool-output chunk
       // resolves it wherever it was introduced (a resumed run streams the
-      // resolution under a fresh codec-message-id).
+      // resolution under a fresh transport-message-id).
       if (chunk.type.startsWith('tool-input-')) toolCallBuckets.set(toolCallId, origin);
       else if (chunk.type.startsWith('tool-output-')) target = toolCallBuckets.get(toolCallId) ?? origin;
     }
@@ -185,8 +185,8 @@ export async function mergeMessages(events: ChatTransportEvent[]): Promise<Merge
   };
 
   for (const event of events) {
-    if (event.kind !== 'message' || event.meta.codecMessageId === undefined) continue;
-    const bucket = bucketFor(event.meta.codecMessageId);
+    if (event.kind !== 'message' || event.meta.transportMessageId === undefined) continue;
+    const bucket = bucketFor(event.meta.transportMessageId);
     for (const input of event.inputs) {
       switch (input.kind) {
         case 'message': {
@@ -209,10 +209,11 @@ export async function mergeMessages(events: ChatTransportEvent[]): Promise<Merge
 
   const merged: MergedMessage[] = [];
   for (const bucket of buckets.values()) {
-    let message = bucket.chunks.length > 0 ? await mergeChunks(bucket.codecMessageId, bucket.chunks) : bucket.message;
+    let message =
+      bucket.chunks.length > 0 ? await mergeChunks(bucket.transportMessageId, bucket.chunks) : bucket.message;
     if (!message) continue;
     for (const approval of bucket.approvals) message = applyApproval(message, approval);
-    merged.push({ codecMessageId: bucket.codecMessageId, message });
+    merged.push({ transportMessageId: bucket.transportMessageId, message });
   }
   return merged;
 }

@@ -15,12 +15,12 @@ import { getExistingMessages } from '../get-existing-messages';
 type Event = TransportEvent<VercelInput, VercelOutput>;
 type Batch = TransportHistoryResult<VercelInput, VercelOutput>;
 
-const makeMeta = (codecMessageId: string): WireMeta => ({
+const makeMeta = (transportMessageId: string): WireMeta => ({
   transport: {},
   codec: {},
   headers: {},
-  serial: `s-${codecMessageId}`,
-  codecMessageId,
+  serial: `s-${transportMessageId}`,
+  transportMessageId,
   runId: undefined,
   stepId: undefined,
   stepStartSerial: undefined,
@@ -33,14 +33,14 @@ const makeMeta = (codecMessageId: string): WireMeta => ({
   parent: undefined,
   forkOf: undefined,
   regenerates: undefined,
-  inputCodecMessageId: undefined,
-  inputCodecMessageIds: undefined,
-  steerCodecMessageIds: undefined,
+  inputTransportMessageId: undefined,
+  inputTransportMessageIds: undefined,
+  steerTransportMessageIds: undefined,
 });
 
-const userEvent = (codecMessageId: string, id: string, text: string): Event => ({
+const userEvent = (transportMessageId: string, id: string, text: string): Event => ({
   kind: 'message',
-  meta: makeMeta(codecMessageId),
+  meta: makeMeta(transportMessageId),
   inputs: [{ kind: 'message', payload: { id, role: 'user', parts: [{ type: 'text', text }] } }],
   outputs: [],
 });

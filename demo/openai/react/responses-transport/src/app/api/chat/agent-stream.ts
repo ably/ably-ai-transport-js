@@ -23,15 +23,15 @@
  * server-side here before the next model turn.
  *
  * Each unit of work is published under its own `run.pipe`, so each gets a fresh
- * `codec-message-id` and a consumer's merge keys it as a distinct
+ * `transport-message-id` and a consumer's merge keys it as a distinct
  * `OpenAIMessage`. One model turn is one message; the batch of tool outputs for
  * that turn is a second message. A run that calls one tool therefore produces
  * three messages: the turn that emitted the calls, the tool outputs, and the
  * final text turn. This is the agent's choice of chunking — the codec is
- * agnostic, keying messages purely by `codec-message-id`.
+ * agnostic, keying messages purely by `transport-message-id`.
  *
  * The `function_call_output` events land in their own message: a consumer merges
- * them by `codec-message-id` alone, so a renderer pairs a call with its output
+ * them by `transport-message-id` alone, so a renderer pairs a call with its output
  * across messages by `call_id`.
  *
  * Each piped stream carries the raw `/responses` events (model turn) or the
@@ -122,7 +122,7 @@ async function* outputStream(outputs: OpenAIOutput[]): AsyncGenerator<OpenAIOutp
 /**
  * The model turn followed by a `tool-approval-request` for each gated call it
  * emitted, all on one pipe. Emitting the request as the tail of the model turn's
- * own pipe puts it on the SAME `codec-message-id` as the `function_call` it
+ * own pipe puts it on the SAME `transport-message-id` as the `function_call` it
  * gates, so the request's `approval: 'pending'` state, the client's
  * `tool-approval-response` decision (addressed to that message), and the
  * `function_call` itself all merge onto one message. Publishing the request as a

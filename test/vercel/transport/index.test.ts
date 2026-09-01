@@ -20,7 +20,7 @@ describe('Vercel createClientTransport', () => {
       payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
     });
 
-    expect(sent.codecMessageId).toBeTruthy();
+    expect(sent.transportMessageId).toBeTruthy();
     expect(channel.publishCalls.length).toBeGreaterThan(0);
     transport.close();
   });

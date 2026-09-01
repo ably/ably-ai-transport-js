@@ -10,7 +10,7 @@ import type { UIMessage } from 'ai';
  * Each conversation holds two things:
  *
  * - the **domain `UIMessage`s** (never the transport's internal
- *   `codecMessageId`), which is what a client seeds `useChat` from;
+ *   `transportMessageId`), which is what a client seeds `useChat` from;
  * - the **channel serial** the stored messages are complete up to. Hydration
  *   hands that serial to `ChatTransport.readSince`, which walks the channel
  *   back only as far as it and returns the messages published since. Without

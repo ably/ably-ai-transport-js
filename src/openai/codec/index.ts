@@ -71,7 +71,7 @@ export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
   createEncoder: (channel: ChannelWriter, options?: EncoderOptions): Encoder<unknown, OpenAIOutput> => {
     const inner = outputCodec.createEncoder(channel, options);
     // The input direction publishes through its own core so it shares the
-    // header stamping (codec-message-id from opts.messageId, the caller's
+    // header stamping (transport-message-id from opts.messageId, the caller's
     // extras) every codec input gets.
     const inputCore = createEncoderCore(channel, options ?? {});
     return {

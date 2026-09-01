@@ -40,7 +40,7 @@ export const fSourceId = strField('sourceId', '');
 
 // --- input-side bindings (shared by the input descriptors' encode/decode) ---
 
-/** Domain message id (`message.id`) stamped on every user-message part — distinct from the wire codec-message-id transport header. */
+/** Domain message id (`message.id`) stamped on every user-message part — distinct from the wire transport-message-id transport header. */
 export const fMessageId = strField('messageId');
 /**
  * The domain message id an action addresses — the assistant message an

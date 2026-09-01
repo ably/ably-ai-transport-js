@@ -6,12 +6,12 @@
  *
  * How it merges:
  *
- * - `message` events bucket by `meta.codecMessageId`, in first-seen order —
+ * - `message` events bucket by `meta.transportMessageId`, in first-seen order —
  *   the logical message a wire event belongs to.
  * - Agent outputs and `kind: 'chunk'` inputs (tool resolutions) are UIMessage
  *   chunks; each bucket's chunks replay through the AI SDK's own reducer,
  *   `readUIMessageStream`. A chunk naming a `toolCallId` routes to whichever
- *   bucket already holds that call, not to its own codec-message-id: the
+ *   bucket already holds that call, not to its own transport-message-id: the
  *   step writer mints a fresh id per publish, so a server tool's output
  *   arrives under an id of its own and would otherwise never reach the
  *   assistant that called it.
@@ -75,7 +75,7 @@ const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(can
 
 /**
  * Merge a whole-message input into the bucket. The first one is taken as the
- * base; later carriers of the same codec-message-id contribute only parts not
+ * base; later carriers of the same transport-message-id contribute only parts not
  * already present, so a multi-part turn reassembles and a redelivered wire
  * event merges into the message it already contributed to.
  * @param bucket - The bucket to merge into.
@@ -150,7 +150,7 @@ export const mergeMessages = async (events: readonly VercelTransportEvent[]): Pr
 
   for (const event of events) {
     if (event.kind !== 'message') continue;
-    const id = event.meta.codecMessageId;
+    const id = event.meta.transportMessageId;
     if (id === undefined) continue;
     const bucket = bucketFor(id);
     for (const output of event.outputs) routeChunk(output, id);

@@ -12,7 +12,7 @@ import type { RunSummary, ThreadMessage } from '../lib/merge-thread';
 
 interface MessageListProps {
   // The merged thread, in order. All correlation (run status, approvals) keys
-  // on each message's codec-message-id and run-id.
+  // on each message's transport-message-id and run-id.
   messages: ThreadMessage[];
   // The merged run state, for per-message status and error placement.
   runs: ReadonlyMap<string, RunSummary>;
@@ -21,10 +21,10 @@ interface MessageListProps {
   // Filled with a callback that re-pins the transcript to the bottom, so the
   // container can scroll to the latest after sending.
   scrollToEndRef: RefObject<(() => void) | null>;
-  // Approve / deny a gated tool call. The codec-message-id addresses the
+  // Approve / deny a gated tool call. The transport-message-id addresses the
   // assistant message the approval merges onto; the call_id names the gated call.
-  onApproveTool: (codecMessageId: string, callId: string) => void;
-  onDenyTool: (codecMessageId: string, callId: string) => void;
+  onApproveTool: (transportMessageId: string, callId: string) => void;
+  onDenyTool: (transportMessageId: string, callId: string) => void;
 }
 
 function LoadingHistory() {
@@ -54,10 +54,10 @@ export function MessageList({ messages, runs, loading, scrollToEndRef, onApprove
   // send), so resolve it to its reply run via the run-start's trigger stamp.
   const runIdByTrigger = new Map<string, string>();
   for (const [runId, run] of runs) {
-    if (run.inputCodecMessageId !== undefined) runIdByTrigger.set(run.inputCodecMessageId, runId);
+    if (run.inputTransportMessageId !== undefined) runIdByTrigger.set(run.inputTransportMessageId, runId);
   }
   const runIdOf = (message: ThreadMessage): string | undefined =>
-    message.runId ?? runIdByTrigger.get(message.codecMessageId);
+    message.runId ?? runIdByTrigger.get(message.transportMessageId);
 
   // Hide messages that render nothing — a message holding only
   // function_call_output items, or only a tool-approval-request's state,
@@ -134,7 +134,7 @@ export function MessageList({ messages, runs, loading, scrollToEndRef, onApprove
                 : undefined;
             return (
               <MessageBubble
-                key={message.codecMessageId}
+                key={message.transportMessageId}
                 message={message}
                 toolOutputs={toolOutputs}
                 toolStates={toolStates}
@@ -143,10 +143,10 @@ export function MessageList({ messages, runs, loading, scrollToEndRef, onApprove
                 status={bubbleStatus}
                 errorMessage={errorMessage}
                 onApproveTool={(callId) => {
-                  onApproveTool(message.codecMessageId, callId);
+                  onApproveTool(message.transportMessageId, callId);
                 }}
                 onDenyTool={(callId) => {
-                  onDenyTool(message.codecMessageId, callId);
+                  onDenyTool(message.transportMessageId, callId);
                 }}
               />
             );

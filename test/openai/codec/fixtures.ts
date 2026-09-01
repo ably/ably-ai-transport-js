@@ -8,7 +8,7 @@
 import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/index.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 
@@ -402,10 +402,10 @@ export const textRun = (itemId: string, text: string): Responses.ResponseStreamE
 // --- transport-header helpers ------------------------------------------------
 
 /**
- * An encoder `onAblyMessage` hook that stamps run-id and codec-message-id on
+ * An encoder `onAblyMessage` hook that stamps run-id and transport-message-id on
  * every outgoing message.
  * @param runId - The run id to stamp.
- * @param messageId - The codec-message-id to stamp.
+ * @param messageId - The transport-message-id to stamp.
  * @returns The onAblyMessage hook.
  */
 export const stampHeaders =
@@ -414,7 +414,7 @@ export const stampHeaders =
     const transport = (msg.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
     if (transport) {
       transport[HEADER_RUN_ID] = runId;
-      transport[HEADER_CODEC_MESSAGE_ID] = messageId;
+      transport[HEADER_TRANSPORT_MESSAGE_ID] = messageId;
     }
   };
 

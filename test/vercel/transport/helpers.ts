@@ -40,7 +40,7 @@ const makeMeta = (overrides: Partial<WireMeta> = {}): WireMeta => ({
   codec: {},
   headers: {},
   serial: 'serial-1',
-  codecMessageId: undefined,
+  transportMessageId: undefined,
   runId: undefined,
   stepId: undefined,
   stepStartSerial: undefined,
@@ -53,9 +53,9 @@ const makeMeta = (overrides: Partial<WireMeta> = {}): WireMeta => ({
   parent: undefined,
   forkOf: undefined,
   regenerates: undefined,
-  inputCodecMessageId: undefined,
-  inputCodecMessageIds: undefined,
-  steerCodecMessageIds: undefined,
+  inputTransportMessageId: undefined,
+  inputTransportMessageIds: undefined,
+  steerTransportMessageIds: undefined,
   ...overrides,
 });
 
@@ -303,7 +303,7 @@ export class FakeClientTransport implements ClientTransport<VercelInput, VercelO
           })
         : Promise.resolve(autoRunId);
     return {
-      codecMessageId: opts?.codecMessageId ?? `cm-${String(this._publishCount)}`,
+      transportMessageId: opts?.transportMessageId ?? `cm-${String(this._publishCount)}`,
       eventId: `ev-${String(this._publishCount)}`,
       runId,
     };

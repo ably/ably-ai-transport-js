@@ -5,10 +5,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/types.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
@@ -276,18 +276,18 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg).messageId).toBe('chunk-id');
     });
 
-    it('stamps codec-message-id from WriteOptions on all publishes', async () => {
+    it('stamps transport-message-id from WriteOptions on all publishes', async () => {
       const encoder = createEncoder(writer);
       const perWrite = { messageId: 'msg-1' };
       await encoder.publishOutput({ type: 'start', messageId: 'msg-1' }, perWrite);
       await encoder.publishOutput({ type: 'text-start', id: 'txt-1' }, perWrite);
 
       const startMsg = firstPublish(writer);
-      expect(headersOf(startMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(startMsg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
 
       const second = writer.publishCalls[1];
       if (!second || Array.isArray(second)) throw new Error('expected single-message second publish');
-      expect(headersOf(second)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(second)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
     });
 
     it('encodes finish-step', async () => {
@@ -564,7 +564,7 @@ describe('Vercel encoder', () => {
       expect(msg.name).toBe(EVENT_AI_OUTPUT);
       expect(headersOf(msg).kind).toBe('tool-output-available');
       expect(headersOf(msg).toolCallId).toBe('tc-1');
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { output: unknown };
       expect(data.output).toEqual({ temp: 72 });

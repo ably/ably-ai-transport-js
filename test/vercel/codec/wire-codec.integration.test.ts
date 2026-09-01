@@ -6,7 +6,7 @@
  * reconstructs the assistant message by feeding the chunks — outputs and the
  * chunk-shaped input body alike — through the provider's own reducer
  * (`readUIMessageStream` from `ai`). The SDK merges nothing: the only
- * application work is bucketing the interleaved wire by codec-message-id,
+ * application work is bucketing the interleaved wire by transport-message-id,
  * which is the demultiplexing a provider reducer cannot do itself.
  */
 
@@ -14,7 +14,7 @@ import type * as Ably from 'ably';
 import * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -23,10 +23,10 @@ import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-clien
 const codec = createUIMessageCodec();
 
 /**
- * Stamp run and codec-message-id transport headers on every outgoing message,
+ * Stamp run and transport-message-id transport headers on every outgoing message,
  * as the transport layer would.
  * @param runId - The run ID to stamp.
- * @param messageId - The codec-message-id to stamp.
+ * @param messageId - The transport-message-id to stamp.
  * @returns An onAblyMessage callback for encoder options.
  */
 const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) => {
@@ -34,7 +34,7 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
   const transport = (msg.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
   if (transport) {
     transport[HEADER_RUN_ID] = runId;
-    transport[HEADER_CODEC_MESSAGE_ID] = messageId;
+    transport[HEADER_TRANSPORT_MESSAGE_ID] = messageId;
   }
 };
 
@@ -74,7 +74,7 @@ describe('Vercel wire-codec provider-reducer roundtrip', () => {
     const decoder = codec.createDecoder();
     const messageId = 'asst-1';
 
-    // The application's demultiplexing: bucket chunks by codec-message-id, in
+    // The application's demultiplexing: bucket chunks by transport-message-id, in
     // wire order. Inputs whose bodies are provider chunks land in the same
     // bucket as the outputs, so one merge covers both directions.
     const buckets = new Map<string, AI.UIMessageChunk[]>();
@@ -85,7 +85,7 @@ describe('Vercel wire-codec provider-reducer roundtrip', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      const id = getTransportHeaders(msg)[HEADER_CODEC_MESSAGE_ID];
+      const id = getTransportHeaders(msg)[HEADER_TRANSPORT_MESSAGE_ID];
       if (id === undefined) return;
       const bucket = buckets.get(id) ?? [];
       buckets.set(id, bucket);
@@ -115,7 +115,7 @@ describe('Vercel wire-codec provider-reducer roundtrip', () => {
     await encoder.close();
 
     // The client's half: the tool resolution, published as the provider's own
-    // chunk against the assistant's codec-message-id.
+    // chunk against the assistant's transport-message-id.
     const clientEncoder = codec.createEncoder(pubChannel);
     await clientEncoder.publishInput(
       {

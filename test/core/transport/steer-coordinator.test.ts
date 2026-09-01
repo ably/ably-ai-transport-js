@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_RUN_END,
   EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { WriteOptions } from '../../../src/core/codec/types.js';
 import { SteerCoordinator } from '../../../src/core/transport/steer-coordinator.js';
@@ -67,12 +67,12 @@ const ablyMsg = (
     version: { serial },
   }) as unknown as Ably.InboundMessage;
 
-// Pull the steer publish's minted codec-message-id off the latest publish call.
-const lastSteerCodecMessageId = (h: Harness): string => {
+// Pull the steer publish's minted transport-message-id off the latest publish call.
+const lastSteerTransportMessageId = (h: Harness): string => {
   const last = h.publishCalls.at(-1);
   if (!last) throw new Error('no publish observed');
-  const id = last.opts.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
-  if (!id) throw new Error('publish has no codec-message-id');
+  const id = last.opts.extras?.headers?.[HEADER_TRANSPORT_MESSAGE_ID];
+  if (!id) throw new Error('publish has no transport-message-id');
   return id;
 };
 
@@ -104,7 +104,7 @@ describe('SteerCoordinator', () => {
       await expect(published).resolves.toEqual({ serial: 'ack-serial-1' });
     });
 
-    it('stamps the resolved runId, the publisher clientId, and a minted codec-message-id', async () => {
+    it('stamps the resolved runId, the publisher clientId, and a minted transport-message-id', async () => {
       const { coord, publishCalls } = h;
       coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
@@ -112,7 +112,7 @@ describe('SteerCoordinator', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers.role).toBe('user');
       expect(headers['run-client-id']).toBe('client-a');
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toMatch(/^[0-9a-f-]{36}$/);
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toMatch(/^[0-9a-f-]{36}$/);
     });
 
     it('rejects both promises when the runIdPromise rejects', async () => {
@@ -182,12 +182,12 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const id = lastSteerCodecMessageId(h);
+      const id = lastSteerTransportMessageId(h);
       // Agent stamps the id on a response message.
       coord.observeMessage(
         ablyMsg('ai-output', {
           [HEADER_RUN_ID]: 'run-1',
-          [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify([id]),
+          [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: JSON.stringify([id]),
         }),
       );
       coord.observeMessage(ablyMsg(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_REASON]: 'complete' }));
@@ -201,7 +201,7 @@ describe('SteerCoordinator', () => {
       coord.observeMessage(
         ablyMsg('ai-output', {
           [HEADER_RUN_ID]: 'run-1',
-          [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify(['some-other-id']),
+          [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: JSON.stringify(['some-other-id']),
         }),
       );
       coord.observeMessage(ablyMsg(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_REASON]: 'complete' }));
@@ -222,40 +222,43 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const s1 = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'a' });
       await flush();
-      const idA = lastSteerCodecMessageId(h);
+      const idA = lastSteerTransportMessageId(h);
       const s2 = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'b' });
       await flush();
-      const idB = lastSteerCodecMessageId(h);
+      const idB = lastSteerTransportMessageId(h);
       // Two response deltas, each stamping one id.
       coord.observeMessage(
-        ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify([idA]) }),
+        ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: JSON.stringify([idA]) }),
       );
       coord.observeMessage(
-        ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify([idB]) }),
+        ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: JSON.stringify([idB]) }),
       );
       coord.observeMessage(ablyMsg(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_REASON]: 'complete' }));
       await expect(s1.outcome).resolves.toEqual({ consumed: true, runTerminalReason: 'complete' });
       await expect(s2.outcome).resolves.toEqual({ consumed: true, runTerminalReason: 'complete' });
     });
 
-    it('ignores malformed JSON in steer-codec-message-ids', async () => {
+    it('ignores malformed JSON in steer-transport-message-ids', async () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
       coord.observeMessage(
-        ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_CODEC_MESSAGE_IDS]: 'not-json' }),
+        ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: 'not-json' }),
       );
       coord.observeMessage(ablyMsg(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_REASON]: 'complete' }));
       await expect(outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });
     });
 
-    it('ignores a non-array JSON payload in steer-codec-message-ids', async () => {
+    it('ignores a non-array JSON payload in steer-transport-message-ids', async () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const id = lastSteerCodecMessageId(h);
+      const id = lastSteerTransportMessageId(h);
       coord.observeMessage(
-        ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify({ id }) }),
+        ablyMsg('ai-output', {
+          [HEADER_RUN_ID]: 'run-1',
+          [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: JSON.stringify({ id }),
+        }),
       );
       coord.observeMessage(ablyMsg(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_REASON]: 'complete' }));
       await expect(outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });

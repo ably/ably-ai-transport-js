@@ -99,15 +99,15 @@ interface CreateRunParams {
   invocationId: string;
   /** The opening action: publish `ai-run-start`, publish `ai-run-resume`, or adopt without publishing. */
   open: 'start' | 'resume' | 'adopt';
-  /** The triggering input's codec-message-id, when known. */
-  inputCodecMessageId?: string;
+  /** The triggering input's transport-message-id, when known. */
+  inputTransportMessageId?: string;
   /** The triggering input's publisher, stamped on the opening event as `input-client-id`. */
   inputClientId?: string;
-  /** Structural parent codec-message-id (fresh open only). */
+  /** Structural parent transport-message-id (fresh open only). */
   parent?: string;
-  /** Forked codec-message-id for an edit (fresh open only). */
+  /** Forked transport-message-id for an edit (fresh open only). */
   forkOf?: string;
-  /** Regenerated codec-message-id (fresh open only). */
+  /** Regenerated transport-message-id (fresh open only). */
   regenerates?: string;
 }
 
@@ -126,11 +126,11 @@ interface RegisteredRun {
   /** The run's error hook, from {@link OpenRunHooks.onError}; a cancel-hook failure delivers here instead of the transport's `error` stream. */
   onError?: (error: Ably.ErrorInfo) => void;
   /**
-   * Called with a live steering message's codec-message-id — a client input
+   * Called with a live steering message's transport-message-id — a client input
    * observed under this run's run-id. The run's closure tracks it (skipping
    * the trigger and already-answered steers) and fires its `onSteer` hint.
    */
-  onSteerMessage: (codecMessageId: string) => void;
+  onSteerMessage: (transportMessageId: string) => void;
 }
 
 /**
@@ -178,7 +178,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * and its retry still needs the cancel.
    */
   private readonly _seenRunIds = new Map<string, true>();
-  /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
+  /** Steering-message transport-message-ids observed before their run was opened, keyed by run-id. */
   private readonly _preOpenSteersByRunId = new Map<string, Set<string>>();
 
   /** The channel listener — one bound reference so `close()` can unsubscribe it. */
@@ -301,7 +301,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         runId,
         invocationId,
         open: continuation ? 'resume' : 'start',
-        inputCodecMessageId: opts?.inputCodecMessageId ?? inputMeta?.codecMessageId,
+        inputTransportMessageId: opts?.inputTransportMessageId ?? inputMeta?.transportMessageId,
         // The triggering input's publisher, stamped on the opening event as
         // `input-client-id`. It is how a consumer tells which client's send a
         // run answers, so several clients on one channel can agree that only
@@ -358,7 +358,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * @returns The run's write handle.
    */
   private _createRun(params: CreateRunParams, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> {
-    const { runId, invocationId, inputCodecMessageId } = params;
+    const { runId, invocationId, inputTransportMessageId } = params;
 
     // The run's cancel controller: an accepted cancel aborts it, ending
     // in-flight pipes `'cancelled'` and firing the handle's `abortSignal`.
@@ -374,7 +374,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // and the per-attempt stamp delta; hasProducedOutput gates the initial
     // pass; knownSteerIds dedups a redelivered steer; consideredSteerIds
     // accumulates the ids step attempts took for stamping — the steer half of
-    // the input-codec-message-ids bracket receipt on suspend/end.
+    // the input-transport-message-ids bracket receipt on suspend/end.
     const steerTracker = new RunSteerTracker();
     let hasProducedOutput = false;
     const knownSteerIds = new Set<string>();
@@ -383,19 +383,19 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     /**
      * Track one steering message for this run. Skips the run's own triggering
      * input (the initial pass answers it) and a steer already tracked.
-     * @param codecMessageId - The steering message's codec-message-id.
+     * @param transportMessageId - The steering message's transport-message-id.
      * @returns True iff the steer became pending.
      */
-    const trackSteer = (codecMessageId: string): boolean => {
-      if (codecMessageId === inputCodecMessageId) return false;
-      if (knownSteerIds.has(codecMessageId)) return false;
-      knownSteerIds.add(codecMessageId);
-      steerTracker.addPending(codecMessageId);
+    const trackSteer = (transportMessageId: string): boolean => {
+      if (transportMessageId === inputTransportMessageId) return false;
+      if (knownSteerIds.has(transportMessageId)) return false;
+      knownSteerIds.add(transportMessageId);
+      steerTracker.addPending(transportMessageId);
       return true;
     };
 
     /**
-     * The `input-codec-message-ids` bracket receipt for this run's terminal
+     * The `input-transport-message-ids` bracket receipt for this run's terminal
      * events: the trigger plus every steer a step attempt took for stamping.
      * `undefined` until the run has produced output — a run that published
      * nothing considered nothing, so its bracket claims nothing.
@@ -403,7 +403,9 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
      */
     const consideredInputIds = (): string[] | undefined => {
       if (!hasProducedOutput) return undefined;
-      return inputCodecMessageId === undefined ? [...consideredSteerIds] : [inputCodecMessageId, ...consideredSteerIds];
+      return inputTransportMessageId === undefined
+        ? [...consideredSteerIds]
+        : [inputTransportMessageId, ...consideredSteerIds];
     };
 
     /**
@@ -432,8 +434,8 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       controller,
       onCancel: hooks?.onCancel,
       onError: hooks?.onError,
-      onSteerMessage: (codecMessageId) => {
-        if (trackSteer(codecMessageId)) notifySteer();
+      onSteerMessage: (transportMessageId) => {
+        if (trackSteer(transportMessageId)) notifySteer();
       },
     };
     this._registeredRuns.set(runId, registration);
@@ -510,8 +512,8 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         inputClientId: params.inputClientId,
         // Anchor the opening event to its trigger, so a client that published
         // the input resolves the run-id from the run-start's
-        // input-codec-message-id header (PublishInputResult.runId).
-        inputCodecMessageId,
+        // input-transport-message-id header (PublishInputResult.runId).
+        inputTransportMessageId,
         continuation: params.open === 'resume',
       });
     })();
@@ -573,7 +575,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       consumeSteerStampIds: () => {
         // The moment a step attempt takes drained steers for stamping is the
         // moment they count as considered — the same transfer point the
-        // per-output steer-codec-message-ids stamp uses, so the bracket
+        // per-output steer-transport-message-ids stamp uses, so the bracket
         // receipt and the stamps agree.
         const ids = steerTracker.consumeRecentlyProcessed();
         consideredSteerIds.push(...ids);
@@ -600,7 +602,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         forkOf: params.forkOf,
         regenerates: params.regenerates,
         inputClientId: params.inputClientId,
-        inputCodecMessageId,
+        inputTransportMessageId,
       }),
     });
 
@@ -817,23 +819,23 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     const { meta } = event;
     const eventRunId = meta.runId;
     if (eventRunId === undefined) return;
-    if (event.inputs.length === 0 || meta.codecMessageId === undefined) return;
+    if (event.inputs.length === 0 || meta.transportMessageId === undefined) return;
 
     const reg = this._registeredRuns.get(eventRunId);
     if (reg) {
-      reg.onSteerMessage(meta.codecMessageId);
+      reg.onSteerMessage(meta.transportMessageId);
       return;
     }
-    this._bufferPreOpenSteerId(eventRunId, meta.codecMessageId);
+    this._bufferPreOpenSteerId(eventRunId, meta.transportMessageId);
   }
 
   /**
-   * Union a steer's codec-message-id into the bounded pre-open buffer,
+   * Union a steer's transport-message-id into the bounded pre-open buffer,
    * FIFO-evicting the oldest run's buffer at {@link PRE_OPEN_STEER_LIMIT}.
    * @param runId - The run the steer belongs to.
-   * @param codecMessageId - The steer's codec-message-id.
+   * @param transportMessageId - The steer's transport-message-id.
    */
-  private _bufferPreOpenSteerId(runId: string, codecMessageId: string): void {
+  private _bufferPreOpenSteerId(runId: string, transportMessageId: string): void {
     const evicted = evictOldestIfFull(this._preOpenSteersByRunId, runId, PRE_OPEN_STEER_LIMIT);
     if (evicted !== undefined) {
       this._logger.warn('AgentTransport._bufferPreOpenSteerId(); pre-open steer buffer full, dropping oldest run', {
@@ -842,8 +844,8 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       });
     }
     const set = this._preOpenSteersByRunId.get(runId);
-    if (set) set.add(codecMessageId);
-    else this._preOpenSteersByRunId.set(runId, new Set([codecMessageId]));
+    if (set) set.add(transportMessageId);
+    else this._preOpenSteersByRunId.set(runId, new Set([transportMessageId]));
   }
 
   /**

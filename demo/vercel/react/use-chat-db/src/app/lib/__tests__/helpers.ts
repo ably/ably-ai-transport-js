@@ -25,7 +25,7 @@ function makeMeta(overrides: Partial<WireMeta> = {}): WireMeta {
     codec: {},
     headers: {},
     serial: 'serial-1',
-    codecMessageId: undefined,
+    transportMessageId: undefined,
     runId: undefined,
     stepId: undefined,
     stepStartSerial: undefined,
@@ -38,9 +38,9 @@ function makeMeta(overrides: Partial<WireMeta> = {}): WireMeta {
     parent: undefined,
     forkOf: undefined,
     regenerates: undefined,
-    inputCodecMessageId: undefined,
-    inputCodecMessageIds: undefined,
-    steerCodecMessageIds: undefined,
+    inputTransportMessageId: undefined,
+    inputTransportMessageIds: undefined,
+    steerTransportMessageIds: undefined,
     ...overrides,
   };
 }
@@ -66,7 +66,7 @@ export function userMessage(id: string, text: string): UIMessage {
 /** A `message` event carrying one user-message input under a wire id. */
 export function userEvent(wireId: string, domainId: string, text = 'hi'): Event {
   return messageEvent(
-    { codecMessageId: wireId, role: 'user' },
+    { transportMessageId: wireId, role: 'user' },
     { inputs: [{ kind: 'message', payload: userMessage(domainId, text) }] },
   );
 }
@@ -125,7 +125,7 @@ export class FakeClientTransport implements ClientTransport<VercelInput, VercelO
   publishInput(): Promise<PublishInputResult> {
     this._publishCount += 1;
     return Promise.resolve({
-      codecMessageId: `cm-${String(this._publishCount)}`,
+      transportMessageId: `cm-${String(this._publishCount)}`,
       eventId: `ev-${String(this._publishCount)}`,
       // Left pending on purpose: the chat transport resolves the run id off
       // the channel, so nothing in these tests awaits this.

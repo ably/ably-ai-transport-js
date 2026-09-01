@@ -93,9 +93,12 @@ export function useResponsesThread(options: UseResponsesThreadOptions = {}): Res
       foldRef.current.apply(event);
     } catch (error) {
       // A fold failure means the decoded sequence broke the fold's contract.
-      // Skip the one event, surface it, and keep the thread alive.
-      console.error('[openai-demo] failed to fold transport event', error, event);
-      onFoldErrorRef.current?.(error);
+      // Skip the one event, surface it, and keep the thread alive. The console
+      // is the fallback only: an app that handles onFoldError should not also
+      // get noise it cannot suppress.
+      const report = onFoldErrorRef.current;
+      if (report) report(error);
+      else console.error('[openai-demo] failed to fold transport event', error, event);
     }
   }, []);
 
@@ -136,8 +139,9 @@ export function useResponsesThread(options: UseResponsesThreadOptions = {}): Res
       publish(true);
     })().catch((error: unknown) => {
       if (disposed) return;
-      console.error('[openai-demo] history hydration failed', error);
-      onFoldErrorRef.current?.(error);
+      const report = onFoldErrorRef.current;
+      if (report) report(error);
+      else console.error('[openai-demo] history hydration failed', error);
       // Unblock the UI with whatever the live stream delivers.
       for (const event of bufferRef.current) applyEvent(event);
       bufferRef.current = [];

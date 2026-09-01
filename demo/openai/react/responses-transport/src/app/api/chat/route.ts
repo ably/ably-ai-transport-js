@@ -18,8 +18,8 @@
  * `function_call_output`, and continues `/responses` until the model produces a
  * final reply. A client-executed or approval-gated tool suspends the run: the
  * loop returns a `suspend` outcome and the route calls `run.suspend()`; a later
- * continuation (the client's tool-result or approval) resumes the run under the
- * same runId, re-entering this route. The loop publishes each unit of work under
+ * continuation (the client's `function_call_output` item or approval) resumes
+ * the run under the same runId, re-entering this route. The loop publishes each unit of work under
  * its own `run.pipe`, so a run that calls a tool produces several messages (the
  * model turn, the tool outputs, the final turn). Each pipe's stream goes to the
  * run as-is: the codec's descriptor table curates the wire, dropping the framing
@@ -136,8 +136,8 @@ export async function POST(req: Request) {
     }
   });
 
-  // Return the run-id on the HTTP response. The same id also arrives on the
-  // channel as `ai-run-start` / `ai-run-resume`, which is how the client's
-  // fold tracks the run without reading this response.
-  return Response.json({ runId: run.runId });
+  // The POST only wakes the agent. The run id arrives on the channel as
+  // `ai-run-start`, which is how the client's fold tracks the run, so nothing
+  // here needs a body.
+  return new Response('', { status: 202 });
 }

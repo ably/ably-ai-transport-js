@@ -33,9 +33,13 @@ const mockChatTransport: ChatTransport = {
   onForeignRun: () => () => {},
 };
 
+// The hydration hook connects the client transport before walking, so the
+// pair the provider hands out must include one.
+const mockTransport = { connect: async () => undefined };
+
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   useChatTransport: () => ({
-    transport: undefined,
+    transport: mockTransport,
     chatTransport: mockChatTransport,
     error: undefined,
   }),
@@ -102,7 +106,8 @@ describe('<Chat>', () => {
     mockSendMessages.mockResolvedValue(new ReadableStream<AI.UIMessageChunk>({ start: () => {} }));
 
     render(<Chat chatId="ai:test" />);
-    const input = screen.getByPlaceholderText('Type a message...');
+    // Hydration walks the channel before the chat mounts.
+    const input = await screen.findByPlaceholderText('Type a message...');
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
     fireEvent.change(input, { target: { value: 'hello' } });
@@ -123,7 +128,8 @@ describe('<Chat>', () => {
 
     render(<Chat chatId="ai:test" />);
 
-    const input = screen.getByPlaceholderText('Type a message...');
+    // Hydration walks the channel before the chat mounts.
+    const input = await screen.findByPlaceholderText('Type a message...');
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
 

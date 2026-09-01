@@ -4,14 +4,14 @@
  * `createMockModel()` returns a Vercel AI SDK language model whose token output
  * is scripted from the prompt; `createModel()` returns it when `MOCK_LLM` is
  * set. Only token generation is mocked: `streamText`, tool execution,
- * suspend/continuation, `toUIMessageStream` and the Ably publish run normally.
+ * continuations, `toUIMessageStream` and the Ably publish run normally.
  *
  * Responses by prompt:
  * - `Say "X"` / `... the word X`        -> replies `X`
- * - `what's the weather like?`          -> `getLocation` (client tool, suspends),
+ * - `what's the weather like?`          -> `getLocation` (client tool),
  *   then a weather sentence on the continuation
  * - `... weather forecast for <place>?` -> `getWeatherForecast` (approval,
- *   suspends), then a forecast sentence (or an acknowledgement if denied)
+ *   gated), then a forecast sentence (or an acknowledgement if denied)
  * - `plan` / `checklist` / `outline`    -> `updateChecklist` (server tool)
  *   several times: plans the steps, then flips each to active then done in
  *   LiveObjects, then an "all done" sentence

@@ -13,7 +13,7 @@ The suite needs no secrets:
   `nonprod:sandbox` endpoint, and the app gets an `ai` channel namespace with
   `mutableMessages` enabled (AIT streams by appending to messages).
 - **LLM**: a deterministic mock model replaces the provider. Only token
-  generation is mocked; `streamText`, tool execution, suspend/continuation,
+  generation is mocked; `streamText`, tool execution, continuations,
   `toUIMessageStream`, and the Ably publish all run normally.
 
 ## Running
@@ -42,13 +42,13 @@ Unset (normal `pnpm dev`), the demo uses production Ably and a real LLM provider
 `src/app/api/chat/mock-model.ts` is a Vercel AI SDK `LanguageModel` whose output
 is scripted from the prompt, wired in by `createModel()` behind `MOCK_LLM`:
 
-| Prompt                              | Reply                                                |
-| ----------------------------------- | ---------------------------------------------------- |
-| `Say "X" ...` / `... the word X`    | `X`                                                  |
-| `what's the weather like?`          | `getLocation` (client tool, suspends), then text     |
-| `... weather forecast for <place>?` | `getWeatherForecast` (approval, suspends), then text |
-| `plan` / `checklist` / `outline`    | `updateChecklist` (server tool) several times        |
-| `... a long story about a dragon`   | a long, slowly streamed, abort-aware reply           |
+| Prompt                              | Reply                                            |
+| ----------------------------------- | ------------------------------------------------ |
+| `Say "X" ...` / `... the word X`    | `X`                                              |
+| `what's the weather like?`          | `getLocation` (client tool), then text           |
+| `... weather forecast for <place>?` | `getWeatherForecast` (approval-gated), then text |
+| `plan` / `checklist` / `outline`    | `updateChecklist` (server tool) several times    |
+| `... a long story about a dragon`   | a long, slowly streamed, abort-aware reply       |
 
 It chooses tool-call vs answer by whether the prompt already carries a tool
 result or approval response. To add a scenario, add a `planResponse()` branch

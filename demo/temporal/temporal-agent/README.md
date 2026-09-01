@@ -57,11 +57,11 @@ Every turn appears in the Web UI as a `chatWorkflow` execution, newest first. Op
 
 ## How a turn flows
 
-1. The chat transport publishes the user message on the channel, then POSTs `{channelName, eventId}` to `/api/chat` (a continuation adds `runId`).
-2. The route starts a `chatWorkflow` whose workflow id is the invocation id and responds `{runId}` immediately — the invocation id for a fresh send (the plugin pins the run id to it), or the client's own `runId` for a continuation.
-3. The plugin's `openRun` activity locates the trigger in channel history and publishes `ai-run-start` (or `ai-run-resume` when the trigger names a run).
+1. The chat transport publishes the user message on the channel, then POSTs `{channelName, eventId}` to `/api/chat`. A continuation POSTs the same shape — the adapter never names a run.
+2. The route starts a `chatWorkflow` whose workflow id is the invocation id and answers 202. The client reads nothing from the body: the run id reaches it over the channel.
+3. The plugin's `openRun` activity locates the trigger in channel history and publishes `ai-run-start`, pinned to the invocation id so a retried process re-enters the same run.
 4. `runInferenceStep` re-enters the run with `publish: 'none'`, folds channel history into the model context, streams one `streamText` call through a transport step, and publishes the outcome's terminal inline. Server-tool calls loop through `runToolStep` activities and a follow-up inference.
-5. The reply reaches the browser over Ably; `useChat` renders the chunk stream the transport filters by the run id from step 2.
+5. The reply reaches the browser over Ably; `useChat` renders the chunk stream the adapter filters by the run id it read off `ai-run-start`.
 
 ## Try this
 
@@ -81,9 +81,20 @@ The demo loads the SDK's built output, so after editing SDK source:
 1. Rebuild from the repo root: `pnpm run build`
 2. Restart both the worker (`Ctrl-C` in terminal 2, then `pnpm dev:worker`) and the Next dev server.
 
+## Tests
+
+```bash
+pnpm test   # unit: the workflow (real TestWorkflowEnvironment, faked activities),
+            # the outcome helpers, the message fold, and the React glue
+```
+
+There is no Playwright suite. The shared e2e launcher boots only a Next.js dev
+server, and this demo also needs a Temporal dev server and a registered worker;
+see `demo/e2e/README.md` for the reasoning.
+
 ## Notes
 
-- **Workflow id = invocation id**. One workflow per HTTP POST. Continuations create a new workflow that resumes the existing run.
+- **Workflow id = invocation id**. One workflow per HTTP POST. A continuation creates a new workflow on a new run — the adapter's resolutions carry no run id.
 - **Concurrency**. Two POSTs on the same channel run as two independent workflows that share the channel with no coordination.
 - **`stopWhen: stepCountIs(1)`**. The inference activity calls `streamText` but forces it to stop after a single LLM call so the workflow controls the loop. Server tools are executed in follow-up activities, not inline.
 - **Durability boundary**. An LLM stream is not itself resumable mid-chunk; Temporal's durability applies at the step boundary — a failed activity is retried in full under the same `stepId`, and the retried publish supersedes.

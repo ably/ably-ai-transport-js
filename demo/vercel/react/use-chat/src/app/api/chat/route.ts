@@ -2,23 +2,24 @@
  * Chat API route — the agent behind the useChat adapter's POST.
  *
  * The adapter publishes every input on the Ably channel first, then POSTs a
- * pointer `{channelName, eventId, runId?}` here to wake the agent. The route
- * builds a fresh agent transport on the named channel, locates the triggering
- * input in channel history, folds the channel's history into the conversation,
- * opens the run, and returns `{runId}` immediately — the streaming happens
- * after the response, inside `after()`, and reaches the client over Ably
- * rather than this HTTP response.
+ * pointer `{channelName, eventId}` here to wake the agent. The route builds a
+ * fresh agent transport on the named channel, locates the triggering input in
+ * channel history, folds that history into the conversation, opens a run
+ * anchored to the input, and answers 202. Streaming happens after the
+ * response, inside `after()`, and reaches the client over Ably — the client
+ * reads nothing from this HTTP response, including the run id, which it
+ * resolves off the channel.
  *
  * Three tool execution patterns flow through here:
  * - Server-executed tools (getWeather, updateChecklist): streamText runs them
  *   inline, looping steps within the single run.
  * - Client-executed tools (getLocation): streamText finishes with
- *   `finishReason: 'tool-calls'`, the run suspends, the client executes the
- *   tool and publishes the output chunk, and its continuation POST resumes
- *   the run here (the published output carries the run-id header).
- * - Approval-gated tools (getWeatherForecast): the run suspends at
+ *   `finishReason: 'tool-calls'` and the turn ends. The client executes the
+ *   tool and publishes the output chunk, and its continuation POST wakes a
+ *   fresh run — the resolution carries no run id.
+ * - Approval-gated tools (getWeatherForecast): the turn ends at
  *   `approval-requested`; the client publishes the approval decision and POSTs
- *   a continuation. The folded conversation then carries the
+ *   a continuation. The new run's folded conversation carries the
  *   `approval-responded` part, so the tool's `needsApproval` returns false and
  *   streamText executes it without re-pausing.
  */
@@ -112,11 +113,10 @@ export async function POST(req: Request) {
     }
     conversation = await foldMessages(events);
 
-    // The located input drives the open: a continuation input carries the
-    // run-id header of the run it resumes, and a fresh send carries none —
-    // the transport re-enters or starts accordingly, anchors the run to the
-    // trigger so cancels route, and threads its structure so clients can
-    // anchor the reply.
+    // Opening from the located input anchors the run to its trigger, so
+    // cancels route back here and the client can resolve the run id off the
+    // channel. Every input the useChat adapter publishes carries no run id,
+    // so each one starts a fresh run.
     run = transport.openRun({ input: located }, { signal: req.signal });
   } catch (error) {
     close();

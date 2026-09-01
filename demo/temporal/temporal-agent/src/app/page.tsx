@@ -17,7 +17,10 @@ function ChatWhenReady({ channelName, clientId }: { channelName: string; clientI
   }
 
   return (
-    <ChatTransportProvider channelName={channelName}>
+    <ChatTransportProvider
+      channelName={channelName}
+      clientId={clientId}
+    >
       <Chat
         chatId={channelName}
         clientId={clientId}

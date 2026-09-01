@@ -52,18 +52,20 @@ function ranTool(turns: OpenAIMessage[], name: string): boolean {
 
 /**
  * Whether a getWeatherForecast call reached an approval decision — its per-call
- * state carries an `approval`, or its output is present (an approved run's
- * forecast, or a denial's rejection). Collected across all turns, since a call
- * and its output or state can be split across messages.
+ * state records the user's decision, or its output is present (an approved
+ * run's forecast, or a denial's rejection). `'pending'` does not count — the
+ * fold sets it the moment the request lands, so treating it as decided would
+ * retire the chip before the user has clicked anything. Collected across all
+ * turns, since a call and its output or state can be split across messages.
  */
 function decidedForecast(turns: OpenAIMessage[]): boolean {
   if (ranTool(turns, 'getWeatherForecast')) return true;
   for (const turn of turns) {
     const states = turn.toolCallStates ?? {};
     for (const item of turn.items) {
-      if (item.type === 'function_call' && item.name === 'getWeatherForecast' && states[item.call_id]?.approval) {
-        return true;
-      }
+      if (item.type !== 'function_call' || item.name !== 'getWeatherForecast') continue;
+      const approval = states[item.call_id]?.approval;
+      if (approval === 'approved' || approval === 'denied') return true;
     }
   }
   return false;

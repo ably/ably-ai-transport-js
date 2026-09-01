@@ -2,25 +2,35 @@
 
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
-import { useChatTransport } from '@ably/ai-transport/vercel/react';
 import { useAblyMessages } from '@ably/ai-transport/react';
 import type { ChatTransport } from '@ably/ai-transport/vercel';
+import type { UIMessage } from 'ai';
 import { useCallback, useEffect, useState } from 'react';
 import {
   Chat as ChatView,
   COMMON_SCENARIOS,
   hasClientTool,
   runClientTool,
+  stopAndCancel,
+  useChannelHydration,
   type CallbackLogEntry,
   type ClientToolLogEntry,
+  type DemoStepId,
   type Scenario,
 } from '@ably-ai-demos/frontend';
 import { ChecklistWidget } from './components/checklist-widget';
 
+// Pick shared scenarios by id, never by position: the shared list is edited
+// independently of this demo, and an index would silently change what the
+// demo offers (or drop off the end).
+const pickShared = (...ids: DemoStepId[]): Scenario[] =>
+  ids.flatMap((id) => COMMON_SCENARIOS.filter((scenario) => scenario.id === id));
+
 // The shared baseline scenarios this linear demo demonstrates (tools,
-// approvals, cancel, observability) plus the LiveObjects checklist entry.
+// approvals, multi-client sync, cancel, observability) plus the LiveObjects
+// checklist entry.
 const SCENARIOS: readonly Scenario[] = [
-  ...COMMON_SCENARIOS.slice(0, 3),
+  ...pickShared('server-weather', 'client-weather', 'approval-forecast'),
   {
     id: 'checklist',
     tag: 'LiveObjects checklist',
@@ -29,21 +39,35 @@ const SCENARIOS: readonly Scenario[] = [
     blurb:
       'The assistant plans a task checklist in Ably LiveObjects and flips each step to done as it works. The widget below the chat renders the live progress and restores it on reload.',
   },
-  ...COMMON_SCENARIOS.slice(6),
+  ...pickShared('multi-tab', 'cancel'),
+  // Intro-only entries (no id, so never tracked or offered as a chip).
+  ...COMMON_SCENARIOS.filter((scenario) => scenario.id === undefined),
 ];
 
 /**
- * Resolve the useChat adapter from the enclosing ChatTransportProvider, and
- * render the chat once it exists. A construction error renders in place of
- * the chat.
+ * Hydrate the conversation from the channel, then render the chat.
+ *
+ * This demo keeps no store: the channel is the whole record, so the walk runs
+ * with no serial and covers it end to end. Running it is also what makes
+ * `resume: true` work — `readSince` withholds a run that has not ended and
+ * retains its events for `reconnectToStream`, and without that a page that
+ * just loaded can only resume a run it watched start live, which it never
+ * did.
  */
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const { chatTransport, error } = useChatTransport();
+  const state = useChannelHydration();
 
-  if (!chatTransport) {
+  if (state.status === 'loading') {
+    return (
+      <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">
+        Loading conversation&hellip;
+      </div>
+    );
+  }
+  if (state.status === 'error') {
     return (
       <div className="flex h-dvh items-center justify-center text-sm text-red-400">
-        Transport unavailable{error ? `: ${error.message}` : ''}
+        Transport unavailable: {state.error.message}
       </div>
     );
   }
@@ -52,7 +76,8 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
     <ChatInner
       chatId={chatId}
       clientId={clientId}
-      chatTransport={chatTransport}
+      chatTransport={state.chatTransport}
+      initialMessages={state.initialMessages}
     />
   );
 }
@@ -61,10 +86,12 @@ function ChatInner({
   chatId,
   clientId,
   chatTransport,
+  initialMessages,
 }: {
   chatId: string;
   clientId?: string;
   chatTransport: ChatTransport;
+  initialMessages: UIMessage[];
 }) {
   // -- Callback & status logging for the debug pane -------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -89,17 +116,19 @@ function ChatInner({
     });
   }, []);
 
-  // useChat owns all message state; the adapter turns its sends into channel
-  // publishes plus the wake-the-agent POST, and its streams come off the
-  // channel. This demo does no history hydration — the live stream is the only
-  // message source. `resume: true` reconnects to a live run after a reload via
-  // the adapter's reconnectToStream.
+  // useChat owns all message state from here: it starts from the hydrated
+  // conversation, and the adapter turns its sends into channel publishes plus
+  // the wake-the-agent POST, with the reply streaming back off the channel.
+  // `resume: true` reconnects to a run still streaming after a reload, via the
+  // adapter's reconnectToStream.
   const { messages, sendMessage, stop, status, addToolOutput, addToolApprovalResponse } = useChat({
     id: chatId,
     transport: chatTransport,
+    messages: initialMessages,
     resume: true,
     // Auto-submit the continuation once addToolOutput resolves tool calls OR
-    // addToolApprovalResponse resolves approvals, so the suspended run resumes.
+    // addToolApprovalResponse resolves approvals. The resolution carries no
+    // run id, so its POST wakes a fresh run that answers.
     sendAutomaticallyWhen: ({ messages: msgs }) =>
       lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
       lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
@@ -154,13 +183,7 @@ function ChatInner({
   // starts, streaming while chunks arrive).
   const isRunning = status === 'submitted' || status === 'streaming';
 
-  // Stop is two operations. `stop()` closes this client's stream; only
-  // `chatTransport.cancel()` puts `ai-cancel` on the channel, which is what
-  // aborts the agent and tells every other participant the run is over.
-  const onStop = useCallback(() => {
-    void stop();
-    void chatTransport.cancel();
-  }, [stop, chatTransport]);
+  const onStop = useCallback(() => void stopAndCancel(stop, chatTransport), [stop, chatTransport]);
 
   const ablyMessages = useAblyMessages();
 

@@ -1,19 +1,26 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-import { clientTools, hasClientTool, runClientTool } from '../use-client-tools';
+import { hasClientTool, runClientTool, type ClientToolRegistry } from '../client-tools';
 import type { ClientToolLogEntry } from '../../components/debug-pane';
+
+// Throwaway executors are injected per call rather than registered on the
+// module's own map, so no test can leak a tool into another.
+const registry: ClientToolRegistry = {};
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  // Tests register throwaway executors; remove everything but the built-ins.
-  for (const name of Object.keys(clientTools)) {
-    if (name !== 'getLocation') delete clientTools[name];
-  }
+  for (const name of Object.keys(registry)) delete registry[name];
 });
 
 describe('hasClientTool', () => {
   it('reports registered tools', () => {
     expect(hasClientTool('getLocation')).toBe(true);
+  });
+
+  it('looks in an injected registry when one is given', () => {
+    registry.echo = async () => undefined;
+    expect(hasClientTool('echo', registry)).toBe(true);
+    expect(hasClientTool('getLocation', registry)).toBe(false);
   });
 
   it('reports unregistered tools as absent', () => {
@@ -28,16 +35,16 @@ describe('hasClientTool', () => {
 describe('runClientTool', () => {
   it('returns an errorText for an unregistered tool without logging', async () => {
     const onExecute = vi.fn();
-    const result = await runClientTool('nope', 'call-0', {}, onExecute);
+    const result = await runClientTool('nope', 'call-0', {}, onExecute, registry);
     expect(result).toEqual({ errorText: 'no client tool registered for nope' });
     expect(onExecute).not.toHaveBeenCalled();
   });
 
   it('executes the tool and reports executing then done with the output', async () => {
-    clientTools.echo = async (input) => ({ echoed: input });
+    registry.echo = async (input) => ({ echoed: input });
 
     const entries: ClientToolLogEntry[] = [];
-    const result = await runClientTool('echo', 'call-1', { text: 'hi' }, (entry) => entries.push(entry));
+    const result = await runClientTool('echo', 'call-1', { text: 'hi' }, (entry) => entries.push(entry), registry);
 
     expect(result).toEqual({ output: { echoed: { text: 'hi' } } });
     expect(entries).toHaveLength(2);
@@ -59,12 +66,12 @@ describe('runClientTool', () => {
   });
 
   it('returns an errorText and reports an error entry when the executor throws', async () => {
-    clientTools.boom = async () => {
+    registry.boom = async () => {
       throw new Error('kaboom');
     };
 
     const entries: ClientToolLogEntry[] = [];
-    const result = await runClientTool('boom', 'call-2', {}, (entry) => entries.push(entry));
+    const result = await runClientTool('boom', 'call-2', {}, (entry) => entries.push(entry), registry);
 
     expect(result).toEqual({ errorText: 'kaboom' });
     expect(entries).toHaveLength(2);
@@ -73,9 +80,9 @@ describe('runClientTool', () => {
   });
 
   it('falls back to a generic message when the executor throws a non-Error', async () => {
-    clientTools.boomString = () => Promise.reject('not-an-error');
+    registry.boomString = () => Promise.reject('not-an-error');
 
-    const result = await runClientTool('boomString', 'call-3', {});
+    const result = await runClientTool('boomString', 'call-3', {}, undefined, registry);
     expect(result).toEqual({ errorText: 'Client tool execution failed' });
   });
 

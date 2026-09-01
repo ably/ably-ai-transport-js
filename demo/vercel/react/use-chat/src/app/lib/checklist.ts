@@ -3,7 +3,7 @@
  * agent endpoint.
  *
  * The checklist is the agent's live task list for a multi-step request. It
- * lives directly on the session channel's root object (a `LiveMap`) in Ably
+ * lives directly on the conversation channel's root object (a `LiveMap`) in Ably
  * LiveObjects, keyed by the step's 1-based position as a string ("1", "2", …).
  * Each entry carries the step text and its status, and the agent flips one
  * step's status at a time — a granular field update on shared state, synced to

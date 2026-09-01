@@ -29,13 +29,11 @@
  */
 
 import { Context } from '@temporalio/activity';
-import Ably from 'ably';
 import { convertToModelMessages, readUIMessageStream, stepCountIs, streamText, toUIMessageStream } from 'ai';
 import type { UIMessage, UIMessageChunk } from 'ai';
 
 import {
   channelAgent,
-  ErrorCode,
   type AgentRunTransport,
   type AgentTransport,
   type InvocationData,
@@ -57,6 +55,7 @@ import { SYSTEM_PROMPT } from '../app/api/chat/prompt.js';
 import { tools } from '../app/api/chat/tools.js';
 import { foldMessages } from '../lib/fold-messages.js';
 import { logger, makeAbly } from './ably.js';
+import { filterServerToolCalls, publishRunTerminal } from './outcome.js';
 import type { InferenceOutcome, ToolCallInfo } from './shared.js';
 
 // Concrete transport types this file works with — every activity uses the
@@ -102,29 +101,6 @@ async function loadConversation(transport: Transport): Promise<UIMessage[]> {
     exhausted = batch.exhausted;
   }
   return foldMessages(events);
-}
-
-async function publishRunTerminal(run: Run, outcome: InferenceOutcome): Promise<void> {
-  switch (outcome.kind) {
-    case 'awaiting-client':
-      // The client owes a tool result or an approval. Nothing resumes this
-      // run, so end it complete and let the resolution wake a new one.
-      await run.end({ reason: 'complete' });
-      return;
-    case 'server-tools':
-      // The only non-terminal outcome — nothing to publish; the workflow loops
-      // with a follow-up inference after its tool steps.
-      return;
-    case 'error':
-      await run.end({
-        reason: 'error',
-        error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.RunResponseStreamFailed, 500),
-      });
-      return;
-    default:
-      // publish the terminal reason (complete / cancelled)
-      await run.end({ reason: outcome.kind });
-  }
 }
 
 // -----------------------------------------------------------------------------
@@ -246,14 +222,6 @@ async function lastFoldedMessage(stream: ReadableStream<UIMessageChunk>): Promis
 // Narrow the SDK's `PendingToolCall[]` down to the ones whose `execute` lives
 // in the server registry, in the shape the workflow needs to dispatch a
 // `runToolStep`.
-function filterServerToolCalls(
-  calls: readonly { toolCallId: string; toolName: string; input: unknown }[],
-): ToolCallInfo[] {
-  return calls
-    .filter((call) => typeof (tools as Record<string, { execute?: unknown }>)[call.toolName]?.execute === 'function')
-    .map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName, input: call.input }));
-}
-
 // -----------------------------------------------------------------------------
 // runToolStep — execute one server tool and publish its result as a single
 // tool-output-available chunk on its own SDK step. On failure it throws so

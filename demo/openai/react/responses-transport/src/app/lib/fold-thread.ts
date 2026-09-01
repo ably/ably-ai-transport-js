@@ -135,8 +135,28 @@ interface MessageFold {
   toolCallStates: Record<string, OpenAIToolCallState>;
 }
 
-/** Structural-equality check for merged input items and content parts. */
-const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+/**
+ * Recursively sort object keys so two values that differ only in key order
+ * serialise the same. The optimistic local echo is the caller's own object,
+ * while the wire echo comes back from the codec's decode with its fields in
+ * the decoder's order — a plain `JSON.stringify` comparison reads those as two
+ * different parts and the sender sees their own text twice.
+ * @param value - The value to canonicalise.
+ * @returns The value with every nested object's keys in sorted order.
+ */
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map((entry) => canonical(entry));
+  if (value === null || typeof value !== 'object') return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    // CAST: `value` is a non-null object, so indexing it by its own key is safe.
+    sorted[key] = canonical((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+};
+
+/** Structural-equality check for merged input items and content parts, key order aside. */
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 
 /**
  * Whether an item is a client-published input message (a user turn's item), as

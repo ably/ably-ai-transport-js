@@ -137,7 +137,7 @@ test.describe('use-chat-wdk — durable text chat', () => {
     await approve.click();
 
     // Approving publishes a tool-approval-response; the client's continuation
-    // starts a fresh workflow that resumes the run (ai-run-resume), and the
+    // starts a fresh workflow that opens a new run (ai-run-start), and the
     // forecast arrives over Ably.
     await expect(
       page.locator('[data-testid="message"][data-role="assistant"]').filter({ hasText: '5-day forecast for Tokyo' }),
@@ -159,7 +159,7 @@ test.describe('use-chat-wdk — durable text chat', () => {
     await page.getByRole('button', { name: 'Send' }).click();
 
     // getLocation has no server execute, so the turn ends; the client runs
-    // navigator.geolocation, sends the result, a fresh workflow resumes the run,
+    // navigator.geolocation, sends the result, a fresh workflow answers on a new run,
     // and the weather sentence (which the mock returns once the location is
     // known) arrives over Ably.
     await expect(

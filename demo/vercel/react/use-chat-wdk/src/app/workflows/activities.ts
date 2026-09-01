@@ -134,10 +134,10 @@ export async function openActivity(input: AitTurnInput, workflowRunId: string): 
       throw new RetryableError(`input event ${input.eventId} not found in channel history`, { retryAfter: '1s' });
     }
 
-    // The located input drives the open: its run-id header names the run a
-    // continuation re-enters, and a fresh turn opens under the pinned run id
-    // — the workflow run id, the same derivation the chat route used for its
-    // {runId} response.
+    // Opening from the located input anchors the run to its trigger. The run
+    // id is pinned to the workflow run id, so a retried process re-enters the
+    // same run; the client resolves that id off the channel, never from the
+    // route's response.
     const invocationId = `inv:${workflowRunId}`;
     const run = transport.openRun({
       input: located,
@@ -207,11 +207,21 @@ export async function inferenceActivity(
       const approved = filterServerToolCalls(approvedPendingToolCalls(messages));
       if (approved.length > 0) return { kind: 'server-tools', serverToolCalls: approved };
 
-      // A prior (dead) attempt of this activity already streamed tool calls,
+      // A prior (dead) attempt of THIS activity already streamed tool calls,
       // which the client may have answered by now. Route those instead of
       // re-running the model, so recovery completes the bookkeeping without
       // redoing finished work.
-      const unresolved = pendingToolCalls(messages);
+      //
+      // The ownership check is what keeps this honest. `pendingToolCalls`
+      // reads the newest assistant message in whatever list it is given, so
+      // without the check an unanswered call left by an EARLIER turn (a
+      // cancelled getLocation, a tab closed before the resolution published)
+      // would be picked up by every later send — each one returning here
+      // without ever calling the model, and the conversation never replying
+      // again. The response-message id is pinned to this activity's step id
+      // below, so only that message can be this attempt's own.
+      const streamedHere = messages.findLast((message) => message.role === 'assistant')?.id === `msg:${stepId}`;
+      const unresolved = streamedHere ? pendingToolCalls(messages) : [];
       if (unresolved.length > 0) {
         const server = filterServerToolCalls(unresolved);
         return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'awaiting-client' };

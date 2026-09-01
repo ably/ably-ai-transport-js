@@ -16,6 +16,7 @@ import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '@ably/ai-transpor
 import type { Responses } from 'openai/resources/responses/responses';
 
 import { createThreadFold } from '../fold-thread';
+import { turnText } from '../../helpers';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -342,6 +343,32 @@ describe('createThreadFold', () => {
     if (item?.type !== 'message') throw new Error('expected a message item');
     expect(item.content).toHaveLength(1);
     expect(messages[0].clientId).toBe('client-a');
+  });
+
+  it('dedupes the two echoes when the wire echo comes back with its keys in a different order', () => {
+    // The optimistic echo is the caller's own object; the wire echo is the
+    // codec's decode, which builds its fields in its own order. A serialised
+    // comparison reads those as two parts and the sender sees "hihi".
+    const optimistic = userTurnInput('hi');
+    const decoded: OpenAIInput = {
+      kind: 'message',
+      // CAST: the same shape as userTurnInput's, with the part's keys reversed.
+      payload: {
+        role: 'user',
+        items: [{ type: 'message', role: 'user', content: [{ text: 'hi', type: 'input_text' }] }],
+      },
+    };
+    const events = [
+      inputEvent('m0', [optimistic], { serial: undefined, clientId: 'client-a' }),
+      inputEvent('m0', [decoded], { serial: 's-2', clientId: 'client-a' }),
+    ];
+
+    const messages = foldAll(events).messages();
+    expect(messages).toHaveLength(1);
+    const item = messages[0].items[0];
+    if (item?.type !== 'message') throw new Error('expected a message item');
+    expect(item.content).toHaveLength(1);
+    expect(turnText(messages[0])).toBe('hi');
   });
 
   it('appends distinct parts of the same message across wire echoes', () => {

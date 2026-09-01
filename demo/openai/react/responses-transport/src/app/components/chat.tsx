@@ -77,7 +77,7 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
 
   // Run client-executed tools (getLocation) when they appear unresolved and
   // publish the result through the same gate.
-  useClientTools(messages, runs, clientId, resolveToolCall, logClientTool);
+  useClientTools({ messages, runs, clientId, resolve: resolveToolCall, onLog: logClientTool, onError: reportError });
 
   const status = isRunning ? 'running' : 'idle';
   useEffect(() => {

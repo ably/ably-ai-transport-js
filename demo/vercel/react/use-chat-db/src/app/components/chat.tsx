@@ -80,15 +80,22 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
   const { transport } = useChatTransport();
   const ablyMessages = useAblyMessages();
 
-  // The serial the store is complete up to, persisted with each turn so the
-  // next page load walks the channel back only that far. Read from a ref
-  // because onFinish runs outside the render that produced the log. The demo
-  // is linear — handleSend stops any in-flight run first — so at onFinish
-  // every channel message up to here belongs to a turn now being persisted.
+  // The newest channel serial this client has seen, persisted alongside each
+  // turn so the next page load walks the channel back only that far.
+  //
+  // Written straight from the transport's own subscription rather than from
+  // `useAblyMessages`: that hook goes through React state, which commits on a
+  // later tick than the stream reader's microtask chain, so `onFinish` would
+  // read a serial at least one delivery stale. The store's invariant is that
+  // everything at or before the serial is accounted for, and a stale serial
+  // makes the next walk re-fold a message the seed already holds.
   const latestSerialRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    latestSerialRef.current = ablyMessages.at(-1)?.serial ?? latestSerialRef.current;
-  }, [ablyMessages]);
+    if (!transport) return;
+    return transport.on('ably-message', (message) => {
+      if (message.serial !== undefined) latestSerialRef.current = message.serial;
+    });
+  }, [transport]);
 
   // -- Callback & status logging for the debug pane -------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -159,19 +166,30 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
           summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
         },
       ]);
-      // Persist the completed turn: the last user message and everything the
-      // run streamed after it. A turn still waiting on this client (pending
-      // tool or approval) is not persisted, and neither is an aborted or
-      // errored one; the next load rebuilds those from the channel walk.
+      // Nothing is persisted while the latest turn is unfinished — waiting on
+      // this client for a tool result or an approval, aborted, or errored. The
+      // watermark would then name a serial the store cannot account for, and
+      // the next walk would skip straight past that turn.
       if (isAbort || isError || !isTurnComplete(message)) return;
-      const lastUser = allMessages.findLastIndex((m) => m.role === 'user');
-      const turn = allMessages.slice(Math.max(lastUser, 0));
+
+      // The whole conversation goes, not just this turn. The watermark's
+      // contract is that every channel message at or before it is in the
+      // store, and a turn-sized write cannot honour that: an earlier turn this
+      // client skipped, a message another participant sent, or anything the
+      // hydration walk recovered would all sit before the watermark and never
+      // be written. The store upserts by domain id, so re-sending what it
+      // already holds costs a map write.
+      //
       // Fire-and-forget: the response body is not consumed and a failed write
-      // only means the next reload re-reads the turn from channel history.
+      // only means the next reload re-reads the turns from channel history.
       void fetch('/api/messages', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ conversationId: chatId, messages: turn, latestSerial: latestSerialRef.current }),
+        body: JSON.stringify({
+          conversationId: chatId,
+          messages: allMessages,
+          latestSerial: latestSerialRef.current,
+        }),
       }).catch(() => undefined);
     },
     onError: (chatError) => {
@@ -208,19 +226,33 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
   // refolds whole once its opener is paged in.
   const [hasOlder, setHasOlder] = useState(initialHasOlder);
   const olderEventsRef = useRef<ChatTransportEvent[]>([]);
+  // One page at a time: the transport's history cursor is shared, so two
+  // concurrent walks would each advance it and their prepends could interleave
+  // out of order.
+  const loadingOlderRef = useRef(false);
   const loadOlder = useCallback(() => {
-    if (!transport) return;
+    if (!transport || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
     void (async () => {
       const batch = await transport.history();
       olderEventsRef.current = [...batch.events, ...olderEventsRef.current];
       const folded = await foldMessages(olderEventsRef.current);
       setMessages((current) => {
-        const ids = new Set(current.map((m) => m.id));
-        const fresh = folded.map((entry) => entry.message).filter((m) => !ids.has(m.id));
-        return fresh.length === 0 ? current : [...fresh, ...current];
+        // Refolding the accumulated batches can improve a message already
+        // prepended (its opener may only now have been paged in), so the
+        // newer fold replaces by id rather than being filtered out.
+        const refolded = new Map(folded.map((entry) => [entry.message.id, entry.message]));
+        const kept = current.map((message) => refolded.get(message.id) ?? message);
+        const currentIds = new Set(current.map((message) => message.id));
+        const fresh = folded.map((entry) => entry.message).filter((message) => !currentIds.has(message.id));
+        return fresh.length === 0 ? kept : [...fresh, ...kept];
       });
       if (batch.exhausted) setHasOlder(false);
-    })().catch(() => setHasOlder(false));
+    })()
+      .catch(() => setHasOlder(false))
+      .finally(() => {
+        loadingOlderRef.current = false;
+      });
   }, [transport, setMessages]);
 
   // Stop is two operations. `stop()` closes this client's stream; only

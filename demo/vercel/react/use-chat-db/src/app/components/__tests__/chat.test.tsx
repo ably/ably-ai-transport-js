@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import type * as AI from 'ai';
 import { FakeClientTransport, userEvent } from '../../lib/__tests__/helpers';
 
@@ -216,7 +216,7 @@ describe('<Chat>', () => {
     expect(mockAddToolOutput).not.toHaveBeenCalled();
   });
 
-  it('persists the completed turn from onFinish, sliced from the last user message', async () => {
+  it('persists the whole conversation from onFinish, not just the latest turn', async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
     vi.stubGlobal('fetch', fetchMock);
     renderChat();
@@ -235,7 +235,49 @@ describe('<Chat>', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/messages');
-    expect(JSON.parse(String(init.body))).toEqual({ conversationId: 'ai:test', messages: turn });
+    // Everything at or before the watermark has to be in the store, so a
+    // turn-sized write would leave the earlier turn unaccounted for.
+    expect(JSON.parse(String(init.body))).toEqual({
+      conversationId: 'ai:test',
+      messages: [...older, ...turn],
+    });
+  });
+
+  it('persists the newest serial the transport has delivered as the watermark', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderChat();
+
+    // Two wire deliveries land before the turn settles; the watermark is the
+    // newest of them, read from the transport rather than through React state.
+    act(() => {
+      fakeTransport.emitAblyMessage('01ABC@1');
+      fakeTransport.emitAblyMessage('01ABC@9');
+    });
+
+    const turn = [userMsg('u1', 'hi'), assistantMsg('a1', 'hello')];
+    const onFinish = capturedUseChatOptions.onFinish as (options: Record<string, unknown>) => void;
+    onFinish({ message: turn[1], messages: turn, isAbort: false, isError: false, finishReason: 'stop' });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).latestSerial).toBe('01ABC@9');
+  });
+
+  it('omits the watermark when no wire message has been delivered yet', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderChat();
+
+    const turn = [userMsg('u1', 'hi'), assistantMsg('a1', 'hello')];
+    const onFinish = capturedUseChatOptions.onFinish as (options: Record<string, unknown>) => void;
+    onFinish({ message: turn[1], messages: turn, isAbort: false, isError: false, finishReason: 'stop' });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // No serial at all rather than a guess: the store then walks the whole
+    // channel next load, which is correct if wasteful.
+    expect(JSON.parse(String(init.body)).latestSerial).toBeUndefined();
   });
 
   it('does not persist an unresolved, aborted, or errored turn', () => {

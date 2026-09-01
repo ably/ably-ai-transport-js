@@ -89,12 +89,20 @@ export function useToolResolution(options: UseToolResolutionOptions) {
       const answeredTheLastCall = unansweredCalls(runMessages).every((call) => answeredRef.current.has(call.call_id));
 
       let eventId: string | undefined;
-      for (const input of inputs) {
-        // Address the resolution at the message holding the call, under the
-        // suspended run's id, so the fold amends that message and the agent's
-        // continuation resumes the right run.
-        const result = await transport.publishInput(input, { codecMessageId, runId });
-        eventId = result.eventId;
+      try {
+        for (const input of inputs) {
+          // Address the resolution at the message holding the call, under the
+          // suspended run's id, so the fold amends that message and the agent's
+          // continuation resumes the right run.
+          const result = await transport.publishInput(input, { codecMessageId, runId });
+          eventId = result.eventId;
+        }
+      } catch (error) {
+        // A denial publishes two inputs. If the second fails the run is left
+        // half-answered — an approval with no output, and no wake — so drop
+        // the record of having answered and let the user click again.
+        answeredRef.current.delete(callId);
+        throw error;
       }
 
       // Publish first, wake second: the agent reads the conversation off the

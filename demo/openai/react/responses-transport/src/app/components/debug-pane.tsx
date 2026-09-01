@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@ably-ai-demos/frontend
 
 import type { ThreadMessage } from '../lib/fold-thread';
 
-/** One transport lifecycle event observed on the session, for the debug pane. */
+/** One transport lifecycle event observed on the channel, for the debug pane. */
 export interface CallbackLogEntry {
   /** When the event was recorded (ms since epoch). */
   time: number;

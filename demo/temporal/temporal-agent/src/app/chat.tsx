@@ -3,12 +3,15 @@
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { useAblyMessages } from '@ably/ai-transport/react';
-import { useChatTransport } from '@ably/ai-transport/vercel/react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ChatTransport } from '@ably/ai-transport/vercel';
+import type { UIMessage } from 'ai';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Chat as ChatView,
   hasClientTool,
   runClientTool,
+  stopAndCancel,
+  useChannelHydration,
   type CallbackLogEntry,
   type ClientToolLogEntry,
 } from '@ably-ai-demos/frontend';
@@ -16,15 +19,59 @@ import {
 import { TEMPORAL_SCENARIOS, TEMPORAL_INTRO_TITLE, TEMPORAL_INTRO_DESCRIPTION } from './demo-content';
 
 /**
- * The demo's chat: `useChat` over the Ably chat transport is the only message
- * state. The transport publishes each send on the channel and POSTs the
- * invocation pointer to `/api/chat`, which starts the Temporal workflow; the
- * reply streams back over the same channel. `resume: true` reconnects to a run
- * that is still streaming when the page loads.
+ * Hydrate the conversation from the channel, then render the chat. Mounting
+ * `useChat` before the adapter exists would let the AI SDK fall back to its
+ * own HTTP transport, which speaks a protocol this demo's route does not.
+ *
+ * The demo keeps no store, so the walk covers the whole channel. Running it is
+ * also what makes `resume: true` work: `readSince` withholds a run that has
+ * not ended and retains its events for `reconnectToStream`.
  */
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const { chatTransport, error } = useChatTransport();
+  const state = useChannelHydration();
 
+  if (state.status === 'loading') {
+    return (
+      <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">
+        Loading conversation&hellip;
+      </div>
+    );
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="flex h-dvh items-center justify-center text-sm text-destructive">
+        Transport error: {state.error.message}
+      </div>
+    );
+  }
+
+  return (
+    <ChatInner
+      chatId={chatId}
+      clientId={clientId}
+      chatTransport={state.chatTransport}
+      initialMessages={state.initialMessages}
+    />
+  );
+}
+
+/**
+ * The demo's chat: `useChat` over the Ably chat transport is the only message
+ * state from here. The transport publishes each send on the channel and POSTs
+ * the invocation pointer to `/api/chat`, which starts the Temporal workflow;
+ * the reply streams back over the same channel.
+ */
+function ChatInner({
+  chatId,
+  clientId,
+  chatTransport,
+  initialMessages,
+}: {
+  chatId: string;
+  clientId?: string;
+  chatTransport: ChatTransport;
+  initialMessages: UIMessage[];
+}) {
   // -- Callback & status logging for the debug pane -------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
@@ -48,13 +95,10 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
     });
   }, []);
 
-  // onToolCall fires inside useChat's options, before the hook has returned
-  // its helpers — reach the current addToolOutput through a ref.
-  const addToolOutputRef = useRef<ReturnType<typeof useChat>['addToolOutput'] | null>(null);
-
   const chat = useChat({
     id: chatId,
     transport: chatTransport,
+    messages: initialMessages,
     // Reconnect to a run that is still streaming when this page loads.
     resume: true,
     // Auto-submit after addToolOutput resolves tool calls OR
@@ -75,12 +119,13 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
       // Server tools run in the worker; only browser-executed tools resolve here.
       if (!hasClientTool(toolCall.toolName)) return;
       const result = await runClientTool(toolCall.toolName, toolCall.toolCallId, toolCall.input, recordClientTool);
-      const addToolOutput = addToolOutputRef.current;
-      if (!addToolOutput) return;
+      // Not awaited inside onToolCall, per useChat's contract; the resolved
+      // part then satisfies sendAutomaticallyWhen and the adapter publishes
+      // the continuation.
       if ('output' in result) {
-        void addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.output });
+        void chat.addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.output });
       } else {
-        void addToolOutput({
+        void chat.addToolOutput({
           state: 'output-error',
           tool: toolCall.toolName,
           toolCallId: toolCall.toolCallId,
@@ -110,10 +155,6 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
     },
   });
 
-  useEffect(() => {
-    addToolOutputRef.current = chat.addToolOutput;
-  }, [chat.addToolOutput]);
-
   // Track status transitions, annotating an `error` transition with the
   // accompanying error message useChat exposes alongside the status.
   useEffect(() => {
@@ -130,24 +171,9 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
   // streaming while chunks arrive).
   const isRunning = chat.status === 'submitted' || chat.status === 'streaming';
 
-  // Stop is two operations. `stop()` closes this client's stream; only
-  // `chatTransport.cancel()` puts `ai-cancel` on the channel, which is what
-  // aborts the running activity and tells every other participant the run is
-  // over.
-  const cancelRun = useCallback(async () => {
-    await chat.stop();
-    await chatTransport?.cancel();
-  }, [chat, chatTransport]);
+  const cancelRun = useCallback(async () => stopAndCancel(() => chat.stop(), chatTransport), [chat, chatTransport]);
 
   const ablyMessages = useAblyMessages();
-
-  if (error) {
-    return (
-      <div className="flex h-dvh items-center justify-center text-sm text-destructive">
-        Transport error: {error.message}
-      </div>
-    );
-  }
 
   return (
     <ChatView

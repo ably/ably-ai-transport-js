@@ -50,7 +50,7 @@ describe('useClientTools', () => {
   it('does not execute while the run is still active', async () => {
     const resolve = vi.fn(async () => {});
     const { messages, runs } = makeThread('active');
-    renderHook(() => useClientTools(messages, runs, 'c', resolve));
+    renderHook(() => useClientTools({ messages, runs, clientId: 'c', resolve }));
     // This lets any (unwanted) async execution run.
     await Promise.resolve();
     expect(resolve).not.toHaveBeenCalled();
@@ -59,7 +59,7 @@ describe('useClientTools', () => {
   it('hands the tool result to the resolution gate once the run is suspended', async () => {
     const resolve = vi.fn(async () => {});
     const { messages, runs } = makeThread('suspended');
-    renderHook(() => useClientTools(messages, runs, 'c', resolve));
+    renderHook(() => useClientTools({ messages, runs, clientId: 'c', resolve }));
     await waitFor(() => {
       expect(resolve).toHaveBeenCalledTimes(1);
     });
@@ -83,16 +83,38 @@ describe('useClientTools', () => {
   it('does not execute a call from a run another client initiated', async () => {
     const resolve = vi.fn(async () => {});
     const { messages, runs } = makeThread('suspended', 'other-client');
-    renderHook(() => useClientTools(messages, runs, 'c', resolve));
+    renderHook(() => useClientTools({ messages, runs, clientId: 'c', resolve }));
     await Promise.resolve();
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('un-marks a call whose resolution publish fails, so a later render retries it', async () => {
+    const failure = new Error('publish failed');
+    const resolve = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+    const onError = vi.fn();
+    const { messages, runs } = makeThread('suspended');
+
+    // A fresh array per render, as the fold produces on every event.
+    const { rerender } = renderHook(() =>
+      useClientTools({ messages: [...messages], runs, clientId: 'c', resolve, onError }),
+    );
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(failure);
+    });
+
+    // The resolution never reached the wire, so the run is still suspended and
+    // the call has to remain retryable.
+    rerender();
+    await waitFor(() => {
+      expect(resolve).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('does not re-execute a call whose output is already in the thread', async () => {
     const resolve = vi.fn(async () => {});
     const { messages, runs } = makeThread('suspended');
     messages[1].items.push({ type: 'function_call_output', call_id: 'c1', output: '{"latitude":1}' });
-    renderHook(() => useClientTools(messages, runs, 'c', resolve));
+    renderHook(() => useClientTools({ messages, runs, clientId: 'c', resolve }));
     await Promise.resolve();
     expect(resolve).not.toHaveBeenCalled();
   });

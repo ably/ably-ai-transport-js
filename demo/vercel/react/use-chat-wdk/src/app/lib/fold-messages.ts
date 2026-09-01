@@ -12,8 +12,10 @@
  *   the bucket that owns its `toolCallId` (a tool activity publishes its
  *   result as its own wire message, but the result belongs on the assistant
  *   message that made the call).
- * - A `kind: 'message'` input carries a whole `UIMessage`; the last payload
- *   per bucket wins, which also dedupes a redelivered echo of the same send.
+ * - A `kind: 'message'` input carries a `UIMessage`. The codec fans a
+ *   multi-part turn out one wire event per part under one codec-message-id,
+ *   so carriers merge by part rather than replacing, and an echo of a part
+ *   already held is dropped.
  * - A `kind: 'approval'` input has no chunk shape of its own; it is applied as
  *   a synthesized `tool-approval-response` chunk against the matching
  *   `tool-approval-request` already in the owning bucket.
@@ -48,6 +50,46 @@ interface Bucket {
 }
 
 /** The `toolCallId` a chunk carries, read structurally so the check tracks the installed `ai` major. */
+/**
+ * Recursively sort object keys so two values that differ only in key order
+ * serialise the same. An optimistic local echo is the caller's own object; its
+ * wire echo comes back from the codec's decode with the fields in the
+ * decoder's order, and a plain `JSON.stringify` comparison reads those as two
+ * different parts.
+ * @param value - The value to canonicalise.
+ * @returns The value with every nested object's keys in sorted order.
+ */
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map((entry) => canonical(entry));
+  if (value === null || typeof value !== 'object') return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    // CAST: `value` is a non-null object, so indexing it by its own key is safe.
+    sorted[key] = canonical((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+};
+
+/** Part identity for the echo dedupe, insensitive to key order. */
+const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(canonical(part));
+
+/**
+ * Merge a whole-message input into the bucket. A `UIMessage` input is a batch
+ * — the codec fans one wire event per part under a single codec-message-id —
+ * so replacing rather than merging would keep only the last part of a
+ * multi-part turn. Parts already present are dropped, which is what folds an
+ * optimistic echo and its wire echo into one message.
+ * @param existing - The message merged so far, or `undefined` for the first carrier.
+ * @param incoming - The next carrier's message.
+ * @returns The merged message.
+ */
+const mergeMessage = (existing: UIMessage | undefined, incoming: UIMessage): UIMessage => {
+  if (!existing) return { ...incoming, parts: [...incoming.parts] };
+  const seen = new Set(existing.parts.map((part) => partKey(part)));
+  const parts = [...existing.parts, ...incoming.parts.filter((part) => !seen.has(partKey(part)))];
+  return { ...existing, parts };
+};
+
 function chunkToolCallId(chunk: UIMessageChunk): string | undefined {
   return 'toolCallId' in chunk && typeof chunk.toolCallId === 'string' ? chunk.toolCallId : undefined;
 }
@@ -133,7 +175,7 @@ export async function foldMessages(events: WdkTransportEvent[], opts?: FoldMessa
     for (const input of event.inputs) {
       switch (input.kind) {
         case 'message':
-          bucketFor(key).message = input.payload;
+          bucketFor(key).message = mergeMessage(bucketFor(key).message, input.payload);
           break;
         case 'chunk':
           routeChunk(input.payload, key);

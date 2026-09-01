@@ -37,7 +37,7 @@ export const COMMON_SCENARIOS: readonly Scenario[] = [
       </>
     ),
     blurb:
-      'getWeatherForecast pauses at approval-requested. Approve publishes a tool-approval-response event on the channel; the agent resumes and the result lands on the original message.',
+      'getWeatherForecast pauses at approval-requested. Approve publishes the decision on the channel; a fresh run executes the tool and streams the result.',
   },
   {
     id: 'multi-tab',
@@ -45,20 +45,6 @@ export const COMMON_SCENARIOS: readonly Scenario[] = [
     title: 'Multi-client sync',
     gesture: 'open in new tab (header), then send from either',
     blurb: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
-  },
-  {
-    id: 'edit',
-    tag: 'Branching',
-    title: 'Edit (branch)',
-    gesture: 'hover a user message, click Edit',
-    blurb: 'Re-sends as a forked branch rooted at the edited message.',
-  },
-  {
-    id: 'regenerate',
-    tag: 'Branching',
-    title: 'Regenerate (branch)',
-    gesture: 'hover an assistant reply, click Regenerate',
-    blurb: 'Forks a new branch from that point. The previous branch is kept — the channel history holds both.',
   },
   {
     id: 'cancel',

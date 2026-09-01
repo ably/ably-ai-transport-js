@@ -10,7 +10,11 @@
  *   the logical message a wire event belongs to.
  * - Agent outputs and `kind: 'chunk'` inputs (tool resolutions) are UIMessage
  *   chunks; each bucket's chunks replay through the AI SDK's own reducer,
- *   `readUIMessageStream`.
+ *   `readUIMessageStream`. A chunk naming a `toolCallId` routes to whichever
+ *   bucket already holds that call, not to its own codec-message-id: the
+ *   step writer mints a fresh id per publish, so a server tool's output
+ *   arrives under an id of its own and would otherwise never reach the
+ *   assistant that called it.
  * - `kind: 'message'` inputs carry a whole `UIMessage` (a user turn). Parts
  *   merge per bucket with JSON-equality dedupe, so an optimistic local echo
  *   and its wire echo fold to one message.
@@ -36,6 +40,10 @@ interface Bucket {
   approvals: VercelApprovalDecision[];
 }
 
+/** The tool call a chunk addresses, when it names one. */
+const chunkToolCallId = (chunk: UIMessageChunk): string | undefined =>
+  'toolCallId' in chunk && typeof chunk.toolCallId === 'string' ? chunk.toolCallId : undefined;
+
 /** A tool part in either the `dynamic-tool` or `tool-${name}` representation. */
 type ToolPart = ToolUIPart | DynamicToolUIPart;
 
@@ -43,19 +51,44 @@ const isToolPart = (part: UIMessage['parts'][number]): part is ToolPart =>
   (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) && 'toolCallId' in part && 'state' in part;
 
 /**
+ * Recursively sort object keys so two values that differ only in key order
+ * serialise the same. An optimistic local echo is the caller's own object; its
+ * wire echo comes back from the codec's decode with the fields in the
+ * decoder's order, and a plain `JSON.stringify` comparison reads those as two
+ * different parts.
+ * @param value - The value to canonicalise.
+ * @returns The value with every nested object's keys in sorted order.
+ */
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map((entry) => canonical(entry));
+  if (value === null || typeof value !== 'object') return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    // CAST: `value` is a non-null object, so indexing it by its own key is safe.
+    sorted[key] = canonical((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+};
+
+/** Part identity for the echo dedupe, insensitive to key order. */
+const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(canonical(part));
+
+/**
  * Merge a whole-message input into the bucket. The first one is taken as the
- * base; later echoes of the same codec-message-id contribute only parts not
- * already present (JSON equality), so the optimistic echo and the wire echo
- * fold to one message.
+ * base; later carriers of the same codec-message-id contribute only parts not
+ * already present, so a multi-part turn reassembles and the optimistic echo
+ * and its wire echo fold to one message.
+ * @param bucket - The bucket to merge into.
+ * @param payload - The carrier's message.
  */
 const mergeMessage = (bucket: Bucket, payload: UIMessage): void => {
   if (!bucket.message) {
     bucket.message = structuredClone(payload);
     return;
   }
-  const existing = new Set(bucket.message.parts.map((part) => JSON.stringify(part)));
+  const existing = new Set(bucket.message.parts.map((part) => partKey(part)));
   for (const part of payload.parts) {
-    if (!existing.has(JSON.stringify(part))) bucket.message.parts.push(structuredClone(part));
+    if (!existing.has(partKey(part))) bucket.message.parts.push(structuredClone(part));
   }
 };
 
@@ -97,20 +130,34 @@ const applyApproval = (message: UIMessage, decision: VercelApprovalDecision): vo
  */
 export const foldMessages = async (events: readonly VercelTransportEvent[]): Promise<UIMessage[]> => {
   const buckets = new Map<string, Bucket>();
+  const bucketByToolCallId = new Map<string, Bucket>();
+  const bucketFor = (id: string): Bucket => {
+    const existing = buckets.get(id);
+    if (existing) return existing;
+    const created: Bucket = { chunks: [], approvals: [] };
+    buckets.set(id, created);
+    return created;
+  };
+  // A chunk that names a tool call belongs to whichever message already holds
+  // that call, wherever the chunk itself was published from.
+  const routeChunk = (chunk: UIMessageChunk, fallbackId: string): void => {
+    const toolCallId = chunkToolCallId(chunk);
+    const owner = toolCallId === undefined ? undefined : bucketByToolCallId.get(toolCallId);
+    const bucket = owner ?? bucketFor(fallbackId);
+    bucket.chunks.push(chunk);
+    if (toolCallId !== undefined && owner === undefined) bucketByToolCallId.set(toolCallId, bucket);
+  };
+
   for (const event of events) {
     if (event.kind !== 'message') continue;
     const id = event.meta.codecMessageId;
     if (id === undefined) continue;
-    let bucket = buckets.get(id);
-    if (!bucket) {
-      bucket = { chunks: [], approvals: [] };
-      buckets.set(id, bucket);
-    }
-    bucket.chunks.push(...event.outputs);
+    const bucket = bucketFor(id);
+    for (const output of event.outputs) routeChunk(output, id);
     for (const input of event.inputs) {
       switch (input.kind) {
         case 'chunk':
-          bucket.chunks.push(input.payload);
+          routeChunk(input.payload, id);
           break;
         case 'message':
           mergeMessage(bucket, input.payload);

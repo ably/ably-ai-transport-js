@@ -32,9 +32,13 @@ const { mockSendMessages, mockCancel, mockChatTransport } = vi.hoisted(() => {
   return { mockSendMessages: send, mockCancel: cancel, mockChatTransport: chatTransport };
 });
 
+// The hydration hook connects the client transport before walking, so the
+// pair the provider hands out must include one.
+const mockTransport = { connect: async () => undefined };
+
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   ChatTransportProvider: ({ children }: { children: ReactNode }) => children,
-  useChatTransport: () => ({ chatTransport: mockChatTransport, transport: undefined, error: undefined }),
+  useChatTransport: () => ({ chatTransport: mockChatTransport, transport: mockTransport, error: undefined }),
 }));
 
 vi.mock('@ably/ai-transport/react', () => ({
@@ -72,7 +76,8 @@ describe('<Chat>', () => {
 
     render(<Chat chatId="ai:test" />);
 
-    const input = screen.getByPlaceholderText('Type a message...');
+    // Hydration walks the channel before the chat mounts.
+    const input = await screen.findByPlaceholderText('Type a message...');
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
 
@@ -92,7 +97,8 @@ describe('<Chat>', () => {
     mockSendMessages.mockResolvedValue(new ReadableStream({ start: () => {} }));
 
     render(<Chat chatId="ai:test" />);
-    const input = screen.getByPlaceholderText('Type a message...');
+    // Hydration walks the channel before the chat mounts.
+    const input = await screen.findByPlaceholderText('Type a message...');
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
     fireEvent.change(input, { target: { value: 'hello' } });
@@ -108,10 +114,10 @@ describe('<Chat>', () => {
     });
   });
 
-  it('arms a fault onto the one-shot cookie when a fault control is clicked', () => {
+  it('arms a fault onto the one-shot cookie when a fault control is clicked', async () => {
     render(<Chat chatId="ai:test" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Fail once' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Fail once' }));
     expect(document.cookie).toContain(`${FAULT_COOKIE}=fail-once`);
 
     fireEvent.click(screen.getByRole('button', { name: 'No fault' }));

@@ -33,7 +33,7 @@
 import { after } from 'next/server';
 import { convertToModelMessages, stepCountIs, streamText, toUIMessageStream } from 'ai';
 import Ably from 'ably';
-import { channelAgent } from '@ably/ai-transport';
+import { channelAgent, ErrorCode } from '@ably/ai-transport';
 import { createAgentTransport, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import { createModel } from './model';
 import { tools } from './tools';
@@ -70,57 +70,87 @@ export async function POST(req: Request) {
 
   const channel = ably.channels.get(channelName, { params: { agent: channelAgent() } });
   const transport = createAgentTransport({ channel });
-  await transport.connect();
-
-  const located = await transport.locateInput(eventId);
-  if (!located) {
+  const close = (): void => {
     transport.close();
     ably.close();
-    return Response.json({ error: `input ${eventId} not found in channel history` }, { status: 404 });
+  };
+
+  let run;
+  let result;
+  try {
+    await transport.connect();
+
+    const located = await transport.locateInput(eventId);
+    if (!located) {
+      close();
+      return Response.json({ error: `input ${eventId} not found in channel history` }, { status: 404 });
+    }
+
+    // Model context: fold the whole channel history. Everything the model needs
+    // is on the channel — prior turns, the triggering input, and (on a
+    // continuation) the earlier turn that asked for the tool, with its
+    // resolution or approval decision.
+    const events: ChatTransportEvent[] = [];
+    for (;;) {
+      const batch = await transport.history();
+      events.unshift(...batch.events);
+      if (batch.exhausted) break;
+    }
+    const conversation = (await foldMessages(events)).map((entry) => entry.message);
+
+    // Opening from the located input anchors the run to its trigger, which is
+    // what lets the client resolve the run id off the channel and lets a cancel
+    // route back to this run. Every input the useChat adapter publishes carries
+    // no run id, so each one opens a fresh run.
+    run = transport.openRun({ input: located }, { signal: req.signal });
+
+    result = streamText({
+      model: createModel(),
+      system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
+      messages: await convertToModelMessages(conversation),
+      tools,
+      abortSignal: run.abortSignal,
+      stopWhen: stepCountIs(10),
+    });
+  } catch (error) {
+    // Nothing has streamed yet, but the Ably connection is open and the run
+    // may be too — leaving either would hang the client's stream for good.
+    if (run) {
+      const message = error instanceof Error ? error.message : String(error);
+      await run.end({
+        reason: 'error',
+        error: new Ably.ErrorInfo(`unable to start run; ${message}`, ErrorCode.RunResponseStreamFailed, 500),
+      });
+    }
+    close();
+    throw error;
   }
 
-  // Model context: fold the whole channel history. Everything the model needs
-  // is on the channel — prior turns, the triggering input, and (on a
-  // continuation) the earlier turn that asked for the tool, with its
-  // resolution or approval decision.
-  const events: ChatTransportEvent[] = [];
-  for (;;) {
-    const batch = await transport.history();
-    events.unshift(...batch.events);
-    if (batch.exhausted) break;
-  }
-  const conversation = (await foldMessages(events)).map((entry) => entry.message);
-
-  // Opening from the located input anchors the run to its trigger, which is
-  // what lets the client resolve the run id off the channel and lets a cancel
-  // route back to this run. Every input the useChat adapter publishes carries
-  // no run id, so each one opens a fresh run.
-  const run = transport.openRun({ input: located }, { signal: req.signal });
-
-  const result = streamText({
-    model: createModel(),
-    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
-    messages: await convertToModelMessages(conversation),
-    tools,
-    abortSignal: run.abortSignal,
-    stopWhen: stepCountIs(10),
-  });
+  const openedRun = run;
+  const streamResult = result;
 
   after(async () => {
     try {
       // `generateMessageId` puts a domain id on the stream's `start` chunk, so
       // the id useChat renders, the id the client persists, and the id the
       // hydration fold reconstructs are all the same.
-      const pipeResult = await run.pipe(
-        toUIMessageStream({ stream: result.fullStream, generateMessageId: () => crypto.randomUUID() }),
+      const pipeResult = await openedRun.pipe(
+        toUIMessageStream({ stream: streamResult.fullStream, generateMessageId: () => crypto.randomUUID() }),
       );
-      const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+      const outcome = await vercelRunOutcome(pipeResult, streamResult.finishReason);
       // A turn that stopped on tool calls is still terminal: the client's
       // resolution wakes a new run rather than resuming this one.
-      await run.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
+      await openedRun.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
+    } catch (error) {
+      // The run is open on the channel; end it so clients are not left
+      // waiting on a stream that never closes.
+      const message = error instanceof Error ? error.message : String(error);
+      await openedRun.end({
+        reason: 'error',
+        error: new Ably.ErrorInfo(`unable to complete run; ${message}`, ErrorCode.RunResponseStreamFailed, 500),
+      });
     } finally {
-      transport.close();
-      ably.close();
+      close();
     }
   });
 

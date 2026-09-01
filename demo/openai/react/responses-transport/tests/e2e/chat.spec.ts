@@ -64,10 +64,10 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
 }
 
 async function bubbleText(bubble: Locator): Promise<string> {
-  // The bubble body div has class beginning with "rounded-lg".
-  const body = bubble.locator('div.rounded-lg').first();
-  if ((await body.count()) === 0) return (await bubble.innerText()).trim();
-  return (await body.innerText()).trim();
+  // The bubble body carries a stable data-slot; targeting it excludes the
+  // badge footer, which a class-name selector plus an innerText fallback used
+  // to let through — making "has text" assertions pass on badge text alone.
+  return (await bubble.locator('[data-slot="bubble-content"]').first().innerText()).trim();
 }
 
 // ---------------------------------------------------------------------------

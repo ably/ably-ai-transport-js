@@ -3,16 +3,19 @@
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { useAblyMessages } from '@ably/ai-transport/react';
-import { useChatTransport } from '@ably/ai-transport/vercel/react';
 import type { ChatTransport } from '@ably/ai-transport/vercel';
+import type { UIMessage } from 'ai';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Chat as ChatContainer,
   COMMON_SCENARIOS,
   hasClientTool,
   runClientTool,
+  stopAndCancel,
+  useChannelHydration,
   type CallbackLogEntry,
   type ClientToolLogEntry,
+  type DemoStepId,
   type Scenario,
 } from '@ably-ai-demos/frontend';
 
@@ -29,9 +32,17 @@ const INTRO_DESCRIPTION =
   'and AIT reconciles — no duplicate output, and the reply still lands over Ably. Each item below exercises a ' +
   'specific piece; try them in order.';
 
-// COMMON_SCENARIOS order: server-weather[0], client-weather[1], approval-forecast[2],
-// multi-tab[3], edit[4], regenerate[5], cancel[6], observability[7]. This demo drives
-// the tool + cancel + observability scenarios, and adds its own durable ones.
+// Pick shared scenarios by id, never by position: the shared list is edited
+// independently of this demo, and an index would silently change what the
+// demo offers (or drop off the end).
+const pickShared = (...ids: DemoStepId[]): Scenario[] =>
+  ids.flatMap((id) => COMMON_SCENARIOS.filter((scenario) => scenario.id === id));
+
+/** The shared entries that are intro-only (no id, so never tracked or offered as a chip). */
+const sharedIntroOnly = COMMON_SCENARIOS.filter((scenario) => scenario.id === undefined);
+
+// This demo drives the tool + cancel + observability scenarios, and adds its
+// own durable ones.
 const SCENARIOS: readonly Scenario[] = [
   {
     // No built-in detector exists for a plain durable turn, so borrow the
@@ -60,9 +71,7 @@ const SCENARIOS: readonly Scenario[] = [
       'stable step id make the retry re-enter the same run — the conversation settles once, with no duplicate. ' +
       'Watch it happen in the WDK processes panel.',
   },
-  COMMON_SCENARIOS[0], // server-weather
-  COMMON_SCENARIOS[1], // client-weather
-  COMMON_SCENARIOS[2], // approval-forecast
+  ...pickShared('server-weather', 'client-weather', 'approval-forecast'),
   {
     tag: 'WDK processes',
     title: 'WDK processes',
@@ -71,22 +80,34 @@ const SCENARIOS: readonly Scenario[] = [
       'Every workflow and its activities appear as they run, correlated to the AIT run id, with WDK-side status ' +
       'polled from the real Workflow observability API.',
   },
-  COMMON_SCENARIOS[6], // cancel
-  COMMON_SCENARIOS[7], // observability
+  ...pickShared('cancel'),
+  ...sharedIntroOnly,
 ];
 
 /**
- * The outer component reads the ChatTransportProvider's slot and only mounts
- * the chat once the adapter exists — useChat needs a transport at first
+ * The outer component hydrates from the channel and only mounts the chat once
+ * that resolves — useChat needs a transport and its initial messages at first
  * render, and a construction failure renders as an error notice instead.
+ *
+ * This demo keeps no store, so the walk covers the whole channel. Running it
+ * is also what makes `resume: true` work: `readSince` withholds a run that has
+ * not ended and retains its events for `reconnectToStream`, and without that a
+ * page that just loaded can only resume a run it watched start live.
  */
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const { chatTransport, error } = useChatTransport();
+  const state = useChannelHydration();
 
-  if (!chatTransport) {
+  if (state.status === 'loading') {
+    return (
+      <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">
+        Loading conversation&hellip;
+      </div>
+    );
+  }
+  if (state.status === 'error') {
     return (
       <div className="flex h-dvh items-center justify-center text-sm text-destructive">
-        Unable to create the chat transport{error ? `: ${error.message}` : ''}
+        Unable to create the chat transport: {state.error.message}
       </div>
     );
   }
@@ -95,7 +116,8 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
     <ChatInner
       chatId={chatId}
       clientId={clientId}
-      chatTransport={chatTransport}
+      chatTransport={state.chatTransport}
+      initialMessages={state.initialMessages}
     />
   );
 }
@@ -104,10 +126,12 @@ function ChatInner({
   chatId,
   clientId,
   chatTransport,
+  initialMessages,
 }: {
   chatId: string;
   clientId?: string;
   chatTransport: ChatTransport;
+  initialMessages: UIMessage[];
 }) {
   // -- Callback & status logging for the debug pane ------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -140,6 +164,7 @@ function ChatInner({
   const { messages, sendMessage, stop, status, error, addToolOutput, addToolApprovalResponse } = useChat({
     id: chatId,
     transport: chatTransport,
+    messages: initialMessages,
     // Rejoin an in-flight run's stream after a reload: the adapter classifies
     // the open run from channel history and replays it.
     resume: true,
@@ -203,13 +228,7 @@ function ChatInner({
 
   const isRunning = status === 'submitted' || status === 'streaming';
 
-  // Stop is two operations. `stop()` closes this client's stream; only
-  // `chatTransport.cancel()` puts `ai-cancel` on the channel, which is what
-  // aborts the workflow and tells every other participant the run is over.
-  const cancelRun = useCallback(async () => {
-    await stop();
-    await chatTransport.cancel();
-  }, [stop, chatTransport]);
+  const cancelRun = useCallback(async () => stopAndCancel(stop, chatTransport), [stop, chatTransport]);
 
   const ablyMessages = useAblyMessages();
 

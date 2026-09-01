@@ -68,7 +68,7 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
 }
 
 // Poll body text length until it stops changing for 3 successive 1-second
-// intervals, so a suspended run's continuation has time to fully publish
+// intervals, so a tool continuation has time to fully publish
 // before assertions.
 async function awaitStreamingQuiesce(page: Page): Promise<void> {
   let lastLen = -1;
@@ -144,7 +144,7 @@ test.describe('use-chat demo - chat behaviour', () => {
 
       // useChat's onToolCall runs the browser tool with the mocked coordinates,
       // addToolOutput records the result, and the auto-submitted continuation
-      // resumes the suspended run — the resolved Location card renders on the
+      // wakes the answering run — the resolved Location card renders on the
       // assistant's tool part.
       await expect(page.locator('text=/Location:\\s*51\\./').first()).toBeVisible({ timeout: 60_000 });
 
@@ -163,8 +163,8 @@ test.describe('use-chat demo - chat behaviour', () => {
     }
   });
 
-  // checks: approval-gated tool; Approve resumes the run and it finishes.
-  test('approval-gated tool: approving resumes the run to completion', async ({ page }, testInfo) => {
+  // checks: approval-gated tool; Approve wakes a new run and it finishes.
+  test('approval-gated tool: approving opens a new run that answers', async ({ page }, testInfo) => {
     await page.goto(freshChannelUrl(testInfo.title));
     const input = page.getByPlaceholder('Type a message...');
     await input.waitFor({ state: 'visible' });
@@ -175,7 +175,7 @@ test.describe('use-chat demo - chat behaviour', () => {
     const approveButton = page.getByRole('button', { name: /Approve/i }).first();
     await expect(approveButton).toBeVisible({ timeout: 60_000 });
 
-    // While the run is suspended awaiting the decision there is no stream to
+    // The turn has ended awaiting the decision, so there is no stream to
     // stop, so the composer shows Send.
     await expect(page.getByRole('button', { name: /Send/i })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('button', { name: /Stop/i })).toHaveCount(0);

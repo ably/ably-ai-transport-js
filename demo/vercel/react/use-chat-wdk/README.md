@@ -56,11 +56,11 @@ The durable execution (WDK) and the transport (AIT) are most telling in combinat
 - **Fault → durable retry** — arm **Fail once** or **Crash**, then send any prompt. The inference activity throws on its first attempt; WDK re-runs it as a fresh process, and the retry re-enters the same run — the reply lands once. Watch it in the WDK processes panel.
 - **Reload mid-run** — send a prompt and refresh the page while it's streaming. The run keeps running on WDK (it isn't tied to your connection); `useChat({ resume: true })` classifies the in-flight run from channel history and rejoins its stream.
 - **Cancel mid-stream** — send a long prompt, then click **Stop**. The cancel travels over the channel, the in-flight activity aborts, and the run ends cleanly.
-- **Presence** — the header avatars show who's connected to the session (Ably Presence over the same channel).
+- **Presence** — the header avatars show who's connected to this conversation (Ably Presence over the same channel).
 
 ## Notes
 
-- **One workflow per POST; continuations resume.** The chat route responds `{ runId }` immediately: a fresh send pins `run:<workflowRunId>` (the same derivation the open activity uses), a continuation echoes the run it resumes. Streaming then happens over Ably.
+- **One workflow per POST.** The chat route answers 202 and the client reads nothing from the body; the run id reaches it over the channel. Each workflow pins its run to `run:<workflowRunId>`, so a retried process re-enters the same run, and a continuation starts a fresh workflow on a new run. Streaming happens over Ably.
 - **`stopWhen: stepCountIs(1)`.** Each model call stops after a single LLM turn so the workflow controls the loop; server tools run in follow-up activities, never inline.
 - **The terminal is its own activity, gated.** The inference classifies its outcome and publishes output only; a separate `terminal` activity folds the run's lifecycle from history and publishes `ai-run-end` only while the run is still this workflow's to drive. A process that dies between outcome and terminal is retried at the terminal alone.
 - **Retries observe before they redo.** On a retry, an activity folds the run's state and prior tool calls from the channel and only redoes genuinely unfinished work, so a continuation that already moved the run on is never clobbered.

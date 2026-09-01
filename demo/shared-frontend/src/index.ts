@@ -7,6 +7,7 @@ export { ThemeToggle } from './components/theme-toggle';
 
 // Chat container + presentational shell
 export { Chat } from './components/chat';
+export type { ChatProps } from './components/chat';
 export { ChatShell } from './components/chat-shell';
 export type { HeaderLink } from './components/chat-shell';
 
@@ -33,12 +34,18 @@ export type { CallbackLogEntry, ClientToolLogEntry } from './components/debug-pa
 export { IntroCard, COMMON_SCENARIOS } from './components/intro-card';
 
 // Client-side tools + hooks
-export { clientTools, hasClientTool, runClientTool } from './hooks/use-client-tools';
+export { hasClientTool, runClientTool } from './lib/client-tools';
+export { useChannelHydration } from './hooks/use-channel-hydration';
+export type {
+  ChannelHydrationHandle,
+  ChannelHydrationState,
+  StoredConversation,
+  UseChannelHydrationOptions,
+} from './hooks/use-channel-hydration';
 export { useDemoProgress } from './hooks/use-demo-progress';
 export type { Scenario, DemoStepId } from './lib/progress-steps';
 
 // Utilities
 export { generateChannelSlug, generateClientName } from './lib/channel-name';
 export { clientColor } from './lib/client-color';
-export { userMessage, wakeAgent } from './helpers';
-export type { WakeAgentBody, WakeAgentResult } from './helpers';
+export { stopAndCancel } from './lib/stop-and-cancel';

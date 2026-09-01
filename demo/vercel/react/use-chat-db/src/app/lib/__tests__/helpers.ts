@@ -6,7 +6,6 @@
 
 import type {
   ClientTransport,
-  PublishInputOptions,
   PublishInputResult,
   SteerResult,
   TransportEvent,
@@ -14,12 +13,13 @@ import type {
   WireMeta,
 } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
+import type * as Ably from 'ably';
 import type { UIMessage } from 'ai';
 
 export type Event = TransportEvent<VercelInput, VercelOutput>;
 
 /** Build a full WireMeta with every field defaulted; override what the test cares about. */
-export function makeMeta(overrides: Partial<WireMeta> = {}): WireMeta {
+function makeMeta(overrides: Partial<WireMeta> = {}): WireMeta {
   return {
     transport: {},
     codec: {},
@@ -88,25 +88,21 @@ export function runEndEvent(runId: string): Event {
 export class FakeClientTransport implements ClientTransport<VercelInput, VercelOutput> {
   /** Scripted history batches, served in order; further calls return an exhausted empty batch. */
   historyBatches: TransportHistoryResult<VercelInput, VercelOutput>[] = [];
-  /** Every publishInput call, in order. */
-  readonly published: { event: VercelInput; opts: PublishInputOptions | undefined }[] = [];
-  /** Every cancelled run-id, in order. */
-  readonly cancelled: string[] = [];
-  /** How many times connect() was awaited. */
-  connectCount = 0;
   /** How many times history() was called. */
   historyCount = 0;
 
   private readonly _handlers = new Set<(event: Event) => void>();
+  private readonly _ablyMessageHandlers = new Set<(message: Ably.InboundMessage) => void>();
   private _publishCount = 0;
 
-  /** Push a classified event to every subscriber, like a channel delivery. */
-  emit(event: Event): void {
-    for (const handler of this._handlers) handler(event);
+  /** Deliver a raw wire message to every `ably-message` subscriber, like the channel would. */
+  emitAblyMessage(serial: string): void {
+    // CAST: the watermark path reads only `serial`.
+    const message = { serial } as Ably.InboundMessage;
+    for (const handler of this._ablyMessageHandlers) handler(message);
   }
 
   connect(): Promise<void> {
-    this.connectCount += 1;
     return Promise.resolve();
   }
 
@@ -115,24 +111,29 @@ export class FakeClientTransport implements ClientTransport<VercelInput, VercelO
     return () => this._handlers.delete(handler);
   }
 
-  on(): () => void {
-    return () => undefined;
+  on(event: 'event', handler: (e: Event) => void): () => void;
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+  on(event: 'error', handler: (err: Ably.ErrorInfo) => void): () => void;
+  on(event: string, handler: (payload: never) => void): () => void {
+    if (event !== 'ably-message') return () => undefined;
+    // CAST: the overload above binds `ably-message` to an InboundMessage handler.
+    const listener = handler as unknown as (message: Ably.InboundMessage) => void;
+    this._ablyMessageHandlers.add(listener);
+    return () => this._ablyMessageHandlers.delete(listener);
   }
 
-  publishInput(event: VercelInput, opts?: PublishInputOptions): Promise<PublishInputResult> {
-    this.published.push({ event, opts });
+  publishInput(): Promise<PublishInputResult> {
     this._publishCount += 1;
     return Promise.resolve({
       codecMessageId: `cm-${String(this._publishCount)}`,
       eventId: `ev-${String(this._publishCount)}`,
-      // Never resolves — the chat transport takes the run-id from the POST
-      // response, not from this promise.
+      // Left pending on purpose: the chat transport resolves the run id off
+      // the channel, so nothing in these tests awaits this.
       runId: new Promise<string>(() => undefined),
     });
   }
 
-  cancel(runId: string): Promise<void> {
-    this.cancelled.push(runId);
+  cancel(): Promise<void> {
     return Promise.resolve();
   }
 

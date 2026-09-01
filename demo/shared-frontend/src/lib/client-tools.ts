@@ -16,10 +16,18 @@
 
 import type { ClientToolLogEntry } from '../components/debug-pane';
 
-type ClientToolExecutor = (input: unknown) => Promise<unknown>;
+/** Runs one browser-side tool call and resolves its output. */
+export type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
-/** The tools this client executes in the browser, keyed by tool name. */
-export const clientTools: Record<string, ClientToolExecutor> = {
+/** A set of browser-executed tools, keyed by tool name. */
+export type ClientToolRegistry = Record<string, ClientToolExecutor>;
+
+/**
+ * The tools the demos execute in the browser. Module-private so nothing
+ * mutates it: both entry points take an optional registry instead, which is
+ * how the tests supply throwaway executors.
+ */
+const builtInTools: ClientToolRegistry = {
   getLocation: async (input) => {
     const { highAccuracy } = (input ?? {}) as { highAccuracy?: boolean };
     return new Promise<unknown>((resolve) => {
@@ -43,18 +51,24 @@ export const clientTools: Record<string, ClientToolExecutor> = {
   },
 };
 
-/** Whether a client-side executor is registered for this tool name. */
-export function hasClientTool(toolName: string): boolean {
-  return Object.hasOwn(clientTools, toolName);
+/**
+ * Whether a client-side executor is registered for this tool name.
+ * @param toolName - The tool name the model called.
+ * @param registry - The tools to look in. Defaults to the demos' built-ins.
+ * @returns True when the browser can run this tool.
+ */
+export function hasClientTool(toolName: string, registry: ClientToolRegistry = builtInTools): boolean {
+  return Object.hasOwn(registry, toolName);
 }
 
 /**
  * Execute a registered client tool and report the execution's lifecycle.
- * @param toolName - The tool to run; must be registered in {@link clientTools}.
+ * @param toolName - The tool to run; must be registered in `registry`.
  * @param toolCallId - The AI SDK tool-call id, threaded into each log entry.
  * @param input - The tool input the model produced.
  * @param onExecute - Receives an `executing` entry when the tool starts, then
  * a `done` or `error` entry once it settles.
+ * @param registry - The tools to run from. Defaults to the demos' built-ins.
  * @returns `{ output }` on success, `{ errorText }` when the tool is not
  * registered or the executor throws.
  */
@@ -63,11 +77,12 @@ export async function runClientTool(
   toolCallId: string,
   input: unknown,
   onExecute?: (entry: ClientToolLogEntry) => void,
+  registry: ClientToolRegistry = builtInTools,
 ): Promise<{ output: unknown } | { errorText: string }> {
-  if (!hasClientTool(toolName)) {
+  const executor = registry[toolName];
+  if (!executor) {
     return { errorText: `no client tool registered for ${toolName}` };
   }
-  const executor = clientTools[toolName];
 
   const startedAt = Date.now();
   onExecute?.({

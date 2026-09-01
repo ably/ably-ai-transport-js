@@ -6,10 +6,11 @@
  *   item; the run does not suspend.
  * - `getLocation` — client-executed. There is no server executor: the run
  *   suspends after the call, the client runs browser geolocation and publishes
- *   the result as a `tool-result`, and a continuation resumes the run.
+ *   the result as a `function_call_output` item (a `kind: 'item'` input), and
+ *   a continuation resumes the run.
  * - `getWeatherForecast` — server-executed but gated on user approval. The run
- *   suspends after the call; the agent publishes a `tool-approval-request`; the
- *   client answers with a `tool-approval-response`. On approval the agent runs
+ *   suspends after the call and the agent publishes an approval request; the
+ *   client answers with a `kind: 'approval'` input. On approval the agent runs
  *   the tool server-side on resume; on denial the client authors the rejection
  *   output and the agent resumes without running it.
  */

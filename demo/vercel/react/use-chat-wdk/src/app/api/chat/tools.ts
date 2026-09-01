@@ -54,7 +54,7 @@ export const tools: Record<string, Tool> = {
       highAccuracy: z.boolean().describe('Whether to request high-accuracy GPS positioning'),
     }),
     // No execute — client-executed. The client runs navigator.geolocation and
-    // sends the result back as a tool-result input, which resumes the run.
+    // sends the result back as a tool-output chunk, which wakes a fresh run.
     outputSchema: locationOutput,
   },
 

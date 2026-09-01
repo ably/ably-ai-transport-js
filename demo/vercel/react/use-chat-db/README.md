@@ -42,15 +42,22 @@ tool's result is the SDK's own `tool-output-available` chunk
 and outputs alike.
 
 The tool-approval decision is the exception, published as the codec-defined
-`{ kind: 'approval' }` body (`{ toolCallId, approved, reason? }`). The AI SDK
-has no chunk for a client-side approval decision — responding is
+`{ kind: 'approval' }` body (`{ messageId, toolCallId, approved, reason? }`).
+The AI SDK has no chunk for a client-side approval decision — responding is
 `chat.addToolApprovalResponse`, a state change, not a stream part — so there
-is no provider type to reuse. The body deliberately captures the intermediate
-"approved, not yet executed" state: that is what the useChat adapter reads
-from the wire to know a resolution has already been published, so a hydrated
-page never publishes the same decision twice, and it is what the agent's fold
-flips onto the tool part so `streamText` executes the approved tool on the
-continuation.
+is no provider type to reuse. The body captures the intermediate "approved,
+not yet executed" state, which is what the agent's fold
+(`src/app/lib/fold-messages.ts`) flips onto the tool part so `streamText`
+executes the approved tool on the continuation.
+
+The adapter's own `readSince` walk does not apply it. That walk folds message
+inputs and agent outputs; an approval, and a client tool resolution addressed
+to the assistant message rather than the wire's own codec-message-id, both
+fold to nothing there. A turn inside the walk window that ended on a client
+tool or an unanswered approval therefore hydrates with the tool part still
+open, and the client answers it again. That is why the store holds the whole
+conversation useChat has: it keeps the walk window short enough that the case
+is rare, and the store's copy is already resolved.
 
 ## Prerequisites
 

@@ -14,7 +14,7 @@ import { DebugPane } from './debug-pane';
 import { COMMON_SCENARIOS } from './intro-card';
 import { ChatShell, type HeaderLink } from './chat-shell';
 
-interface ChatProps {
+export interface ChatProps {
   /** Ably channel name the conversation lives on (shown in the header). */
   chatId: string;
   /** This client's id (tinted in the header). */
@@ -48,12 +48,6 @@ interface ChatProps {
   onSend: (text: string) => void;
   /** Stop the in-flight run. The Stop button is a no-op when omitted. */
   onStop?: () => void;
-  /**
-   * Steer the active run with a follow-up user message. When set, `/steer
-   * <text>` in the composer routes here; when omitted, the full `/steer ...`
-   * text passes through `onSend` as a normal send.
-   */
-  onSteer?: (text: string) => void;
   /** Approve a pending tool call; receives the tool part. */
   onToolApprove?: (toolPart: ToolUIPart | DynamicToolUIPart) => void;
   /** Deny a pending tool call; receives the tool part. */
@@ -96,7 +90,6 @@ export function Chat({
   isRunning,
   onSend,
   onStop,
-  onSteer,
   onToolApprove,
   onToolDeny,
   hasOlder,
@@ -143,18 +136,10 @@ export function Chat({
 
   const handleSend = useCallback(
     (text: string) => {
-      // `/steer <text>` targets the active run when the demo wires onSteer —
-      // a follow-up user message inside the running turn rather than a fresh
-      // send. Without onSteer the text passes through as a normal send.
-      const steerMatch = /^\/steer\s+(.+)$/.exec(text);
-      if (steerMatch && onSteer) {
-        onSteer(steerMatch[1]?.trim() ?? '');
-        return;
-      }
       scrollToEndRef.current?.();
       onSend(text);
     },
-    [onSend, onSteer],
+    [onSend],
   );
 
   return (
@@ -168,7 +153,6 @@ export function Chat({
       input={input}
       onInputChange={setInput}
       inputRef={inputRef}
-      inputPlaceholder={onSteer ? 'Type a message... — or /steer <text> to steer the active run' : undefined}
       onSend={handleSend}
       onStop={() => onStop?.()}
       isRunning={isRunning}

@@ -60,20 +60,44 @@ const toolCallIdOf = (chunk: UIMessageChunk): string | undefined =>
   'toolCallId' in chunk && typeof chunk.toolCallId === 'string' ? chunk.toolCallId : undefined;
 
 /**
+ * Recursively sort object keys so two values that differ only in key order
+ * serialise the same. An optimistic local echo is the caller's own object; its
+ * wire echo comes back from the codec's decode with the fields in the
+ * decoder's order, and a plain `JSON.stringify` comparison reads those as two
+ * different parts.
+ * @param value - The value to canonicalise.
+ * @returns The value with every nested object's keys in sorted order.
+ */
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map((entry) => canonical(entry));
+  if (value === null || typeof value !== 'object') return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    // CAST: `value` is a non-null object, so indexing it by its own key is safe.
+    sorted[key] = canonical((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+};
+
+/** Part identity for the echo dedupe, insensitive to key order. */
+const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(canonical(part));
+
+/**
  * Merge one wire-fanned part-carrier into the bucket's message: same domain
- * id, parts appended in wire order, deduped by part equality (the optimistic
- * echo and its wire echo carry identical parts).
+ * id, parts appended in wire order, deduped by part identity. A `UIMessage`
+ * input is a batch — the codec fans one wire event per part under a single
+ * codec-message-id — so replacing rather than merging would keep only the
+ * last part of a multi-part turn.
  * @param existing - The message merged so far, or `undefined` for the first carrier.
- * @param incoming - The next carrier's one-part message.
+ * @param incoming - The next carrier's message.
  * @returns The merged message.
  */
 const mergeMessage = (existing: UIMessage | undefined, incoming: UIMessage): UIMessage => {
   if (!existing) return { ...incoming, parts: [...incoming.parts] };
-  const seen = new Set(existing.parts.map((part) => JSON.stringify(part)));
-  const parts = [...existing.parts, ...incoming.parts.filter((part) => !seen.has(JSON.stringify(part)))];
+  const seen = new Set(existing.parts.map((part) => partKey(part)));
+  const parts = [...existing.parts, ...incoming.parts.filter((part) => !seen.has(partKey(part)))];
   return { ...existing, parts };
 };
-
 /**
  * Fold a bucket's chunk list through the provider's reducer. The seed message
  * carries the codec-message-id as a fallback domain id; a `start` chunk that

@@ -5,8 +5,6 @@ import type * as AI from 'ai';
 import {
   EVENT_CANCEL,
   EVENT_RUN_START,
-  HEADER_FORK_OF,
-  HEADER_MSG_REGENERATE,
   HEADER_RUN_CLIENT_ID,
 } from '@ably/ai-transport';
 
@@ -26,8 +24,6 @@ const SCENARIOS: Scenario[] = [
   { id: 'approval-forecast', tag: 'Approval', title: 'Approval-gated tool', blurb: 'b', prompt: 'forecast?' },
   { id: 'retry-stock', tag: 'Retry', title: 'Durable retry', blurb: 'b', prompt: 'stock price?' },
   { id: 'multi-tab', tag: 'Sync', title: 'Multi-client sync', blurb: 'b', gesture: 'open in a new tab' },
-  { id: 'edit', tag: 'Branching', title: 'Edit', blurb: 'b', gesture: 'edit a message' },
-  { id: 'regenerate', tag: 'Branching', title: 'Regenerate', blurb: 'b', gesture: 'regenerate a reply' },
   { id: 'cancel', tag: 'Cancel', title: 'Cancel mid-stream', blurb: 'b', gesture: 'stop mid-stream' },
   { tag: 'Observability', title: 'Observability', blurb: 'b', gesture: 'open the Debug pane' },
 ];
@@ -81,8 +77,6 @@ describe('useDemoProgress', () => {
       'approval-forecast',
       'retry-stock',
       'multi-tab',
-      'edit',
-      'regenerate',
       'cancel',
     ]);
   });
@@ -121,16 +115,6 @@ describe('useDemoProgress', () => {
     expect(ids(progress([], { ablyMessages: [wireMessage(EVENT_CANCEL)] }))).not.toContain('cancel');
   });
 
-  it('marks regenerate done when a message carries the msg-regenerate transport header', () => {
-    const ablyMessages = [wireMessage('ai-input', { [HEADER_MSG_REGENERATE]: 'cm-1' })];
-    expect(ids(progress([], { ablyMessages }))).not.toContain('regenerate');
-  });
-
-  it('marks edit done when a message carries the fork-of transport header', () => {
-    const ablyMessages = [wireMessage('ai-input', { [HEADER_FORK_OF]: 'cm-1' })];
-    expect(ids(progress([], { ablyMessages }))).not.toContain('edit');
-  });
-
   it('marks multi-tab done when ai-run-start messages carry more than one run-client-id', () => {
     const ablyMessages = [
       wireMessage(EVENT_RUN_START, { [HEADER_RUN_CLIENT_ID]: 'client-a' }),
@@ -158,6 +142,6 @@ describe('useDemoProgress', () => {
   it('handles wire messages with no extras.ai envelope', () => {
     // CAST: a foreign message published by the application carries no extras.
     const foreign = { name: 'app-event' } as Ably.InboundMessage;
-    expect(ids(progress([], { ablyMessages: [foreign] }))).toContain('regenerate');
+    expect(ids(progress([], { ablyMessages: [foreign] }))).toContain('multi-tab');
   });
 });

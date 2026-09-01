@@ -144,30 +144,6 @@ describe('<Chat>', () => {
     expect(onToolDeny).toHaveBeenCalledWith(toolPart);
   });
 
-  it('routes /steer input to onSteer when provided', () => {
-    const onSend = vi.fn();
-    const onSteer = vi.fn();
-    renderChat({ onSend, onSteer });
-
-    const { input, form } = inputBar();
-    fireEvent.change(input, { target: { value: '/steer talk like a pirate' } });
-    fireEvent.submit(form);
-
-    expect(onSteer).toHaveBeenCalledWith('talk like a pirate');
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it('passes /steer input through onSend when onSteer is not wired', () => {
-    const onSend = vi.fn();
-    renderChat({ onSend });
-
-    const { input, form } = inputBar();
-    fireEvent.change(input, { target: { value: '/steer talk like a pirate' } });
-    fireEvent.submit(form);
-
-    expect(onSend).toHaveBeenCalledWith('/steer talk like a pirate');
-  });
-
   it('threads hasOlder/onLoadOlder to the transcript', () => {
     const onLoadOlder = vi.fn();
     renderChat({ messages: [userText('u1', 'hi')], hasOlder: true, onLoadOlder });

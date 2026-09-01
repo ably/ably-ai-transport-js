@@ -30,8 +30,6 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_START,
   getTransportHeaders,
-  HEADER_FORK_OF,
-  HEADER_MSG_REGENERATE,
   HEADER_RUN_CLIENT_ID,
 } from '@ably/ai-transport';
 import type { DemoStepId, Scenario } from '../lib/progress-steps';
@@ -48,16 +46,14 @@ export function useDemoProgress(
   return useMemo(() => {
     const completed = new Set<DemoStepId>();
 
-    // Wire-level detections: cancel, regenerate, edit, and multi-tab all leave
-    // a footprint on the channel's raw messages via event names and transport
-    // headers, so they are visible to every client regardless of which one
-    // performed the action.
+    // Wire-level detections: cancel and multi-tab both leave a footprint on
+    // the channel's raw messages via event names and transport headers, so
+    // they are visible to every client regardless of which one performed the
+    // action.
     const runClientIds = new Set<string>();
     for (const m of ablyMessages) {
       if (m.name === EVENT_CANCEL) completed.add('cancel');
       const headers = getTransportHeaders(m);
-      if (headers[HEADER_MSG_REGENERATE] !== undefined) completed.add('regenerate');
-      if (headers[HEADER_FORK_OF] !== undefined) completed.add('edit');
       if (m.name === EVENT_RUN_START) {
         const runClientId = headers[HEADER_RUN_CLIENT_ID];
         if (runClientId !== undefined) runClientIds.add(runClientId);

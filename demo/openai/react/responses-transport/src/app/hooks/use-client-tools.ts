@@ -15,7 +15,7 @@
  * run's runId so the agent picks the result up off the channel and resumes.
  *
  * A `function_call_output` already present means the call was resolved (this
- * session or a prior one loaded from history), so the hook skips it and does not
+ * page load or a prior one loaded from history), so the hook skips it and does not
  * re-execute on refresh. The `handledRef` dedup guards against a re-render
  * re-running an in-flight executor. Only the initiating client runs the tool:
  * the run's triggering input (the user message named by the run-start's
@@ -74,21 +74,30 @@ function runInitiatorClientId(messages: ThreadMessage[], run: RunSummary): strin
   return messages.find((message) => message.codecMessageId === run.inputCodecMessageId)?.clientId;
 }
 
+/** Options for {@link useClientTools}. */
+export interface UseClientToolsOptions {
+  /** The folded thread to watch and to resolve calls against. */
+  messages: ThreadMessage[];
+  /** The folded run state, for the suspend gate and initiator lookup. */
+  runs: ReadonlyMap<string, RunSummary>;
+  /** This client's id; only calls from runs it initiated are executed. */
+  clientId: string | undefined;
+  /** Publishes the tool result and owns the decision to wake the agent. */
+  resolve: ResolveToolCall;
+  /** Optional callback to surface each execution in the demo's debug log. */
+  onLog?: (summary: string) => void;
+  /**
+   * Optional callback for a failed resolution publish. Called with the thrown
+   * value; the call is un-marked so a later render can retry it.
+   */
+  onError?: (error: unknown) => void;
+}
+
 /**
  * Watch the thread for unresolved client-tool calls and execute them.
- * @param messages - The folded thread to watch and to resolve calls against.
- * @param runs - The folded run state, for the suspend gate and initiator lookup.
- * @param clientId - This client's id; only calls from runs it initiated are executed.
- * @param resolve - Publishes the tool result and owns the decision to wake the agent.
- * @param onLog - Optional callback to surface each execution in the demo's debug log.
+ * @param options - See {@link UseClientToolsOptions}.
  */
-export function useClientTools(
-  messages: ThreadMessage[],
-  runs: ReadonlyMap<string, RunSummary>,
-  clientId: string | undefined,
-  resolve: ResolveToolCall,
-  onLog?: (summary: string) => void,
-) {
+export function useClientTools({ messages, runs, clientId, resolve, onLog, onError }: UseClientToolsOptions) {
   // Track handled call_ids so a re-render doesn't re-run an in-flight executor.
   const handledRef = useRef(new Set<string>());
 
@@ -119,11 +128,19 @@ export function useClientTools(
         if (resolved.has(item.call_id)) continue;
         if (handledRef.current.has(item.call_id)) continue;
 
-        handledRef.current.add(item.call_id);
-        void executeClientTool(resolve, message.codecMessageId, message.runId, item, onLog);
+        // Marked before the async work so a re-render cannot start a second
+        // executor for the same call. A failed publish un-marks it: the
+        // resolution never reached the wire, so the run stays suspended and
+        // the next render must be free to try again.
+        const callId = item.call_id;
+        handledRef.current.add(callId);
+        void executeClientTool(resolve, message.codecMessageId, message.runId, item, onLog).catch((error: unknown) => {
+          handledRef.current.delete(callId);
+          onError?.(error);
+        });
       }
     }
-  }, [messages, runs, clientId, resolve, onLog]);
+  }, [messages, runs, clientId, resolve, onLog, onError]);
 }
 
 /** Run one client-tool call and hand its result (or error) to the resolution gate. */

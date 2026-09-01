@@ -16,8 +16,6 @@ export type DemoStepId =
   | 'retry-stock'
   | 'checklist'
   | 'multi-tab'
-  | 'edit'
-  | 'regenerate'
   | 'cancel';
 
 /**

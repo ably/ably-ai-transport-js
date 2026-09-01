@@ -5,9 +5,9 @@ A Next.js chat app that plugs Ably AI Transport into the Vercel AI SDK's [`useCh
 What the demo shows:
 
 - **Streaming over Ably** — `useChat` owns the message state; the transport turns its sends into channel publishes and its response stream into channel subscriptions.
-- **Tools** — a server tool (`getWeather`), a browser tool (`getLocation`, run via `onToolCall` + `addToolOutput`), and an approval-gated tool (`getWeatherForecast`, resolved via `addToolApprovalResponse`). Tool continuations resume the suspended run automatically.
+- **Tools** — a server tool (`getWeather`), a browser tool (`getLocation`, run via `onToolCall` + `addToolOutput`), and an approval-gated tool (`getWeatherForecast`, resolved via `addToolApprovalResponse`). A turn that stops on a tool call ends; the resolution carries no run id, so its continuation wakes a fresh run that answers.
 - **Cancel** — Stop publishes a cancel over the channel; the agent aborts the model call and ends the run.
-- **Resume** — `resume: true` reconnects to a live run after a reload via the transport's `reconnectToStream`.
+- **Hydrate and resume** — the chat hydrates from the channel before it mounts (`useChannelHydration`, which calls `chatTransport.readSince()`), and `resume: true` then reconnects to a run still streaming after a reload via the transport's `reconnectToStream`. The two go together: the walk is what retains an unended run's events for the reconnect.
 - **LiveObjects checklist** — see below.
 
 ## Prerequisites
@@ -58,13 +58,13 @@ How it works:
 
 ## The agent route
 
-`src/app/api/chat/route.ts` handles the adapter's POST (`{channelName, eventId, runId?}`):
+`src/app/api/chat/route.ts` handles the adapter's POST (`{channelName, eventId}`):
 
 1. Builds a fresh Ably client and channel, and a `createAgentTransport` over it.
 2. `connect()`, then `locateInput(eventId)` finds the triggering input in channel history (404 if missing).
 3. Pages `history()` to exhaustion and folds the events into `UIMessage[]` (`src/app/lib/fold-messages.ts`).
-4. Opens the run — a resume when `runId` is present, a fresh run otherwise — and responds `{runId}` immediately.
-5. Inside `after()`: `streamText` with the conversation and tools, pipes the UIMessage chunk stream into `run.pipe(...)`, then `run.suspend()` when a client tool or approval is pending, else `run.end(...)`.
+4. Opens a run anchored to the located input and answers 202. Nothing is read from the response body: the client resolves the run id off the channel, from the `ai-run-start` that names the input it published.
+5. Inside `after()`: `streamText` with the conversation and tools, pipes the UIMessage chunk stream into `run.pipe(...)`, then `run.end(...)` — including when a client tool or approval is pending, because the client's resolution wakes a new run rather than resuming this one.
 
 ## Reflecting SDK changes
 

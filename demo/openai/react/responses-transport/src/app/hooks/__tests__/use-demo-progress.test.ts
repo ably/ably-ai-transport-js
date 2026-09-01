@@ -165,6 +165,20 @@ describe('useDemoProgress', () => {
     expect(idsOf(result.current)).toContain('approval-forecast');
   });
 
+  it('does not drop approval-forecast while the approval is only pending', () => {
+    // The fold marks a call 'pending' the moment its approval request lands,
+    // so a truthiness test would retire the chip before the user decides.
+    const pending = asThread({
+      role: 'assistant',
+      items: [
+        { type: 'function_call', call_id: 'c1', name: 'getWeatherForecast', arguments: '{}', status: 'completed' },
+      ],
+      toolCallStates: { c1: { approval: 'pending' } },
+    });
+    const { result } = renderHook(() => useDemoProgress(DEMO_SCENARIOS, [pending], []));
+    expect(idsOf(result.current)).toContain('approval-forecast');
+  });
+
   it('drops cancel when a cancel signal is on the channel', () => {
     const ablyMessages = [{ name: EVENT_CANCEL } as Ably.InboundMessage];
     const { result } = renderHook(() => useDemoProgress(DEMO_SCENARIOS, [], ablyMessages));

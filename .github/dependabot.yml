@@ -48,7 +48,7 @@ updates:
           - 'major'
           - 'patch'
   - package-ecosystem: 'npm'
-    directory: '/demo/vercel/react/use-client-session/'
+    directory: '/demo/shared-frontend/'
     schedule:
       interval: 'monthly'
     labels: [] # prevent the default `dependencies` label from being added to pull requests

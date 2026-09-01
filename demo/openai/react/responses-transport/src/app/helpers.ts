@@ -37,33 +37,30 @@ export interface WakeAgentBody {
   eventId: string;
 }
 
-/** Shape of the agent endpoint's JSON response. */
-export interface WakeAgentResult {
-  /** The run-id serving this request: the trigger's run-id for a continuation, or a freshly minted one. */
-  runId: string;
-}
-
 /**
  * Wake the agent by POSTing the published input's pointer to the agent
  * endpoint. The client transport is a pure Ably transport — it never sends
  * HTTP — so the application owns this step. The agent locates the input on the
- * channel by `eventId`, rebuilds the conversation from channel history, opens
- * the run (fresh, or resuming the run the trigger's own run-id header names),
- * and returns the run-id on the HTTP
- * response. The same run-id also arrives on the channel as `ai-run-start` /
- * `ai-run-resume`, which is how the thread fold tracks the run without
- * reading this response.
+ * channel by `eventId`, rebuilds the conversation from channel history, and
+ * opens the run.
+ *
+ * Nothing is read from the response: the run id arrives on the channel as
+ * `ai-run-start`, which is how the thread fold tracks the run. A failed wake
+ * still has to surface, though — the input is already published, so a silent
+ * failure looks exactly like a message the agent is slow to answer.
  * @param api - The agent endpoint URL.
  * @param body - The wake pointer; see {@link WakeAgentBody}.
- * @returns The run-id read back from the response.
- * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
+ * @returns Resolves once the endpoint has accepted the wake.
+ * @throws If the endpoint responds with a non-2xx status.
  */
-export async function wakeAgent(api: string, body: WakeAgentBody): Promise<WakeAgentResult> {
+export async function wakeAgent(api: string, body: WakeAgentBody): Promise<void> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  // CAST: trust boundary — the agent route returns this shape.
-  return (await response.json()) as WakeAgentResult;
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).slice(0, 200);
+    throw new Error(`wake POST to ${api} failed with ${String(response.status)}${detail ? `: ${detail}` : ''}`);
+  }
 }

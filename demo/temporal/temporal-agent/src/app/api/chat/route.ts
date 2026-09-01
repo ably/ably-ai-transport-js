@@ -1,14 +1,13 @@
 /**
  * Chat API route — receives the invocation pointer the useChat chat-transport
- * POSTs (`{channelName, eventId, runId?}`) and starts a Temporal workflow to
- * drive the agent side. The workflow ID equals the invocation ID.
+ * POSTs (`{channelName, eventId}`) and starts a Temporal workflow to drive the
+ * agent side. The workflow ID equals the invocation ID.
  *
- * The response carries the run's id, which the chat transport uses to filter
- * its chunk stream. The route derives it without awaiting the workflow: the
- * SDK plugin's `openRun` activity pins a fresh run's id to the invocation id
- * this route passes, and a continuation re-enters the run the trigger's own
- * headers name — so a fresh send answers with the invocation id and a
- * continuation echoes the `runId` the client already holds.
+ * The POST only wakes the agent: it answers 202 and the client reads nothing
+ * from the body. The run id reaches the client over the channel, on the
+ * `ai-run-start` the plugin's `openRun` activity publishes — pinned to the
+ * invocation id this route passes, so a retried process re-enters the same
+ * run.
  */
 
 import { Client, Connection } from '@temporalio/client';
@@ -22,14 +21,6 @@ interface ChatRequestBody {
   channelName: string;
   /** The `event-id` of the triggering input event on the channel. */
   eventId: string;
-  /** The run to continue; absent for a fresh send. */
-  runId?: string;
-}
-
-/** The response body the chat transport expects. */
-interface ChatResponseBody {
-  /** The id of the run this invocation opens (fresh) or resumes (continuation). */
-  runId: string;
 }
 
 // Cache the Temporal client + connection across requests: creating a Connection
@@ -63,8 +54,5 @@ export async function POST(req: Request): Promise<Response> {
     args,
   });
 
-  // Fresh send: the plugin pins the run id to the invocation id passed above.
-  // Continuation: the trigger's own run id wins, and the client sent it here.
-  const body: ChatResponseBody = { runId: request.runId ?? invocationId };
-  return Response.json(body);
+  return new Response('', { status: 202 });
 }

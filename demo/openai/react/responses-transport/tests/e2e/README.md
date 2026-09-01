@@ -5,11 +5,11 @@ behaviour of the Ably AI Transport flow with the OpenAI Responses codec: the
 client and agent transports exchanging AI messages over an Ably channel,
 rendered in the UI — streamed text, server-side / client-side / approval-gated
 tool calls, cancellation, history rebuild on refresh (including a reload
-mid-stream, which must fold to one message), and multi-tab sync.
+mid-stream, which must merge to one message), and multi-tab sync.
 
 This demo drives the client transport directly (`transport.publishInput` plus
 an explicit `wakeAgent` POST) with the generic, codec-agnostic transport
-parameterized by the OpenAI `ResponsesCodec`, and folds the decoded events
+parameterized by the OpenAI `ResponsesCodec`, and merges the decoded events
 through OpenAI's own `accumulateResponse`. The thread is linear — there is no
 branch navigation.
 

@@ -9,7 +9,7 @@
  * entry points.
  *
  * The negative half pins the wire-only property: the codec owns the wire
- * format and folds no conversation state, so a reducer or projection surface
+ * format and merges no conversation state, so a reducer or projection surface
  * appearing on it is a layering regression, not a feature.
  *
  * The type-level half matters as much as the runtime half: a caller has to be
@@ -25,10 +25,10 @@ import { ResponsesCodec } from '../src/openai/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
 
-/** State-folding surface a wire codec must not carry. */
+/** State-merging surface a wire codec must not carry. */
 const REDUCER_SURFACE = [
   'init',
-  'fold',
+  'merge',
   'getMessages',
   'createUserMessage',
   'createRegenerate',
@@ -38,7 +38,7 @@ const REDUCER_SURFACE = [
 ];
 
 describe('@ably/ai-transport/vercel', () => {
-  it('publishes a wire codec that encodes and decodes and folds no state', () => {
+  it('publishes a wire codec that encodes and decodes and merges no state', () => {
     const codec = createUIMessageCodec();
 
     expect(codec).toHaveProperty('createEncoder', expect.any(Function));
@@ -58,7 +58,7 @@ describe('@ably/ai-transport/vercel', () => {
 });
 
 describe('@ably/ai-transport/openai', () => {
-  it('publishes a wire codec that encodes and decodes and folds no state', () => {
+  it('publishes a wire codec that encodes and decodes and merges no state', () => {
     expect(ResponsesCodec).toHaveProperty('createEncoder', expect.any(Function));
     expect(ResponsesCodec).toHaveProperty('createDecoder', expect.any(Function));
     for (const method of REDUCER_SURFACE) {

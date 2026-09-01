@@ -12,7 +12,7 @@
  * unchanged and in wire order, routed on transport metadata alone.
  *
  * On the **hydration path** it does read content. {@link ChatTransport.readSince}
- * walks channel history and folds it into `UIMessage`s through the provider's
+ * walks channel history and merges it into `UIMessage`s through the provider's
  * own reducer, and holds the events of any run that has not ended so
  * {@link ChatTransport.reconnectToStream} can replay them. That retention is
  * the one piece of conversation state the adapter carries, and it is bounded.
@@ -361,15 +361,15 @@ const dedupeBySerial = <TMetadata, TDataParts extends AI.UIDataTypes, TTools ext
 };
 
 /**
- * Fold one bucket of chunks through the provider's own reducer.
+ * Merge one bucket of chunks through the provider's own reducer.
  *
- * The SDK owns the fold; the only work here is the demultiplexing a provider
+ * The SDK owns the merge; the only work here is the demultiplexing a provider
  * reducer cannot do for itself, which the caller has already done by bucketing
  * on codec-message-id.
  * @param chunks - The bucket's chunks, in wire order.
  * @returns The last message state the reducer yields, or `undefined` for a bucket that produced none.
  */
-const foldBucket = async <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
+const mergeBucket = async <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
   chunks: AI.UIMessageChunk[],
 ): Promise<AI.UIMessage<TMetadata, TDataParts, TTools> | undefined> => {
   const stream = new ReadableStream<AI.UIMessageChunk>({
@@ -578,7 +578,7 @@ class DefaultChatTransport<
     const openRuns = this._openRunsIn(walked);
     this._retain(walked, openRuns);
 
-    const messages = await this._foldWalked(walked, openRuns);
+    const messages = await this._mergeWalked(walked, openRuns);
     this._logger.debug('ChatTransport.readSince(); walk complete', {
       messages: messages.length,
       withheldRuns: openRuns.size,
@@ -850,16 +850,16 @@ class DefaultChatTransport<
   }
 
   /**
-   * Fold the walked events into messages, skipping the withheld runs.
+   * Merge the walked events into messages, skipping the withheld runs.
    *
    * Client inputs are already whole `UIMessage`s and pass straight through.
    * Agent output is bucketed by codec-message-id — the demultiplexing a
-   * provider reducer cannot do for itself — and each bucket folded by the SDK.
+   * provider reducer cannot do for itself — and each bucket merged by the SDK.
    * @param walked - The walked events, oldest first.
    * @param openRuns - The runs whose messages are withheld.
    * @returns The messages, oldest first.
    */
-  private async _foldWalked(
+  private async _mergeWalked(
     walked: AdapterEvent<TMetadata, TDataParts, TTools>[],
     openRuns: Set<string>,
   ): Promise<AI.UIMessage<TMetadata, TDataParts, TTools>[]> {
@@ -904,8 +904,8 @@ class DefaultChatTransport<
         messages.push(own);
         continue;
       }
-      const folded = await foldBucket<TMetadata, TDataParts, TTools>(buckets.get(id) ?? []);
-      if (folded !== undefined) messages.push(folded);
+      const merged = await mergeBucket<TMetadata, TDataParts, TTools>(buckets.get(id) ?? []);
+      if (merged !== undefined) messages.push(merged);
     }
     return messages;
   }

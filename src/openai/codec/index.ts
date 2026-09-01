@@ -13,7 +13,7 @@
  * JSON-serialisable body a client publishes rides one discrete `ai-input`
  * message and decodes back verbatim. The application defines its own input
  * vocabulary (turn bodies, tool resolutions, approval decisions) and narrows
- * decoded inputs at its own fold boundary — the responses-transport demo
+ * decoded inputs at its own merge boundary — the responses-transport demo
  * carries a worked example.
  *
  * ```ts

@@ -27,7 +27,7 @@ interface ChatProps {
 export function Chat({ chatId, clientId, api }: ChatProps) {
   // The codec's input direction is a passthrough, so decoded inputs arrive as
   // `unknown`; `OpenAIInput` is the demo's own publish-side vocabulary and is
-  // narrowed by the fold, not by the transport.
+  // narrowed by the merge, not by the transport.
   const { transport, error: transportError } = useClientTransport<unknown, OpenAIOutput>();
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -49,11 +49,11 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
   );
 
   // The demo's conversation state: hydrated from the messages endpoint plus a
-  // gap walk to the live attach point, then live transport events, all folded
+  // gap walk to the live attach point, then live transport events, all merged
   // through OpenAI's own accumulator.
   const { messages, runs, isRunning, activeRunId, hydrated } = useResponsesThread({
     channelName: chatId,
-    onFoldError: reportError,
+    onMergeError: reportError,
   });
 
   // Log a client-tool execution into the callback log so the demo shows which

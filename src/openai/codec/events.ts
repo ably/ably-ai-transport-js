@@ -20,7 +20,7 @@ import type { Responses } from 'openai/resources/responses/responses';
  * a `/responses` stream never carries the function-call *output* — OpenAI
  * surfaces tool output only as model *input* on the next turn — so the codec
  * gives it its own output event. The agent emits it between `/responses` calls
- * in its agentic loop; a consumer folds it into the message
+ * in its agentic loop; a consumer merges it into the message
  * named by its codec-message-id. Because each `pipe`/`send` mints a fresh id,
  * an output published on its own `send` lands in its own message, separate from
  * the one holding the `function_call`; a renderer pairs them by `call_id`.
@@ -41,7 +41,7 @@ export interface FunctionCallOutputEvent {
  * SDK's `RunToolApprovalItem`. That item exposes `name` / `arguments` getters
  * over the raw `function_call`, so this event carries the same fields — a
  * client can render the approval prompt from the request alone, without having
- * received the streamed `function_call`. A consumer folds it into the
+ * received the streamed `function_call`. A consumer merges it into the
  * per-`call_id` tool-call state of the message its codec-message-id names,
  * marking the call `pending`. The client answers with its own
  * approval-decision input body — inputs are application-defined and the codec
@@ -98,12 +98,12 @@ type WithoutSequenceNumber<T> = T extends { type: ReconstructedEventType } ? Omi
 type PickPresent<T, K extends string> = T extends unknown ? Pick<T, Extract<keyof T, K>> : never;
 
 /**
- * A completed message's content part reduced to the one datum a consumer's fold
+ * A completed message's content part reduced to the one datum a consumer's merge
  * can't rebuild from the streamed text: an output_text part's `logprobs`. Derived
  * per variant via {@link PickPresent}, so an output_text part keeps `logprobs` at
  * its exact SDK type ({@link Responses.ResponseOutputText}'s — the rich shape,
  * with `bytes`) and a refusal part reduces to just its `type`. Carried
- * index-aligned with the message's `content` so a consumer folds each part
+ * index-aligned with the message's `content` so a consumer merges each part
  * into its slot by index.
  */
 export type WireDoneContentPart = PickPresent<Responses.ResponseOutputMessage['content'][number], 'type' | 'logprobs'>;
@@ -112,7 +112,7 @@ export type WireDoneContentPart = PickPresent<Responses.ResponseOutputMessage['c
  * The wire-form shape of a completed output item. A real `response.output_item.done`
  * re-echoes the whole item, but the streamed deltas already carried the item's
  * content — so the codec transmits only what finalises the item in a consumer's
- * fold: the terminal `status`; a message's per-part `logprobs` (the sole content
+ * merge: the terminal `status`; a message's per-part `logprobs` (the sole content
  * datum NOT carried by the streamed deltas — see {@link WireDoneContentPart},
  * present only when logprobs were requested); and a reasoning item's
  * `encrypted_content` (its sole cross-turn carrier of chain-of-thought under
@@ -123,7 +123,7 @@ export type WireDoneContentPart = PickPresent<Responses.ResponseOutputMessage['c
  * `function_call`'s isn't; only `reasoning` has `encrypted_content`).
  * Discriminated per item type, so a consumer's `done.type === 'message'` check
  * narrows `done.content` into scope precisely — and because `logprobs` keeps its
- * rich `ResponseOutputText` type, folding it into the message's content slot is a
+ * rich `ResponseOutputText` type, merging it into the message's content slot is a
  * plain assignment with no cast. The `descriptors.ts` `output_item.done`
  * descriptor documents in full why logprobs are sourced from the finalised item
  * (and the OpenAI accumulator that choice mirrors).
@@ -200,7 +200,7 @@ type WireResponseEvent = WithoutTextDoneLogprobs<
  * the codec models them, mirroring how the Vercel codec binds
  * `AI.UIMessageChunk`), plus the codec's own {@link FunctionCallOutputEvent} for
  * server-executed tool results. The agent pipes its stream as-is: the codec's
- * descriptor table curates the wire, transmitting the events a consumer's fold
+ * descriptor table curates the wire, transmitting the events a consumer's merge
  * needs, dropping the redundant framing events, and throwing at the encoder on
  * anything undescribed (see the descriptor table's inventory).
  * {@link AssertRealEventIsOpenAIOutput} checks the real-event-assignable claim
@@ -226,7 +226,7 @@ type Assert<T extends true> = T;
 type AssertRealEventIsOpenAIOutput = Assert<Responses.ResponseStreamEvent extends OpenAIOutput ? true : false>;
 
 /**
- * The output item shapes the codec currently folds from a `/responses` stream:
+ * The output item shapes the codec currently merges from a `/responses` stream:
  * an output message, a reasoning item, and a function call.
  *
  * This is a deliberately small subset of OpenAI's `ResponseOutputItem` union.

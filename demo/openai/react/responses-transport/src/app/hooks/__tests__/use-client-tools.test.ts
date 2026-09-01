@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { RunStatus } from '@ably/ai-transport';
 
-import type { RunSummary, ThreadMessage } from '../../lib/fold-thread';
+import type { RunSummary, ThreadMessage } from '../../lib/merge-thread';
 import { useClientTools } from '../use-client-tools';
 
 // The thread: the user trigger (carrying the initiator's clientId) and an
@@ -94,7 +94,7 @@ describe('useClientTools', () => {
     const onError = vi.fn();
     const { messages, runs } = makeThread('suspended');
 
-    // A fresh array per render, as the fold produces on every event.
+    // A fresh array per render, as the merge produces on every event.
     const { rerender } = renderHook(() =>
       useClientTools({ messages: [...messages], runs, clientId: 'c', resolve, onError }),
     );

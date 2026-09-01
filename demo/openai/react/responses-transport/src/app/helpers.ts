@@ -45,7 +45,7 @@ export interface WakeAgentBody {
  * opens the run.
  *
  * Nothing is read from the response: the run id arrives on the channel as
- * `ai-run-start`, which is how the thread fold tracks the run. A failed wake
+ * `ai-run-start`, which is how the thread merge tracks the run. A failed wake
  * still has to surface, though — the input is already published, so a silent
  * failure looks exactly like a message the agent is slow to answer.
  * @param api - The agent endpoint URL.

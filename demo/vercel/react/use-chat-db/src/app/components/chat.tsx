@@ -22,7 +22,7 @@ import {
   type DemoStepId,
   type Scenario,
 } from '@ably-ai-demos/frontend';
-import { type ChatTransportEvent, foldMessages } from '../lib/fold-messages';
+import { type ChatTransportEvent, mergeMessages } from '../lib/merge-messages';
 
 // The scenarios this linear demo can drive: the shared baseline entries whose
 // completion it can detect from a plain message list (server/client/approval
@@ -88,7 +88,7 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
   // later tick than the stream reader's microtask chain, so `onFinish` would
   // read a serial at least one delivery stale. The store's invariant is that
   // everything at or before the serial is accounted for, and a stale serial
-  // makes the next walk re-fold a message the seed already holds.
+  // makes the next walk re-merge a message the seed already holds.
   const latestSerialRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!transport) return;
@@ -223,7 +223,7 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
   // channel normally duplicates the store seed, so loading it prepends nothing
   // — the affordance surfaces the paging path, and would recover any message
   // the store lost. Batches accumulate so a stream spanning batch boundaries
-  // refolds whole once its opener is paged in.
+  // remerges whole once its opener is paged in.
   const [hasOlder, setHasOlder] = useState(initialHasOlder);
   const olderEventsRef = useRef<ChatTransportEvent[]>([]);
   // One page at a time: the transport's history cursor is shared, so two
@@ -236,15 +236,15 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
     void (async () => {
       const batch = await transport.history();
       olderEventsRef.current = [...batch.events, ...olderEventsRef.current];
-      const folded = await foldMessages(olderEventsRef.current);
+      const merged = await mergeMessages(olderEventsRef.current);
       setMessages((current) => {
-        // Refolding the accumulated batches can improve a message already
+        // Remerging the accumulated batches can improve a message already
         // prepended (its opener may only now have been paged in), so the
-        // newer fold replaces by id rather than being filtered out.
-        const refolded = new Map(folded.map((entry) => [entry.message.id, entry.message]));
-        const kept = current.map((message) => refolded.get(message.id) ?? message);
+        // newer merge replaces by id rather than being filtered out.
+        const remerged = new Map(merged.map((entry) => [entry.message.id, entry.message]));
+        const kept = current.map((message) => remerged.get(message.id) ?? message);
         const currentIds = new Set(current.map((message) => message.id));
-        const fresh = folded.map((entry) => entry.message).filter((message) => !currentIds.has(message.id));
+        const fresh = merged.map((entry) => entry.message).filter((message) => !currentIds.has(message.id));
         return fresh.length === 0 ? kept : [...fresh, ...kept];
       });
       if (batch.exhausted) setHasOlder(false);

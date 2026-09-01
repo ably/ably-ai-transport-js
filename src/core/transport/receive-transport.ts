@@ -33,7 +33,7 @@ import { wireMetaFromMessage } from './wire-meta.js';
  * via {@link parseStepLifecycle}; everything else is decoded by the bound
  * decoder. A codec-decoded message that yields no events and carries no run-id
  * is a wire-only carrier and returns `undefined` (filtered), matching the live
- * fold. A lifecycle name whose message is missing the identifiers its parser
+ * merge. A lifecycle name whose message is missing the identifiers its parser
  * needs also returns `undefined`. The decoder may throw on a malformed payload;
  * the throw propagates to the caller, which decides whether to drop or surface
  * it.
@@ -76,7 +76,7 @@ export const classifyWireMessage = <TInput, TOutput>(
  * {@link ReceiveTransport.deliverEvent}. Distinguishes a filtered message
  * (wire-only noise, legitimately dropped) from a failed one (the decoder
  * threw), so the owner can skip its own follow-on side-effects for a message
- * the fold never applied while still running them for a filtered one.
+ * the merge never applied while still running them for a filtered one.
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
@@ -107,7 +107,7 @@ export interface ReceiveTransport<TInput, TOutput> extends TransportReceiver<TIn
   /**
    * Classify one inbound wire message and emit its typed `event`. A decode
    * failure emits `error`, drops the message, and reports `failed` so the
-   * owner can skip follow-on processing of a message the fold never applied.
+   * owner can skip follow-on processing of a message the merge never applied.
    * Does NOT emit `ably-message` — the owner calls {@link deliverAblyMessage}
    * so batch (history) and live paths control the raw emit independently.
    * @param rawMsg - The inbound Ably wire message.
@@ -126,7 +126,7 @@ export interface ReceiveTransport<TInput, TOutput> extends TransportReceiver<TIn
   emitEvent(event: TransportEvent<TInput, TOutput>): void;
   /**
    * Emit the raw `ably-message`, after its typed `event` so a handler sees any
-   * state an earlier subscriber folded.
+   * state an earlier subscriber merged.
    * @param rawMsg - The inbound Ably wire message.
    */
   deliverAblyMessage(rawMsg: Ably.InboundMessage): void;

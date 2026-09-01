@@ -15,7 +15,7 @@ before the chat mounts, in two parts:
 1. a REST endpoint (`/api/messages`) serves the stored conversation and that
    serial;
 2. `chatTransport.readSince(latestSerial)` walks the channel back only as far
-   as the serial and returns the messages published since, folded with the
+   as the serial and returns the messages published since, merged with the
    provider's own reducer (`readUIMessageStream`).
 
 The two lists concatenate into `useChat({ messages })` in one shot. The serial
@@ -38,7 +38,7 @@ resolution wakes a new run. Each fresh visit opens a new channel
 Most of what this demo publishes rides the wire in the AI SDK's own
 vocabulary: a new turn is a `UIMessage` (`{ kind: 'message' }`), and a client
 tool's result is the SDK's own `tool-output-available` chunk
-(`{ kind: 'chunk' }`) — so one fold path (`readUIMessageStream`) covers inputs
+(`{ kind: 'chunk' }`) — so one merge path (`readUIMessageStream`) covers inputs
 and outputs alike.
 
 The tool-approval decision is the exception, published as the codec-defined
@@ -46,14 +46,14 @@ The tool-approval decision is the exception, published as the codec-defined
 The AI SDK has no chunk for a client-side approval decision — responding is
 `chat.addToolApprovalResponse`, a state change, not a stream part — so there
 is no provider type to reuse. The body captures the intermediate "approved,
-not yet executed" state, which is what the agent's fold
-(`src/app/lib/fold-messages.ts`) flips onto the tool part so `streamText`
+not yet executed" state, which is what the agent's merge
+(`src/app/lib/merge-messages.ts`) flips onto the tool part so `streamText`
 executes the approved tool on the continuation.
 
-The adapter's own `readSince` walk does not apply it. That walk folds message
+The adapter's own `readSince` walk does not apply it. That walk merges message
 inputs and agent outputs; an approval, and a client tool resolution addressed
 to the assistant message rather than the wire's own codec-message-id, both
-fold to nothing there. A turn inside the walk window that ended on a client
+merge to nothing there. A turn inside the walk window that ended on a client
 tool or an unanswered approval therefore hydrates with the tool part still
 open, and the client answers it again. That is why the store holds the whole
 conversation useChat has: it keeps the walk window short enough that the case
@@ -91,7 +91,7 @@ serial.
 ## Tests
 
 ```bash
-pnpm test          # unit tests (hydration, message folding, store, chat wiring)
+pnpm test          # unit tests (hydration, message merging, store, chat wiring)
 pnpm run test:e2e  # Playwright e2e against an Ably sandbox app (no keys needed)
 ```
 

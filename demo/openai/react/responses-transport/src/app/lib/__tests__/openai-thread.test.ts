@@ -42,7 +42,7 @@ describe('resolvedCallIds', () => {
     expect([...resolved].toSorted()).toEqual(['c1', 'c2']);
   });
 
-  it('returns an empty set when no output has folded', () => {
+  it('returns an empty set when no output has merged', () => {
     const messages: OpenAIMessage[] = [{ role: 'assistant', items: [gatedCall('c1')] }];
     expect(resolvedCallIds(messages).size).toBe(0);
   });
@@ -117,7 +117,7 @@ describe('unansweredCalls', () => {
     expect(unansweredCalls(messages)).toEqual([]);
   });
 
-  it('treats a call with a folded output as answered', () => {
+  it('treats a call with a merged output as answered', () => {
     const messages: OpenAIMessage[] = [
       { role: 'assistant', items: [gatedCall('c1', 'getWeather')] },
       { role: 'assistant', items: [{ type: 'function_call_output', call_id: 'c1', output: '{}' }] },

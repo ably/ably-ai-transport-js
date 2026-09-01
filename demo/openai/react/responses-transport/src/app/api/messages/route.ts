@@ -3,9 +3,9 @@
  *
  * Answers a GET with the conversation so far: the decoded transport events
  * (oldest first) plus the channel serial of the newest one, read through the
- * same `getExistingMessages` the chat route folds model context from — minus
+ * same `getExistingMessages` the chat route merges model context from — minus
  * any run that has not ended, which the client owns end to end. The
- * client folds the returned events itself, then pages its own transport's
+ * client merges the returned events itself, then pages its own transport's
  * history only for the gap newer than `latestSerial` — the seam between what
  * this response covered and where the client's live subscription attached.
  * Swapping the channel for a database later means reimplementing

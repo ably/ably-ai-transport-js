@@ -1,7 +1,7 @@
 /**
  * Tests for getExistingMessages — the demo's one swappable history source:
- * it pages a transport's history to exhaustion, folds the events through the
- * shared thread fold, and reports the newest event's serial as the client's
+ * it pages a transport's history to exhaustion, merges the events through the
+ * shared thread merge, and reports the newest event's serial as the client's
  * hydration seam.
  */
 
@@ -63,7 +63,7 @@ const stubHistory = (batches: Batch[]): { history: () => Promise<Batch> } => ({
 });
 
 describe('getExistingMessages', () => {
-  it('pages to exhaustion, folds, and reports the newest serial as the seam', async () => {
+  it('pages to exhaustion, merges, and reports the newest serial as the seam', async () => {
     // Two batches, newest first, each chronological within.
     const source = stubHistory([
       { events: [runStartEvent('run-1', 's-3'), userEvent('cm-2', 'second', 's-4')], exhausted: false },

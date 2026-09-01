@@ -60,7 +60,7 @@ preserve:
 Codec and transport are themselves distinct: the **codec** owns the wire format
 (encode/decode of events and messages); the **transport** owns runs, steps,
 channel I/O and history paging. **The transport holds no conversation state.**
-Folding an event stream into messages is the application's job — or the
+Merging an event stream into messages is the application's job — or the
 provider reducer's — and no reducer or projection contract lives in
 `src/core/`. That boundary is the most important one in the codebase: a
 projection put back inside the transport is the mistake this design exists to
@@ -102,7 +102,7 @@ The receive side has one classifier and the send sides are split by role:
   steer onto the matching run handle.
 
 None of the three holds conversation state. A consumer that wants a message
-list folds the event stream itself, or hands it to the provider's own reducer.
+list merges the event stream itself, or hands it to the provider's own reducer.
 See `src/core/transport/index.ts` and the module doc comments on
 `client-transport.ts`, `agent-transport.ts` and `receive-transport.ts` for the
 current surface.
@@ -195,7 +195,7 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 10. **Single shared channel, caller-owned** — one Ably channel per transport,
     shared by all features. The caller resolves and owns the channel; the
     transport subscribes its own listener and never detaches it.
-11. **No message assembly in the SDK** — no reducer, no fold driver, no
+11. **No message assembly in the SDK** — no reducer, no merge driver, no
     projection type. The application demultiplexes a batch's `message` events
-    by their codec-message-id and folds each bucket with the provider's own
+    by their codec-message-id and merges each bucket with the provider's own
     machinery.

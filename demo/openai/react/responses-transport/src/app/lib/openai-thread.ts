@@ -6,7 +6,7 @@
  * The SDK's OpenAI codec carries inputs as opaque passthrough JSON
  * (`WireCodec<unknown, OpenAIOutput>`), so the application owns this
  * vocabulary: what a turn body, a tool resolution, and an approval decision
- * look like, and how a fold renders them. Everything here stays in OpenAI's
+ * look like, and how a merge renders them. Everything here stays in OpenAI's
  * own item vocabulary wherever one exists, so a stored conversation is valid
  * `/responses` input as-is.
  */
@@ -28,7 +28,7 @@ import type { ModelledOutputItem } from '@ably/ai-transport/openai';
 export interface OpenAIToolCallState {
   /** The gated call's approval status, set once the agent requests approval and updated by the client's response. */
   approval?: 'pending' | 'approved' | 'denied';
-  /** The client-side execution result status, recorded by the fold since a `function_call_output` item cannot carry a failure status. */
+  /** The client-side execution result status, recorded by the merge since a `function_call_output` item cannot carry a failure status. */
   result?: 'ok' | 'failed';
   /** The tool name, carried on the approval request so a client can render the prompt without the streamed `function_call`. */
   name?: string;
@@ -50,7 +50,7 @@ export type OpenAIItem =
 
 /**
  * One message's worth of OpenAI items, tagged with the message's role — the
- * shape the fold renders and a turn body carries. An assistant message can
+ * shape the merge renders and a turn body carries. An assistant message can
  * hold several output items; a user message holds a single input message item
  * (whose multiplicity lives in its content parts).
  */
@@ -120,7 +120,7 @@ export interface OpenAIApprovalInput {
 /**
  * Every body this demo publishes on the `ai-input` wire. The codec carries
  * these opaquely; {@link asOpenAIInput} narrows a decoded input back into the
- * union at the fold boundary.
+ * union at the merge boundary.
  */
 export type OpenAIInput = OpenAIMessageInput | OpenAIRegenerateInput | OpenAIItemInput | OpenAIApprovalInput;
 
@@ -176,7 +176,7 @@ export const toResponsesInput = (messages: OpenAIMessage[]): Responses.ResponseI
 
 /**
  * The `call_id`s of every `function_call_output` present across the given
- * messages. A resolved call is one whose output has folded in, so the loop
+ * messages. A resolved call is one whose output has merged in, so the loop
  * skips it and a renderer shows its output attached to the call.
  * @param messages - The conversation messages to scan.
  * @returns The set of resolved `call_id`s.

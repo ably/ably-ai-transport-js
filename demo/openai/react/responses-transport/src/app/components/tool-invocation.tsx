@@ -95,7 +95,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
     );
   }
 
-  // A failed client result folds the failure message into the output.
+  // A failed client result merges the failure message into the output.
   if (part.result === 'failed') {
     return (
       <ToolErrorCard

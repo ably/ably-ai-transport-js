@@ -54,7 +54,7 @@ export interface OpenRunOptions {
    * Whatever is passed must be stable across retries and distinct per turn, so
    * the default only holds where one workflow serves one turn. A workflow
    * serving several turns keeps one workflow id across all of them, and must
-   * pass a per-turn id here or every turn folds onto the first one's run.
+   * pass a per-turn id here or every turn merges onto the first one's run.
    */
   invocationId?: string;
   /** Per-activity timeouts and retry policies. */

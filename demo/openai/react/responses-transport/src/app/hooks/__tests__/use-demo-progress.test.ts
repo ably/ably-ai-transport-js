@@ -5,7 +5,7 @@ import { EVENT_CANCEL } from '@ably/ai-transport';
 
 import { useDemoProgress } from '../use-demo-progress';
 import type { DemoStepId, Scenario } from '@ably-ai-demos/frontend/lib/progress-steps';
-import type { ThreadMessage } from '../../lib/fold-thread';
+import type { ThreadMessage } from '../../lib/merge-thread';
 import { DEMO_SCENARIOS } from '../../lib/intro-content';
 
 // --- fixtures ----------------------------------------------------------------
@@ -166,7 +166,7 @@ describe('useDemoProgress', () => {
   });
 
   it('does not drop approval-forecast while the approval is only pending', () => {
-    // The fold marks a call 'pending' the moment its approval request lands,
+    // The merge marks a call 'pending' the moment its approval request lands,
     // so a truthiness test would retire the chip before the user decides.
     const pending = asThread({
       role: 'assistant',

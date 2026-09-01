@@ -381,7 +381,7 @@ export async function* createMockResponseStream(req: ResponseStreamRequest): Asy
   }
 
   // Optional reasoning summary streamed as a reasoning item before the reply
-  // (its own item id, so it folds beside the message).
+  // (its own item id, so it merges beside the message).
   if (plan.reasoning !== undefined) yield* reasoningEvents(plan.reasoning, next);
 
   yield {

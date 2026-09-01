@@ -1,9 +1,9 @@
 /**
  * Tests for getExistingMessages — the demo's swappable history source: it
- * pages a transport's history to exhaustion and folds the events through the
- * demo's fold helper. Swapping the channel for a database later means
+ * pages a transport's history to exhaustion and merges the events through the
+ * demo's merge helper. Swapping the channel for a database later means
  * reimplementing only this function, so what is pinned here is its contract:
- * every batch is paged, and batches arrive newest-first but fold oldest-first.
+ * every batch is paged, and batches arrive newest-first but merge oldest-first.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -59,7 +59,7 @@ const stubTransport = (batches: Batch[]) => {
 };
 
 describe('getExistingMessages', () => {
-  it('pages every batch and folds them oldest-first', async () => {
+  it('pages every batch and merges them oldest-first', async () => {
     // history() walks backwards, so the newest batch comes first.
     const transport = stubTransport([
       { events: [userEvent('cm-2', 'u2', 'second')], exhausted: false },

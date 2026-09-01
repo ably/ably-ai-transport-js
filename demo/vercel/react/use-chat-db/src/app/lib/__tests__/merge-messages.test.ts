@@ -1,17 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { isDynamicToolUIPart, isToolUIPart, type UIMessage } from 'ai';
-import { foldMessages } from '../fold-messages';
+import { mergeMessages } from '../merge-messages';
 import { messageEvent, runEndEvent, userEvent, userMessage } from './helpers';
 
-/** The single tool part on a folded assistant message. */
+/** The single tool part on a merged assistant message. */
 function toolPart(message: UIMessage) {
   const part = message.parts.find((p) => isToolUIPart(p) || isDynamicToolUIPart(p));
   if (!part) throw new Error('expected a tool part');
   return part;
 }
 
-describe('foldMessages', () => {
-  it('folds a user input and a streamed assistant reply into two messages', async () => {
+describe('mergeMessages', () => {
+  it('merges a user input and a streamed assistant reply into two messages', async () => {
     const events = [
       userEvent('wire-u1', 'u1'),
       messageEvent(
@@ -29,7 +29,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
 
     expect(messages.map((entry) => ({ codecMessageId: entry.codecMessageId, id: entry.message.id }))).toEqual([
       { codecMessageId: 'wire-u1', id: 'u1' },
@@ -64,7 +64,7 @@ describe('foldMessages', () => {
       messageEvent({ codecMessageId: 'wire-a1', runId: 'run-1' }, { outputs: [{ type: 'text-end', id: 't1' }] }),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
 
     expect(messages.map((entry) => entry.message.id)).toEqual(['a1', 'a2']);
     expect(messages[0].message.parts).toContainEqual(expect.objectContaining({ type: 'text', text: 'first' }));
@@ -86,7 +86,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
 
     expect(messages[0].message.id).toBe('wire-a1');
   });
@@ -109,7 +109,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
 
     expect(messages).toHaveLength(1);
     expect(messages[0].message.id).toBe('u1');
@@ -142,7 +142,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
 
     expect(messages).toHaveLength(1);
     const part = toolPart(messages[0].message);
@@ -182,7 +182,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
 
     expect(messages.map((entry) => entry.message.id)).toEqual(['a1', 'a2']);
     const part = toolPart(messages[0].message);
@@ -211,7 +211,7 @@ describe('foldMessages', () => {
       },
     );
 
-    const approved = await foldMessages([
+    const approved = await mergeMessages([
       stream,
       messageEvent(
         { codecMessageId: 'wire-a1', runId: 'run-1' },
@@ -222,7 +222,7 @@ describe('foldMessages', () => {
     expect(approvedPart.state).toBe('approval-responded');
     expect(approvedPart.approval).toEqual(expect.objectContaining({ id: 'ap-1', approved: true }));
 
-    const denied = await foldMessages([
+    const denied = await mergeMessages([
       stream,
       messageEvent(
         { codecMessageId: 'wire-a1', runId: 'run-1' },
@@ -276,13 +276,13 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
 
     expect(toolPart(messages[0].message).state).toBe('output-available');
   });
 
   it('ignores lifecycle events and message events with no codec-message-id', async () => {
-    const messages = await foldMessages([
+    const messages = await mergeMessages([
       runEndEvent('run-1'),
       messageEvent({}, { inputs: [{ kind: 'message', payload: userMessage('u1', 'orphan') }] }),
     ]);

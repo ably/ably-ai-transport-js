@@ -74,7 +74,7 @@ describe('toDisplayParts', () => {
     ]);
   });
 
-  it("folds a call's approval and result state from toolStates onto the tool part", () => {
+  it("merges a call's approval and result state from toolStates onto the tool part", () => {
     const callMessage: OpenAIMessage = {
       role: 'assistant',
       items: [

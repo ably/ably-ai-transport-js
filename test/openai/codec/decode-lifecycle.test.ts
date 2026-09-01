@@ -11,7 +11,7 @@
  * type, id recovered from the codec headers) ahead of the group's own start and
  * the accumulated deltas. Synthesis is stateless and unconditional, so a full
  * replay re-introduces the item id alongside the genuine opening bracket; a
- * consumer folding the events collapses the pair by item id.
+ * consumer merging the events collapses the pair by item id.
  */
 
 import type * as Ably from 'ably';

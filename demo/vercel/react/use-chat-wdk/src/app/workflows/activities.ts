@@ -20,7 +20,7 @@
  *
  * - {@link openActivity} locates the trigger and publishes the run's opening
  *   event (`ai-run-start`, or `ai-run-resume` when the trigger names a run).
- * - {@link inferenceActivity} re-enters the run with `adoptRun`, folds
+ * - {@link inferenceActivity} re-enters the run with `adoptRun`, merges
  *   channel history into model context, streams one model call through an AIT
  *   step, and classifies the outcome — publishing no lifecycle itself.
  * - {@link toolActivity} re-enters the same way and publishes one server-tool
@@ -30,7 +30,7 @@
  *
  * Two rules keep the cross-process lifecycle sound:
  *
- * - **Gate before publishing.** Every re-entering activity folds the run's
+ * - **Gate before publishing.** Every re-entering activity merges the run's
  *   lifecycle from channel history first and publishes only while the run is
  *   still this workflow's to drive — a run another invocation already ended
  *   or resumed is left alone, so a slow retry never clobbers work that
@@ -57,7 +57,7 @@ import {
 import { createModel } from '../api/chat/model';
 import { tools } from '../api/chat/tools';
 import type { FaultMode } from '../lib/fault';
-import { foldChunkList, foldMessages, type WdkTransportEvent } from '../lib/fold-messages';
+import { mergeChunkList, mergeMessages, type WdkTransportEvent } from '../lib/merge-messages';
 import { withActivity } from './activity-runtime';
 import type { AitTurnInput } from './ait-turn';
 import { collectHistory, latestRunLifecycle, type WdkAgentTransport } from './history';
@@ -165,7 +165,7 @@ export async function openActivity(input: AitTurnInput, workflowRunId: string): 
  * {@link openActivity}) and each follow-up the workflow schedules after
  * server-tool activities, so the model sees their published outputs.
  *
- * The history fold is both gate and context. The gate: a run that ended,
+ * The history merge is both gate and context. The gate: a run that ended,
  * ended or was resumed by another invocation is no longer this workflow's
  * to drive — return the observed outcome (or `settled`) and publish nothing,
  * so a slow retry never re-runs the model over a continuation that already
@@ -197,9 +197,9 @@ export async function inferenceActivity(
 
       const run = transport.adoptRun(refs.runId, { invocationId: refs.invocationId });
 
-      // Recovery reads over the full fold (the dead attempt's output included —
+      // Recovery reads over the full merge (the dead attempt's output included —
       // its streamed tool calls may already be answered on the wire).
-      const messages = await foldMessages(events);
+      const messages = await mergeMessages(events);
 
       // A tool-approval-response just landed: the approved call's output is
       // owed, but feeding the approval pair back through the model is
@@ -239,10 +239,10 @@ export async function inferenceActivity(
       // stream supersedes that step's prior output on the wire, so the prompt
       // must not carry it either (a trailing assistant message reads as a
       // prefill and real providers reject it).
-      const conversation = await foldMessages(events, { excludeStepId: stepId });
+      const conversation = await mergeMessages(events, { excludeStepId: stepId });
       if (conversation.length === 0) {
         // Never hand streamText an empty prompt ("messages must not be empty").
-        return { kind: 'error', errorMessage: 'history fold returned no messages' };
+        return { kind: 'error', errorMessage: 'history merge returned no messages' };
       }
 
       const result = streamText({
@@ -258,7 +258,7 @@ export async function inferenceActivity(
 
       // The AIT step is keyed on the WDK step id, so a retry supersedes the
       // dead attempt's output. The response-message id is pinned to the same
-      // key, so a client folding the wire replaces the dead attempt's message
+      // key, so a client merging the wire replaces the dead attempt's message
       // instead of appending a duplicate.
       const step = run.createStep({ stepId });
       const uiStream = toUIMessageStream({
@@ -283,7 +283,7 @@ export async function inferenceActivity(
       // The model stopped on tool calls: server calls (execute in the
       // registry) become tool activities; anything else (client tools,
       // approval-gated tools) ends the turn for the client to resolve.
-      const streamedMessage = await foldChunkList(streamedChunks);
+      const streamedMessage = await mergeChunkList(streamedChunks);
       const server = filterServerToolCalls(pendingToolCalls(streamedMessage ? [streamedMessage] : []));
       return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'awaiting-client' };
     },
@@ -415,7 +415,7 @@ function isSettledOrTakenOver(latest: RunLifecycleEvent, refs: RunRefs): boolean
 }
 
 /**
- * The re-entry gate every activity folds before publishing. Returns the
+ * The re-entry gate every activity merges before publishing. Returns the
  * outcome to short-circuit with when the run is not (or no longer) this
  * workflow's to drive, or undefined to proceed.
  * @param events - Collected history events, oldest first.

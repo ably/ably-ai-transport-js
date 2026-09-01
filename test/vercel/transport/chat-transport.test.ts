@@ -4,7 +4,7 @@
  *
  * On the streaming path the adapter decides which stream a chunk belongs on
  * and forwards it unchanged, reading transport metadata only; on the hydration
- * path it folds walked history into messages and retains an unfinished run's
+ * path it merges walked history into messages and retains an unfinished run's
  * events. These tests drive it against a fake ClientTransport, covering
  * the three send paths, the run id arriving over the channel, the hydration
  * walk and the reconnect that pairs with it, step supersede, and the terminal

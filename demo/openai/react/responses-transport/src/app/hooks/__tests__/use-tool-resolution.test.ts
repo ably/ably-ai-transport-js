@@ -5,7 +5,7 @@ import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
 import type { OpenAIInput } from '../../lib/openai-thread';
 
-import type { ThreadMessage } from '../../lib/fold-thread';
+import type { ThreadMessage } from '../../lib/merge-thread';
 import { useToolResolution } from '../use-tool-resolution';
 
 /** A gated function_call item awaiting a decision. */

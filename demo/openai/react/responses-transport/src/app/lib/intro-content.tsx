@@ -4,7 +4,7 @@ export const INTRO_TITLE = 'OpenAI Responses over Ably';
 
 export const INTRO_DESCRIPTION =
   'A chat wired directly to the Ably AI Transport client transport, with the OpenAI Responses codec. The transport ' +
-  'publishes inputs and decodes events off a single Ably channel; the app folds those events into a linear thread ' +
+  'publishes inputs and decodes events off a single Ably channel; the app merges those events into a linear thread ' +
   "using OpenAI's own stream accumulator. The thread stays in sync across a user's devices and across multiple " +
   'participants, with a bidirectional channel between user and agent for cancellation. Each item below exercises a ' +
   'specific feature - try them in order to see what it does.';
@@ -77,7 +77,7 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
     title: 'History on refresh',
     action: <>Reload the page — the conversation rebuilds from the channel.</>,
     blurb:
-      'Nothing is held in app state: the client pages channel history and refolds the thread — even mid-stream, where hydrated history and the live continuation fold to one message.',
+      'Nothing is held in app state: the client pages channel history and remerges the thread — even mid-stream, where hydrated history and the live continuation merge to one message.',
   },
   {
     tag: 'Observability',
@@ -87,6 +87,6 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
         Open the <span className="font-medium text-foreground">Debug pane</span> on the right.
       </>
     ),
-    blurb: 'Three tabs: raw Ably messages on the wire, the folded conversation thread, and run lifecycle events.',
+    blurb: 'Three tabs: raw Ably messages on the wire, the merged conversation thread, and run lifecycle events.',
   },
 ];

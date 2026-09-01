@@ -19,7 +19,7 @@ export type RunEndReason = 'complete' | 'cancelled' | 'error';
  * events.
  *
  * - `active` — the run is in flight (streaming), or not yet observed on the
- *   channel (a freshly-created run whose run-start has not folded in).
+ *   channel (a freshly-created run whose run-start has not merged in).
  * - `suspended` — the run is paused awaiting input (it published
  *   `ai-run-suspend`); a later continuation re-activates it.
  * - `complete` / `cancelled` / `error` — terminal {@link RunEndReason}s; an

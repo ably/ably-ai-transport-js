@@ -4,8 +4,8 @@
  * Prove the full send → stream → receive lifecycle through
  * `createClientTransport` and `createAgentTransport`, with the Vercel codec on
  * the wire and message assembly done the way an application does it: bucket
- * the classified events by codec-message-id and fold each bucket through the
- * provider's own reducer (`readUIMessageStream`). The SDK folds nothing.
+ * the classified events by codec-message-id and merge each bucket through the
+ * provider's own reducer (`readUIMessageStream`). The SDK merges nothing.
  *
  * Scenarios follow the testing strategy's list — text roundtrip through the
  * transport, a tool call resolved by the client, the cancel chain, sequential
@@ -66,14 +66,14 @@ const waitForEvents = async (
 };
 
 /**
- * The application's demultiplex-and-fold: bucket output chunks (and
- * chunk-shaped input bodies) by codec-message-id in first-seen order, fold
+ * The application's demultiplex-and-merge: bucket output chunks (and
+ * chunk-shaped input bodies) by codec-message-id in first-seen order, merge
  * each bucket through the provider's own reducer, and return the final
  * message per bucket.
  * @param events - The classified events, in delivery order.
- * @returns The folded messages, in first-seen bucket order.
+ * @returns The merged messages, in first-seen bucket order.
  */
-const foldMessages = async (events: Event[]): Promise<AI.UIMessage[]> => {
+const mergeMessages = async (events: Event[]): Promise<AI.UIMessage[]> => {
   interface Bucket {
     chunks: AI.UIMessageChunk[];
     message?: AI.UIMessage;
@@ -87,7 +87,7 @@ const foldMessages = async (events: Event[]): Promise<AI.UIMessage[]> => {
     buckets.set(id, bucket);
     bucket.chunks.push(...event.outputs);
     for (const input of event.inputs) {
-      // A chunk-shaped action folds through the provider reducer with the
+      // A chunk-shaped action merges through the provider reducer with the
       // outputs; a message body is already whole — merge its parts (the wire
       // fans one part out per event), deduped by part equality so a
       // redelivered event adds nothing.
@@ -135,7 +135,7 @@ const lifecycleOf = (events: Event[]): RunLifecycleEvent[] =>
 
 /**
  * The text of the first text part on a message.
- * @param message - The folded message.
+ * @param message - The merged message.
  * @returns The text, or `undefined` when the message has no text part.
  */
 const textOf = (message: AI.UIMessage | undefined): string | undefined => {
@@ -229,7 +229,7 @@ describe('standalone transport integration', () => {
     closeAllClients();
   });
 
-  it('send → stream → receive: a text turn round-trips and folds through the provider reducer', async () => {
+  it('send → stream → receive: a text turn round-trips and merges through the provider reducer', async () => {
     const { client, agent, events } = await setup('t-text', { connectAgent: false });
 
     const sent = await client.publishInput({
@@ -244,7 +244,7 @@ describe('standalone transport integration', () => {
     // The client's runId watch resolved from the run's start event.
     await expect(sent.runId).resolves.toBe(runId);
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     // First-seen bucket order is conversation order: the user's own input
     // coming back off the channel, then the assistant.
     expect(messages).toHaveLength(2);
@@ -256,7 +256,7 @@ describe('standalone transport integration', () => {
     expect(lifecycle).toEqual(['start', 'end']);
   }, 45_000);
 
-  it('tool call through the transport: the client resolution folds onto the assistant', async () => {
+  it('tool call through the transport: the client resolution merges onto the assistant', async () => {
     const { client, agent, events } = await setup('t-tool', { connectAgent: false });
 
     const sent = await client.publishInput({
@@ -311,7 +311,7 @@ describe('standalone transport integration', () => {
       all.some((e) => e.kind === 'message' && e.inputs.some((input) => input.kind === 'chunk')),
     );
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     const assistant = messages.find((m) => m.id === 'a1');
     const toolPart = assistant?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
     expect(toolPart?.state).toBe('output-available');
@@ -418,7 +418,7 @@ describe('standalone transport integration', () => {
     await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runB));
 
     expect(runA).not.toBe(runB);
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages.map((message) => textOf(message))).toEqual(['one', 'answer one', 'two', 'answer two']);
     // Every assistant event names its own run.
     for (const event of events) {
@@ -441,7 +441,7 @@ describe('standalone transport integration', () => {
 
     await waitForEvents(events, (all) => lifecycleOf(all).filter((e) => e.type === 'end').length === 2);
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     const texts = messages.map((message) => textOf(message));
     expect(texts).toContain('from run A');
     expect(texts).toContain('from run B');
@@ -475,13 +475,13 @@ describe('standalone transport integration', () => {
       if (batch.exhausted) break;
     }
 
-    const messages = await foldMessages(all);
+    const messages = await mergeMessages(all);
     expect(messages.map((message) => textOf(message))).toEqual(['history please', 'remembered']);
     const lifecycle = lifecycleOf(all).map((e) => e.type);
     expect(lifecycle).toEqual(['start', 'end']);
   }, 45_000);
 
-  it('a run streaming across the attach boundary folds to one message, not a duplicated prefix', async () => {
+  it('a run streaming across the attach boundary merges to one message, not a duplicated prefix', async () => {
     const channelName = uniqueChannelName('t-boundary');
     const agentRealtime = ablyRealtimeClient();
     const agent = createAgentTransport<VercelInput, VercelOutput>({
@@ -546,10 +546,10 @@ describe('standalone transport integration', () => {
     await run.end({ reason: 'complete' });
     await waitForEvents(live, (all) => lifecycleOf(all).some((e) => e.type === 'end'));
 
-    // History and live share one decoder: folding history-then-live in
+    // History and live share one decoder: merging history-then-live in
     // delivery order yields ONE message with the full text — no duplicated
     // prefix, no dedup needed.
-    const messages = await foldMessages([...history, ...live]);
+    const messages = await mergeMessages([...history, ...live]);
     expect(messages).toHaveLength(1);
     expect(textOf(messages[0])).toBe('first half second half');
   }, 45_000);
@@ -579,7 +579,7 @@ describe('standalone transport integration', () => {
     expect(message).toContain('model exploded');
   }, 45_000);
 
-  it('multi-client sync: two clients on one channel both fold the streamed response', async () => {
+  it('multi-client sync: two clients on one channel both merge the streamed response', async () => {
     const { client, agent, channelName, events } = await setup('t-sync', { connectAgent: false });
 
     const otherRealtime = ablyRealtimeClient();
@@ -601,10 +601,10 @@ describe('standalone transport integration', () => {
     await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
     await waitForEvents(otherEvents, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
 
-    const folded = await foldMessages(events);
-    const otherFolded = await foldMessages(otherEvents);
-    expect(textOf(folded.at(-1))).toBe('synced');
-    expect(textOf(otherFolded.at(-1))).toBe('synced');
+    const merged = await mergeMessages(events);
+    const otherMerged = await mergeMessages(otherEvents);
+    expect(textOf(merged.at(-1))).toBe('synced');
+    expect(textOf(otherMerged.at(-1))).toBe('synced');
   }, 45_000);
 
   it('durable cross-process re-entry: a second transport ends the run via adoptRun', async () => {

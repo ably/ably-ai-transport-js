@@ -1,16 +1,16 @@
 /**
- * Fold classified transport events into `UIMessage`s with the provider's own
+ * Merge classified transport events into `UIMessage`s with the provider's own
  * reducer (`readUIMessageStream`).
  *
  * The standalone transports deliver decoded events without assembling
  * messages — aggregation is the consumer's job. This module is that consumer:
  * it buckets every `message`-kind event by its wire codec-message-id (delivery
  * order is conversation order, so first-seen order is message order), then
- * folds each bucket:
+ * merges each bucket:
  *
  * - agent output chunks join the bucket's chunk list;
  * - `{ kind: 'chunk' }` inputs are provider chunks too (a tool resolution
- *   published by a client), so they append to the same chunk list — one fold
+ *   published by a client), so they append to the same chunk list — one merge
  *   path covers both directions;
  * - `{ kind: 'message' }` inputs carry whole `UIMessage`s, one part per wire
  *   event, merged by codec-message-id (part-equality dedupes a redelivered
@@ -23,8 +23,8 @@
  * codec-message-id, but the part they resolve lives on the assistant message
  * that made the call.
  *
- * Both sides of the demo fold this way: the client folds older history
- * during hydration, and the agent folds channel history into the model
+ * Both sides of the demo merge this way: the client merges older history
+ * during hydration, and the agent merges channel history into the model
  * context for `streamText`.
  */
 
@@ -36,15 +36,15 @@ import type { VercelApprovalDecision, VercelInput, VercelOutput } from '@ably/ai
 /** One classified event off the demo's client or agent transport. */
 export type ChatTransportEvent = TransportEvent<VercelInput, VercelOutput>;
 
-/** One folded message, paired with the wire codec-message-id it folded under. */
-export interface FoldedMessage {
+/** One merged message, paired with the wire codec-message-id it merged under. */
+export interface MergedMessage {
   /** The wire codec-message-id the message's events shared. */
   codecMessageId: string;
   /** The assembled message. */
   message: UIMessage;
 }
 
-/** One codec-message-id's accumulated content before folding. */
+/** One codec-message-id's accumulated content before merging. */
 interface Bucket {
   codecMessageId: string;
   /** Provider chunks, in delivery order: agent outputs plus client tool-resolution chunk inputs. */
@@ -100,14 +100,14 @@ const mergeMessage = (existing: UIMessage | undefined, incoming: UIMessage): UIM
   return { ...existing, parts };
 };
 /**
- * Fold a bucket's chunk list through the provider's reducer. The seed message
+ * Merge a bucket's chunk list through the provider's reducer. The seed message
  * carries the codec-message-id as a fallback domain id; a `start` chunk that
  * names a `messageId` overrides it.
  * @param codecMessageId - The bucket's wire codec-message-id.
  * @param chunks - The bucket's chunks, in delivery order.
  * @returns The last message state the reducer yielded.
  */
-const foldChunks = async (codecMessageId: string, chunks: UIMessageChunk[]): Promise<UIMessage> => {
+const mergeChunks = async (codecMessageId: string, chunks: UIMessageChunk[]): Promise<UIMessage> => {
   const seed: UIMessage = { id: codecMessageId, role: 'assistant', parts: [] };
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
@@ -118,7 +118,7 @@ const foldChunks = async (codecMessageId: string, chunks: UIMessageChunk[]): Pro
   let last = seed;
   // A partial bucket (a history walk that stopped mid-stream) can present the
   // reducer chunks without their openers; swallow those per-chunk errors and
-  // keep what folded — the hydration merge drops partial refolds of stored
+  // keep what merged — the hydration merge drops partial remerges of stored
   // messages anyway.
   for await (const message of readUIMessageStream({ message: seed, stream, onError: () => undefined })) {
     last = message;
@@ -131,7 +131,7 @@ const foldChunks = async (codecMessageId: string, chunks: UIMessageChunk[]): Pro
  * to `approval-responded`. A part already resolved (an output landed) is left
  * alone. Approved and denied decisions both land as `approval-responded` —
  * the provider carries the outcome on `approval.approved`.
- * @param message - The folded assistant message.
+ * @param message - The merged assistant message.
  * @param decision - The approval decision to apply.
  * @returns The message with the matching part flipped.
  */
@@ -153,11 +153,11 @@ const applyApproval = (message: UIMessage, decision: VercelApprovalDecision): UI
 });
 
 /**
- * Fold events (oldest-first) into messages via the provider's reducer.
+ * Merge events (oldest-first) into messages via the provider's reducer.
  * @param events - Classified transport events in oldest-first order.
  * @returns The assembled messages paired with their codec-message-ids, in delivery order.
  */
-export async function foldMessages(events: ChatTransportEvent[]): Promise<FoldedMessage[]> {
+export async function mergeMessages(events: ChatTransportEvent[]): Promise<MergedMessage[]> {
   const buckets = new Map<string, Bucket>();
   /** Which bucket holds each tool call's part, for routing its resolution chunks. */
   const toolCallBuckets = new Map<string, Bucket>();
@@ -207,12 +207,12 @@ export async function foldMessages(events: ChatTransportEvent[]): Promise<Folded
     for (const output of event.outputs) pushChunk(bucket, output);
   }
 
-  const folded: FoldedMessage[] = [];
+  const merged: MergedMessage[] = [];
   for (const bucket of buckets.values()) {
-    let message = bucket.chunks.length > 0 ? await foldChunks(bucket.codecMessageId, bucket.chunks) : bucket.message;
+    let message = bucket.chunks.length > 0 ? await mergeChunks(bucket.codecMessageId, bucket.chunks) : bucket.message;
     if (!message) continue;
     for (const approval of bucket.approvals) message = applyApproval(message, approval);
-    folded.push({ codecMessageId: bucket.codecMessageId, message });
+    merged.push({ codecMessageId: bucket.codecMessageId, message });
   }
-  return folded;
+  return merged;
 }

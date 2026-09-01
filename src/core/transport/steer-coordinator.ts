@@ -10,7 +10,7 @@
  *     (`echoMessages: false`).
  *   - {@link _consumedByRunId} — accumulator of `steer-codec-message-ids`
  *     stamps observed on the run's response messages.
- *   - {@link _deadRunIds} — runs whose `run-end` the SDK has folded (with
+ *   - {@link _deadRunIds} — runs whose `run-end` the SDK has merged (with
  *     the terminal reason); subsequent `steer()` calls reject synchronously,
  *     and a publish that raced the terminal resolves not-consumed.
  *
@@ -132,7 +132,7 @@ export class SteerCoordinator<TInput> {
    * outcome handler registers in `_inflightSteers` under the resolved
    * `runId` once the publish is acknowledged.
    *
-   * Dead-handle: if the SDK has already folded a `run-end` for the run
+   * Dead-handle: if the SDK has already merged a `run-end` for the run
    * (recorded in {@link _deadRunIds}), or if `runIdPromise` rejects, both
    * returned promises reject without any channel publish. A run-end that
    * lands while the publish is in flight resolves the outcome not-consumed
@@ -181,7 +181,7 @@ export class SteerCoordinator<TInput> {
         return;
       }
 
-      // Dead-handle: refuse to publish into a Run we've already folded
+      // Dead-handle: refuse to publish into a Run we've already merged
       // `run-end` for.
       if (this._deadRunIds.has(resolvedRunId)) {
         const err = new Ably.ErrorInfo(
@@ -213,7 +213,7 @@ export class SteerCoordinator<TInput> {
 
       // The steer publishes on `ai-input` with the `run-id` header set — the
       // marker the agent transport routes onto the run's steer tracking, and
-      // a consumer folds like any other input.
+      // a consumer merges like any other input.
       const epoch = this._drainEpoch;
       let ack: Ably.PublishResult;
       try {

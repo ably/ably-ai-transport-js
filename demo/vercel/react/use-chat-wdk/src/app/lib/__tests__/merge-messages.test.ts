@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { WireMeta } from '@ably/ai-transport';
 import type { VercelInput } from '@ably/ai-transport/vercel';
 
-import { foldChunkList, foldMessages, type WdkTransportEvent } from '../fold-messages';
+import { mergeChunkList, mergeMessages, type WdkTransportEvent } from '../merge-messages';
 
 let serialCounter = 0;
 
@@ -61,8 +61,8 @@ function textOf(message: UIMessage): string {
   return message.parts.map((part) => (part.type === 'text' ? part.text : '')).join('');
 }
 
-describe('foldMessages', () => {
-  it('folds a user input and an assistant output stream into two messages, in order', async () => {
+describe('mergeMessages', () => {
+  it('merges a user input and an assistant output stream into two messages, in order', async () => {
     const events = [
       messageEvent({ codecMessageId: 'u1', role: 'user' }, { inputs: [userInput('m-u1', 'hello')] }),
       messageEvent(
@@ -71,7 +71,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe('user');
     expect(textOf(messages[0])).toBe('hello');
@@ -85,7 +85,7 @@ describe('foldMessages', () => {
       messageEvent({ codecMessageId: 'u1' }, { inputs: [userInput('m-u1', 'hello')] }),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages).toHaveLength(1);
     expect(textOf(messages[0])).toBe('hello');
   });
@@ -108,14 +108,14 @@ describe('foldMessages', () => {
         },
       ),
       // The tool activity publishes the result as its own wire message (its
-      // own codec-message-id); the fold folds it onto the calling message.
+      // own codec-message-id); the merge merges it onto the calling message.
       messageEvent(
         { codecMessageId: 'tool-out', stepId: 's2', stepStartSerial: '002' },
         { outputs: [{ type: 'tool-output-available', toolCallId: 'call-1', output: { temperature: 72 } }] },
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages).toHaveLength(1);
     const part = messages[0].parts.find((p) => p.type === 'tool-getWeather');
     expect(part).toBeDefined();
@@ -123,7 +123,7 @@ describe('foldMessages', () => {
     expect(part.state).toBe('output-available');
   });
 
-  it('folds a client chunk input addressed to the assistant message', async () => {
+  it('merges a client chunk input addressed to the assistant message', async () => {
     const events = [
       messageEvent(
         { codecMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
@@ -148,7 +148,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages).toHaveLength(1);
     const part = messages[0].parts.find((p) => p.type === 'tool-getLocation');
     if (part?.type !== 'tool-getLocation') throw new Error('unexpected part');
@@ -179,7 +179,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages).toHaveLength(1);
     const part = messages[0].parts.find((p) => p.type === 'tool-getWeatherForecast');
     if (part?.type !== 'tool-getWeatherForecast') throw new Error('unexpected part');
@@ -189,7 +189,7 @@ describe('foldMessages', () => {
     expect(part.approval.id).toBe('appr-1');
   });
 
-  it('folds only the canonical step attempt (latest step-start-serial supersedes)', async () => {
+  it('merges only the canonical step attempt (latest step-start-serial supersedes)', async () => {
     const events = [
       messageEvent(
         { codecMessageId: 'a1', stepId: 's1', stepStartSerial: '001' },
@@ -201,7 +201,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages).toHaveLength(1);
     expect(textOf(messages[0])).toBe('retried attempt');
   });
@@ -215,7 +215,7 @@ describe('foldMessages', () => {
       ),
     ];
 
-    const messages = await foldMessages(events, { excludeStepId: 's1' });
+    const messages = await mergeMessages(events, { excludeStepId: 's1' });
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe('user');
   });
@@ -229,20 +229,20 @@ describe('foldMessages', () => {
       messageEvent({ codecMessageId: 'g1' }, { inputs: [{ kind: 'regenerate', payload: { messageId: 'a1' } }] }),
     ];
 
-    const messages = await foldMessages(events);
+    const messages = await mergeMessages(events);
     expect(messages).toHaveLength(0);
   });
 });
 
-describe('foldChunkList', () => {
+describe('mergeChunkList', () => {
   it('reduces a chunk list to the final message state', async () => {
-    const message = await foldChunkList(textChunks('m-1', 'folded'));
+    const message = await mergeChunkList(textChunks('m-1', 'merged'));
     expect(message).toBeDefined();
     if (!message) throw new Error('no message');
-    expect(textOf(message)).toBe('folded');
+    expect(textOf(message)).toBe('merged');
   });
 
   it('returns undefined for an empty chunk list with no seed', async () => {
-    expect(await foldChunkList([])).toBeUndefined();
+    expect(await mergeChunkList([])).toBeUndefined();
   });
 });

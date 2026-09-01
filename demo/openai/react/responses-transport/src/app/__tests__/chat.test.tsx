@@ -15,7 +15,7 @@ Element.prototype.scrollIntoView = () => {};
 // Mock surface
 //
 // `@ably/ai-transport/react` is mocked so the demo's React glue — including
-// the real fold in useResponsesThread — can be exercised without bringing up
+// the real merge in useResponsesThread — can be exercised without bringing up
 // an Ably client. Tests drive the UI by emitting decoded transport events
 // through the captured useTransportEvents handlers, exactly what the real
 // hook would deliver.
@@ -283,7 +283,7 @@ describe('<Chat>', () => {
     const withSerial = (event: Event, serial: string): Event =>
       event.kind === 'message' ? { ...event, meta: { ...event.meta, serial } } : event;
     // The endpoint's read covered the stored prompt (seam s-2); the gap walk
-    // must fold only the newer assistant turn, even though the first history
+    // must merge only the newer assistant turn, even though the first history
     // batch replays the stored prompt too, and must stop at the seam without
     // paging the older batch.
     const seedEvents = [withSerial(userMessageEvent('cm-u1', 'stored prompt'), 's-2')];

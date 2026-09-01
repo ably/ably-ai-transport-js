@@ -92,7 +92,7 @@ Happy-path scenarios that validate the wire protocol and real Ably behavior:
 6. Multi-run sequential
 7. Concurrent runs
 8. History paging: a fresh client pages backwards and receives chronological batches of classified events
-9. Attach boundary: a run streaming across the attach point folds to one message, not a duplicated prefix
+9. Attach boundary: a run streaming across the attach point merges to one message, not a duplicated prefix
 10. Durable cross-process re-entry: a second transport adopts an open run and ends it
 11. Error propagation: server error mid-stream, client receives and stream closes cleanly
 12. Multi-client sync: two clients on the same channel both see the streamed response

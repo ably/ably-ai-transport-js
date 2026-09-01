@@ -4,7 +4,7 @@
  * The adapter publishes every input on the Ably channel first, then POSTs a
  * pointer `{channelName, eventId}` here to wake the agent. The route builds a
  * fresh agent transport on the named channel, locates the triggering input in
- * channel history, folds that history into the conversation, opens a run
+ * channel history, merges that history into the conversation, opens a run
  * anchored to the input, and answers 202. Streaming happens after the
  * response, inside `after()`, and reaches the client over Ably — the client
  * reads nothing from this HTTP response, including the run id, which it
@@ -19,7 +19,7 @@
  *   fresh run — the resolution carries no run id.
  * - Approval-gated tools (getWeatherForecast): the turn ends at
  *   `approval-requested`; the client publishes the approval decision and POSTs
- *   a continuation. The new run's folded conversation carries the
+ *   a continuation. The new run's merged conversation carries the
  *   `approval-responded` part, so the tool's `needsApproval` returns false and
  *   streamText executes it without re-pausing.
  */

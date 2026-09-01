@@ -184,7 +184,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
    *   the mutation it describes is already incorporated (a history aggregate
    *   covered by live deltas, a resume retransmission, a whole-wire replay).
    * - The tracker is closed — the stream has ended and its accumulated text
-   *   has been dropped, so nothing further can fold into it. In-contract
+   *   has been dropped, so nothing further can merge into it. In-contract
    *   replays are already covered by the version check; this catches
    *   out-of-contract version-less deliveries for an ended stream.
    *

@@ -505,7 +505,7 @@ describe('createDecoderCore', () => {
   // -- foreign messages ----------------------------------------------------
   //
   // An application may publish its own messages on a channel it shares with a
-  // session. Those wires carry no `extras.ai` envelope, and the core must fold
+  // session. Those wires carry no `extras.ai` envelope, and the core must merge
   // none of them into codec events or stream state.
 
   describe('foreign messages', () => {
@@ -746,7 +746,7 @@ describe('createDecoderCore', () => {
       expect(redelivered).toEqual([]);
     });
 
-    it('folds exactly the suffix when the converted update is newer than the hydration aggregate', () => {
+    it('merges exactly the suffix when the converted update is newer than the hydration aggregate', () => {
       const decoder = createDecoderCore(hooks);
 
       // Hydration lands first: the untilAttach aggregate is bounded at attach.
@@ -848,7 +848,7 @@ describe('createDecoderCore', () => {
       );
 
       // The closed tracker's accumulated text is tombstoned, so a late
-      // version-less delta must be dropped rather than folded.
+      // version-less delta must be dropped rather than merged.
       const late = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'more' }, {}));
       expect(late).toEqual([]);
     });

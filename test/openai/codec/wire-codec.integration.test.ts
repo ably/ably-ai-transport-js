@@ -6,7 +6,7 @@
  * where streamed groups ride genuine `message.append` deliveries. A
  * subscriber decodes every inbound message on the wire codec's decoder and
  * buckets by codec-message-id — the application's demultiplexing — and the
- * assertions check the decoded event sequences a consumer would fold.
+ * assertions check the decoded event sequences a consumer would merge.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';

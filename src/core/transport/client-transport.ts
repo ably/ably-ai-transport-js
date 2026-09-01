@@ -4,7 +4,7 @@
  *
  * {@link createClientTransport} owns its whole receive path: it mints a codec
  * decoder, wraps it in a receive transport, and — once {@link
- * ClientTransport.connect} subscribes and attaches — folds every inbound wire
+ * ClientTransport.connect} subscribes and attaches — merges every inbound wire
  * message through it (`deliverEvent`, then `deliverAblyMessage`), so a
  * consumer subscribes to the transport directly instead of wiring a receiver
  * and channel listener by hand.
@@ -102,7 +102,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   private readonly _codec: WireCodec<TInput, TOutput>;
   private readonly _clientId: string | undefined;
   private readonly _logger: Logger;
-  /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded. */
+  /** The one decoder shared by the live merge and the history scan, so a stream spanning the attach boundary is never double-decoded. */
   private readonly _decoder: Decoder<TInput, TOutput>;
   private readonly _receiver: ReceiveTransport<TInput, TOutput>;
   /** The public `on`, forwarding to the receiver via the shared dispatch. */
@@ -134,7 +134,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    */
   private _hasAttachedOnce: boolean;
   private _closed = false;
-  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live fold. */
+  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live merge. */
   private readonly _historyPager: HistoryPager<TInput, TOutput>;
 
   constructor(options: ClientTransportOptions<TInput, TOutput>) {
@@ -288,7 +288,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       runId: typeof runId === 'string' ? runId : '(pending promise)',
     });
     // .then(): steer() returns its promise pair synchronously, so the open
-    // guard folds into the runId promise the coordinator awaits instead of
+    // guard merges into the runId promise the coordinator awaits instead of
     // being awaited here. A promise-valued runId (e.g. a publishInput
     // result's) flattens through the .then, so the coordinator always awaits
     // one Promise<string>.
@@ -336,7 +336,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     );
     this._steer.drainContinuityLost(continuityLostError(stateChange, 'await steer outcome'));
     this._drainRunIdWatches(continuityLostError(stateChange, 'await run start'));
-    // Surface the loss on the error stream too: a consumer folding events (or
+    // Surface the loss on the error stream too: a consumer merging events (or
     // holding a run's chunk stream open) can silently miss messages after the
     // loss, so it needs the signal — the drained promises above only reach
     // callers that were awaiting them.

@@ -8,7 +8,7 @@ Each conversation opens a fresh channel named `<namespace><slug>` — the namesp
 
 - **The SDK's Temporal plugin** (`createAblyTransportPlugin`, registered in `src/worker/index.ts` with the wire codec from `createUIMessageCodec()`) supplies the run's framing activities — `openRun`, `endRun`, `suspendRun`, `cleanupRun` — so none of them appear in this demo's code. The workflow drives them through `withRun` from `@ably/ai-transport/temporal/workflow`, which opens the run (creating it, or resuming it when the turn is a continuation) and makes a best-effort attempt to close it if the turn fails.
 - **Durable re-entry over the standalone transport.** Each of the demo's own activities builds a fresh `createAgentTransport` (from `@ably/ai-transport/vercel`) on its own Ably client and re-enters the open run with `openRun({ runId, invocationId, publish: 'none' })` — attach without publishing, so nothing reaches the wire until the activity publishes output or a terminal.
-- **Model context from channel history.** The inference activity pages `transport.history()` to exhaustion and folds the events into `UIMessage[]` with the demo's own `src/lib/fold-messages.ts` — output chunks and tool resolutions replay through the AI SDK's `readUIMessageStream`, whole-message inputs merge across echoes, and approval decisions flip the matching tool part.
+- **Model context from channel history.** The inference activity pages `transport.history()` to exhaustion and merges the events into `UIMessage[]` with the demo's own `src/lib/merge-messages.ts` — output chunks and tool resolutions replay through the AI SDK's `readUIMessageStream`, whole-message inputs merge across echoes, and approval decisions flip the matching tool part.
 - **Retry supersession**: every step uses `run.createStep({ stepId: stepIdFor(invocationId) })`, stable across Temporal retries of the same activity, so a fresh-process retry's channel output supersedes the failed attempt's instead of appending beside it.
 - One Temporal activity per transport step, and the two that are the app's own: one `runInferenceStep` per LLM call and one `runToolStep` per server tool. The activity that reaches a terminal outcome publishes it (`ai-run-end`) inline before returning; closing the transport publishes nothing, so a run left active stays open for the next activity.
 - Cancellation over the same channel: a client `ai-cancel` is routed by the SDK to the run of whichever activity is currently attached, firing its abort signal — there is no listener activity or workflow signal. That activity aborts the model stream and publishes `ai-run-end{cancelled}` inline.
@@ -60,7 +60,7 @@ Every turn appears in the Web UI as a `chatWorkflow` execution, newest first. Op
 1. The chat transport publishes the user message on the channel, then POSTs `{channelName, eventId}` to `/api/chat`. A continuation POSTs the same shape — the adapter never names a run.
 2. The route starts a `chatWorkflow` whose workflow id is the invocation id and answers 202. The client reads nothing from the body: the run id reaches it over the channel.
 3. The plugin's `openRun` activity locates the trigger in channel history and publishes `ai-run-start`, pinned to the invocation id so a retried process re-enters the same run.
-4. `runInferenceStep` re-enters the run with `publish: 'none'`, folds channel history into the model context, streams one `streamText` call through a transport step, and publishes the outcome's terminal inline. Server-tool calls loop through `runToolStep` activities and a follow-up inference.
+4. `runInferenceStep` re-enters the run with `publish: 'none'`, merges channel history into the model context, streams one `streamText` call through a transport step, and publishes the outcome's terminal inline. Server-tool calls loop through `runToolStep` activities and a follow-up inference.
 5. The reply reaches the browser over Ably; `useChat` renders the chunk stream the adapter filters by the run id it read off `ai-run-start`.
 
 ## Try this
@@ -85,7 +85,7 @@ The demo loads the SDK's built output, so after editing SDK source:
 
 ```bash
 pnpm test   # unit: the workflow (real TestWorkflowEnvironment, faked activities),
-            # the outcome helpers, the message fold, and the React glue
+            # the outcome helpers, the message merge, and the React glue
 ```
 
 There is no Playwright suite. The shared e2e launcher boots only a Next.js dev

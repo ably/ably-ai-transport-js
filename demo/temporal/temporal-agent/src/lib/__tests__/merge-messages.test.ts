@@ -1,6 +1,6 @@
 /**
- * Tests for the demo's message fold: transport events in, `UIMessage[]` out.
- * Covers the four input shapes the fold handles — output chunks, whole-message
+ * Tests for the demo's message merge: transport events in, `UIMessage[]` out.
+ * Covers the four input shapes the merge handles — output chunks, whole-message
  * inputs (with echo dedupe), chunk-shaped tool resolutions, and approval
  * decisions — plus first-seen message ordering.
  */
@@ -10,9 +10,9 @@ import type { UIMessage } from 'ai';
 import type { WireMeta } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 
-import { foldMessages, type VercelTransportEvent } from '../fold-messages';
+import { mergeMessages, type VercelTransportEvent } from '../merge-messages';
 
-/** A complete WireMeta stub carrying only the codec-message-id the fold reads. */
+/** A complete WireMeta stub carrying only the codec-message-id the merge reads. */
 const meta = (codecMessageId: string): WireMeta => ({
   transport: {},
   codec: {},
@@ -68,9 +68,9 @@ const toolCallChunks = (messageId: string, toolCallId: string, toolName: string)
   { type: 'finish' },
 ];
 
-describe('foldMessages', () => {
-  it('folds output chunks into an assistant message via the AI SDK reducer', async () => {
-    const messages = await foldMessages([messageEvent('cm-1', { outputs: textChunks('a1', 'Hello there') })]);
+describe('mergeMessages', () => {
+  it('merges output chunks into an assistant message via the AI SDK reducer', async () => {
+    const messages = await mergeMessages([messageEvent('cm-1', { outputs: textChunks('a1', 'Hello there') })]);
 
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe('assistant');
@@ -79,7 +79,7 @@ describe('foldMessages', () => {
 
   it('passes a whole-message input through and dedupes its optimistic/wire echo pair', async () => {
     const message = userMessage('u1', 'hi');
-    const messages = await foldMessages([
+    const messages = await mergeMessages([
       // Optimistic local echo, then the wire echo of the same publish.
       messageEvent('cm-1', { inputs: [{ kind: 'message', payload: message }] }),
       messageEvent('cm-1', { inputs: [{ kind: 'message', payload: structuredClone(message) }] }),
@@ -89,8 +89,8 @@ describe('foldMessages', () => {
     expect(messages[0].parts).toEqual([{ type: 'text', text: 'hi' }]);
   });
 
-  it('folds a chunk-shaped tool resolution onto the assistant bucket', async () => {
-    const messages = await foldMessages([
+  it('merges a chunk-shaped tool resolution onto the assistant bucket', async () => {
+    const messages = await mergeMessages([
       messageEvent('cm-1', { outputs: toolCallChunks('a1', 'call-1', 'getLocation') }),
       messageEvent('cm-1', {
         inputs: [
@@ -106,7 +106,7 @@ describe('foldMessages', () => {
   });
 
   it('flips the matching tool part on an approval decision', async () => {
-    const messages = await foldMessages([
+    const messages = await mergeMessages([
       messageEvent('cm-1', {
         outputs: [
           { type: 'start', messageId: 'a1' },
@@ -136,7 +136,7 @@ describe('foldMessages', () => {
   });
 
   it('orders messages by first-seen codec-message-id', async () => {
-    const messages = await foldMessages([
+    const messages = await mergeMessages([
       messageEvent('cm-user', { inputs: [{ kind: 'message', payload: userMessage('u1', 'question') }] }),
       messageEvent('cm-assistant', { outputs: textChunks('a1', 'answer') }),
       // A late fragment for the user message must not reorder it.
@@ -147,7 +147,7 @@ describe('foldMessages', () => {
   });
 
   it('ignores events with no codec-message-id and empty buckets', async () => {
-    const messages = await foldMessages([
+    const messages = await mergeMessages([
       { kind: 'message', meta: { ...meta('cm-1'), codecMessageId: undefined }, inputs: [], outputs: [] },
       messageEvent('cm-2', { inputs: [{ kind: 'regenerate', payload: { messageId: 'a1' } }] }),
     ]);

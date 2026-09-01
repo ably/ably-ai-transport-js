@@ -34,6 +34,7 @@ import type { ClientTransportOptions } from '../../core/transport/client-transpo
 import { createClientTransport } from '../../core/transport/client-transport.js';
 import type { ClientTransport } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
+import { errorCause, errorMessage } from '../../utils.js';
 import type { ClientTransportSlot } from './client-transport-context.js';
 import { ClientTransportContext } from './client-transport-context.js';
 
@@ -112,8 +113,7 @@ export const ClientTransportProvider = <TInput, TOutput>({
   if (!alreadyCreatedOrFailed || transportChannelRef.current !== channelName) {
     transportChannelRef.current = channelName;
     if (transportRef.current) {
-      // CAST: the disposal queue stores transports with erased event types;
-      // close() reads none of them.
+      // The disposal queue erases the event types; close() reads none of them.
       transportsToCloseRef.current.push(transportRef.current);
     }
     try {
@@ -122,10 +122,24 @@ export const ClientTransportProvider = <TInput, TOutput>({
       constructionErrorRef.current = undefined;
     } catch (error) {
       transportRef.current = undefined;
+      // This is the only place a construction failure surfaces, so the
+      // original has to survive: `client.channels.get()` throws a plain Error
+      // on a closed client or a bad channel name, and "unknown error" leaves
+      // the developer nothing to act on. InternalError rather than BadRequest,
+      // because a fault inside the SDK is not invalid caller input.
+      transportOptions.logger?.error('ClientTransportProvider(); transport construction failed', {
+        channelName,
+        error,
+      });
       constructionErrorRef.current =
         error instanceof Ably.ErrorInfo
           ? error
-          : new Ably.ErrorInfo('unable to create client transport; unknown error', ErrorCode.BadRequest, 400);
+          : new Ably.ErrorInfo(
+              `unable to create client transport; ${errorMessage(error)}`,
+              ErrorCode.InternalError,
+              500,
+              errorCause(error),
+            );
     }
   }
 

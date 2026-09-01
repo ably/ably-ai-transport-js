@@ -13,7 +13,7 @@
  */
 
 // Chat transport adapter
-export type { ChatTransport, ChatTransportOptions } from './chat-transport.js';
+export type { ChatTransport, ChatTransportOptions, ReadSinceResult, ReconnectHint } from './chat-transport.js';
 export { createChatTransport } from './chat-transport.js';
 
 import type * as AI from 'ai';

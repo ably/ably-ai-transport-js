@@ -32,6 +32,14 @@ import type {
   SuspendRunInput,
 } from './workflow/activity-types.js';
 
+/**
+ * Page size assumed when a caller bounds the locate scan with
+ * `maxHistoryPages` but names no `historyPageSize`. Mirrors the transport's own
+ * default, so the bound means what its name says without the caller having to
+ * set both.
+ */
+const DEFAULT_LOCATE_PAGE_SIZE = 100;
+
 /** Configuration for {@link createFramingActivities}. */
 export interface FramingActivitiesOptions<TInput, TOutput> {
   /** The codec the transports encode with. */
@@ -161,10 +169,14 @@ export const createFramingActivities = <TInput, TOutput>(
         const located = await transport.locateInput(invocation.inputEventId, {
           signal: cancelSignal,
           ...(onPage && { onPage }),
-          ...(options.maxHistoryPages !== undefined &&
-            options.historyPageSize !== undefined && {
-              limit: options.maxHistoryPages * options.historyPageSize,
-            }),
+          // Bounded on `maxHistoryPages` alone: `historyPageSize` has a
+          // transport-side default, so requiring both would silently ignore a
+          // caller who set only the bound. `limit` counts events while
+          // `historyPageSize` bounds wire messages, so the product is an
+          // approximation of the page count either way.
+          ...(options.maxHistoryPages !== undefined && {
+            limit: options.maxHistoryPages * (options.historyPageSize ?? DEFAULT_LOCATE_PAGE_SIZE),
+          }),
         });
         if (!located) {
           throw new Ably.ErrorInfo(

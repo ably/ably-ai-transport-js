@@ -42,6 +42,13 @@ export const fSourceId = strField('sourceId', '');
 
 /** Domain message id (`message.id`) stamped on every user-message part — distinct from the wire codec-message-id transport header. */
 export const fMessageId = strField('messageId');
+/**
+ * The domain message id an action addresses — the assistant message an
+ * approval decision patches, or the message a regeneration starts from. Shares
+ * the `messageId` header with {@link fMessageId} and carries the same kind of
+ * value, but is defaulted to total because those bodies require it.
+ */
+export const fTargetMessageId = strField('messageId', '');
 /** Whether the user approved a tool execution — defaulted to total so an absent header reads `false`. */
 export const fApproved = boolField('approved', false);
 /** Optional human-readable reason on a tool-approval response. */

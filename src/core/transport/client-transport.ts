@@ -442,10 +442,13 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       return;
     }
     if (!isContinuityLost(stateChange)) return;
-    this._logger.warn('ClientTransport._handleChannelStateChange(); channel continuity lost, draining steers', {
-      current: stateChange.current,
-      resumed: stateChange.resumed,
-    });
+    this._logger.warn(
+      'ClientTransport._handleChannelStateChange(); channel continuity lost, draining in-flight waiters and signalling consumers',
+      {
+        current: stateChange.current,
+        resumed: stateChange.resumed,
+      },
+    );
     this._steer.drainContinuityLost(continuityLostError(stateChange, 'await steer outcome'));
     this._drainRunIdWatches(continuityLostError(stateChange, 'await run start'));
     // Surface the loss on the error stream too: a consumer folding events (or

@@ -547,22 +547,10 @@ export interface OpenRunOptions {
    * id instead of a mint. A durable agent supplies a stable value so a
    * fresh-process retry re-enters the same run. The pin never decides the
    * opening event: whether the open is a fresh `ai-run-start` or a re-entry
-   * is decided by the {@link input}'s run-id header when an input is
-   * supplied, or by {@link continuation} when not. A continuation's id comes
-   * from the input when one is supplied.
+   * is decided by the {@link input}'s run-id header. An input-less open is
+   * always a fresh `ai-run-start` under this id.
    */
   runId?: string;
-  /**
-   * Mark the open as a re-entry of {@link runId}, publishing `ai-run-resume`
-   * instead of `ai-run-start` — for a caller that skips
-   * {@link AgentTransport.locateInput} and knows from its own invocation
-   * payload that the run already exists. Requires {@link runId} when no
-   * {@link input} is supplied. May accompany an input only in agreement: the
-   * input's run-id header stays authoritative, and a flag that contradicts
-   * it throws. Omitted or false, an input-less open publishes a fresh
-   * `ai-run-start`.
-   */
-  continuation?: boolean;
   /** Reuse a fixed invocation-id. Omit to mint a fresh one (one per HTTP request). */
   invocationId?: string;
   /** Structure: the codec-message-id of the parent message. Omit for a root run. */

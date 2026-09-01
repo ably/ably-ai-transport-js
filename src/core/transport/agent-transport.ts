@@ -102,6 +102,8 @@ interface CreateRunParams {
   open: 'start' | 'resume' | 'adopt';
   /** The triggering input's codec-message-id, when known. */
   inputCodecMessageId?: string;
+  /** The triggering input's publisher clientId, when the input carried one. */
+  inputClientId?: string;
   /** Structural parent codec-message-id (fresh open only). */
   parent?: string;
   /** Forked codec-message-id for an edit (fresh open only). */
@@ -461,28 +463,12 @@ export const createAgentTransport = <TInput, TOutput>(
   const openRun = (opts?: OpenRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
     assertCanOpen('openRun');
     const inputMeta = opts?.input?.meta;
-    // A redundant flag that agrees with the input is harmless; only a
-    // contradiction is a caller mistake worth failing fast on.
-    if (
-      opts?.continuation !== undefined &&
-      opts.input !== undefined &&
-      opts.continuation !== (inputMeta?.runId !== undefined)
-    ) {
-      throw new Ably.ErrorInfo(
-        "unable to open run; the continuation flag contradicts the input's run-id header",
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    if (opts?.input === undefined && opts?.continuation === true && opts.runId === undefined) {
-      throw new Ably.ErrorInfo('unable to open run; continuation requires a runId', ErrorCode.InvalidArgument, 400);
-    }
     // The opening event: with a located input, its run-id header decides — a
     // continuation re-enters the run the client stamped, a fresh send starts
-    // one. Without one, the explicit continuation flag decides and runId is a
-    // pure pin, so a forgotten input opens a fresh pinned run rather than
-    // publishing a phantom resume for a run that may not exist.
-    const continuation = opts?.input === undefined ? opts?.continuation === true : inputMeta?.runId !== undefined;
+    // one. Without an input there is nothing to continue, so `runId` is a pure
+    // pin and the open is fresh rather than a phantom resume for a run that
+    // may not exist.
+    const continuation = opts?.input === undefined ? false : inputMeta?.runId !== undefined;
     // Run-id precedence: the input's continuation id, else the caller's pin
     // (a durable agent's stable fresh-run id), else minted.
     const runId = inputMeta?.runId ?? opts?.runId ?? crypto.randomUUID();
@@ -494,6 +480,11 @@ export const createAgentTransport = <TInput, TOutput>(
         invocationId,
         open: continuation ? 'resume' : 'start',
         inputCodecMessageId: opts?.inputCodecMessageId ?? inputMeta?.codecMessageId,
+        // The triggering input's publisher, stamped on the opening event as
+        // `input-client-id`. It is how a consumer tells which client's send a
+        // run answers, so several clients on one channel can agree that only
+        // the sender executes the run's client-side tools.
+        inputClientId: inputMeta?.clientId,
         // Structure defaults from the located input apply to a fresh open
         // only: a resume never re-stamps structure, and the input's own
         // anchors must not leak into a resumed run's output fallbacks.
@@ -682,6 +673,12 @@ export const createAgentTransport = <TInput, TOutput>(
         forkOf: params.forkOf,
         regenerates: params.regenerates,
         invocationId,
+        inputClientId: params.inputClientId,
+        // The client resolves `PublishInputResult.runId` by matching this
+        // header against the codec-message-id it published under, so the
+        // opening event has to carry it for a fresh send to ever learn its
+        // run id.
+        inputCodecMessageId: params.inputCodecMessageId,
         continuation: params.open === 'resume',
       });
     })();

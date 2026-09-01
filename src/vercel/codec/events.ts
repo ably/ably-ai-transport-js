@@ -41,6 +41,14 @@ export type VercelToolOutputChunk = Extract<AI.UIMessageChunk, { type: `tool-out
  * same resolution twice.
  */
 export interface VercelApprovalDecision {
+  /**
+   * The `UIMessage.id` of the assistant message holding the gated tool call.
+   * The application's merge routes the decision onto that message by this id,
+   * the same way it routes a `tool-output-*` chunk. Domain data in the same
+   * class as {@link toolCallId}, deliberately carried in the body rather than
+   * as wire addressing.
+   */
+  messageId: string;
   /** The tool call the decision concerns. */
   toolCallId: string;
   /** Whether the user approved the tool execution. */
@@ -69,13 +77,22 @@ export interface VercelMessageInput<
 }
 
 /**
- * A regeneration signal. Carries no body: the `regenerates` and `parent`
- * structure ride the transport's publish options, and `WireMeta` reports them
- * on the way back.
+ * A regeneration signal, naming the message useChat is regenerating from.
+ * The id is domain data the agent interprets; it describes no conversation
+ * structure and the transport does not read it.
  */
 export interface VercelRegenerateInput {
   /** Discriminator. */
   kind: 'regenerate';
+  /** Which message is being regenerated. */
+  payload: {
+    /**
+     * The `UIMessage.id` useChat is regenerating from. The transport carries
+     * the field and never reads it; what the agent does with it — typically
+     * truncating its stored conversation there — is the application's choice.
+     */
+    messageId: string;
+  };
 }
 
 /**

@@ -148,6 +148,17 @@ export enum ErrorCode {
    * cancel was neither honoured nor rejected and the run keeps running.
    */
   RunCancelRoutingFailed = 104013,
+
+  /**
+   * A step attempt this stream had already forwarded output for started again,
+   * so the output already delivered belongs to a superseded attempt and the
+   * stream's content is stale. The stream is errored rather than continued,
+   * because the consumer's accumulated parts cannot be un-written in place.
+   *
+   * Recovery is specific to this code: drop the damaged assistant message and
+   * resume, and the replay delivers only the canonical attempt's output.
+   */
+  RunAttemptSuperseded = 104014,
 }
 
 /**

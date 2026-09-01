@@ -34,6 +34,8 @@ export type {
 export type {
   ChatTransport,
   ChatTransportOptions,
+  ReadSinceResult,
+  ReconnectHint,
   VercelAgentTransportOptions,
   VercelClientTransportOptions,
 } from './transport/index.js';

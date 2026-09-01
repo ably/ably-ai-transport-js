@@ -144,31 +144,36 @@ describe('Vercel wire-codec inputs', () => {
     const encoder = codec.createEncoder(writer);
 
     await encoder.publishInput(
-      { kind: 'approval', payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' } },
+      { kind: 'approval', payload: { messageId: 'assistant-1', toolCallId: 'tc-1', approved: false, reason: 'nope' } },
       { messageId: 'assistant-1' },
     );
 
     const wire = firstDiscrete(writer);
     expect(codecHeadersOf(wire).kind).toBe('approval');
     expect(codecHeadersOf(wire).toolCallId).toBe('tc-1');
+    expect(codecHeadersOf(wire).messageId).toBe('assistant-1');
 
     const decoder = codec.createDecoder();
     const { inputs } = decoder.decode(asInbound(wire));
-    expect(inputs).toEqual([{ kind: 'approval', payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' } }]);
+    expect(inputs).toEqual([
+      { kind: 'approval', payload: { messageId: 'assistant-1', toolCallId: 'tc-1', approved: false, reason: 'nope' } },
+    ]);
   });
 
-  it('publishes regenerate as a wire-only signal that decodes to nothing', async () => {
+  it('round-trips the message a regenerate starts from', async () => {
     const writer = createMockWriter();
     const encoder = codec.createEncoder(writer);
 
-    await encoder.publishInput({ kind: 'regenerate' });
+    await encoder.publishInput({ kind: 'regenerate', payload: { messageId: 'assistant-3' } });
 
     const wire = firstDiscrete(writer);
     expect(codecHeadersOf(wire).kind).toBe('regenerate');
-    expect(wire.data).toBe('');
+    expect(codecHeadersOf(wire).messageId).toBe('assistant-3');
 
     const decoder = codec.createDecoder();
-    expect(decoder.decode(asInbound(wire)).inputs).toEqual([]);
+    expect(decoder.decode(asInbound(wire)).inputs).toEqual([
+      { kind: 'regenerate', payload: { messageId: 'assistant-3' } },
+    ]);
   });
 
   it('publishes the empty text fallback for a message with no encodable parts', async () => {

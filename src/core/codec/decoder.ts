@@ -405,13 +405,28 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     }
 
     // --- Replacement (NOT a prefix match) ---
+    // The payload diverged from what this decoder accumulated, so no delta
+    // describes the change and the missing tail is unrecoverable. Deliver the
+    // payload whole — a fresh opener plus the entire new content — so the
+    // consumer can replace the stream's content. Emitting nothing would drop
+    // the data silently: `onStreamUpdate` is the only other signal and no
+    // production path wires it.
     tracker.accumulated = data;
     tracker.codecHeaders = { ...codec };
     tracker.transportHeaders = { ...transport };
 
     this._invokeOnStreamUpdate(tracker);
 
-    return [];
+    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); payload replaced, delivering whole', {
+      serial,
+      streamId: tracker.streamId,
+    });
+
+    const outputs = this._hooks.buildStartEvents(tracker);
+    if (data.length > 0) outputs.push(...this._hooks.buildDeltaEvents(tracker, data));
+    this._applyTerminalStatus(tracker, status, codec, outputs);
+
+    return outputs;
   }
 
   private _decodeFirstContact(

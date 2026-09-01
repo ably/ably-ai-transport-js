@@ -238,7 +238,7 @@ describe('openRun', () => {
     expect(result).toEqual({ runId: 'run-existing', invocationId: 'wf-2' });
   });
 
-  it('throws InputEventNotFound before publishing when the trigger is not in history', async () => {
+  it('throws NotFound before publishing when the trigger is not in history', async () => {
     // eslint-disable-next-line unicorn/no-useless-undefined -- the miss IS the undefined resolution
     transport.locateInput.mockResolvedValue(undefined);
 
@@ -246,6 +246,14 @@ describe('openRun', () => {
       ErrorCode.NotFound,
     );
     expect(transport.openRun).not.toHaveBeenCalled();
+  });
+
+  it('bounds the locate scan on maxHistoryPages alone, using the default page size', async () => {
+    // `historyPageSize` has a transport-side default, so a caller who names
+    // only the bound still gets one.
+    await activities({ maxHistoryPages: 5 }).openRun({ invocation, invocationId: 'wf-1' });
+
+    expect(transport.locateInput).toHaveBeenCalledWith('evt-1', expect.objectContaining({ limit: 500 }));
   });
 
   it('bounds the locate scan when both page options are set', async () => {

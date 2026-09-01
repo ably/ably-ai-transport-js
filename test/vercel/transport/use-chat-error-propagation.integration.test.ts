@@ -88,14 +88,24 @@ describe('useChat error propagation', () => {
     clientTransport = createClientTransport({ channel: clientChannel });
     await clientTransport.connect();
 
-    // The adapter POSTs the invocation pointer; answer with the run id the
-    // agent below opens, so the useChat stream tracks that run.
-    const runId = 'run-detach-1';
+    // The route opens the run from the located input, which is what stamps
+    // `input-codec-message-id` on `ai-run-start` — the header the client
+    // matches its own publish against to learn the run id. Nothing about the
+    // run comes back over HTTP.
+    const { promise: opened, resolve: runOpened } = Promise.withResolvers<ReturnType<typeof agentTransport.openRun>>();
 
     vi.stubGlobal(
       'fetch',
-      // eslint-disable-next-line @typescript-eslint/require-await -- mock resolves synchronously
-      vi.fn(async () => Response.json({ runId }, { status: 200 })),
+      vi.fn(async (_url: string, init: { body?: string }) => {
+        const { eventId } = JSON.parse(init.body ?? '{}') as { eventId: string };
+        // A fresh transport per request: `history()` pages backwards from the
+        // attach point, so a route has to attach after the input to find it.
+        const routeTransport = createAgentTransport({ channel: ablyRealtimeClient().channels.get(channelName) });
+        await routeTransport.connect();
+        const located = await routeTransport.locateInput(eventId);
+        if (located) runOpened(routeTransport.openRun({ input: located }));
+        return new Response('', { status: 202 });
+      }),
     );
 
     chatTransport = createChatTransport({ transport: clientTransport, channelName });
@@ -110,9 +120,9 @@ describe('useChat error propagation', () => {
       void result.current.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'hello' }] });
     });
 
-    // Start the agent's run and stream events without finishing, so the
-    // channel can be detached mid-stream.
-    const run = agentTransport.openRun({ runId });
+    // Stream events without finishing, so the channel can be detached
+    // mid-stream.
+    const run = await opened;
     const openStream = new ReadableStream<AI.UIMessageChunk>({
       start: (c) => {
         c.enqueue({ type: 'start', messageId: 'asst-1' });

@@ -837,56 +837,27 @@ describe('createAgentTransport', () => {
       expect(channel.publishNames()).not.toContain('ai-run-resume');
     });
 
-    it('publishes ai-run-resume for an explicit continuation of an existing run-id', async () => {
+    it('publishes a fresh ai-run-start for an input-less open under a pinned run-id', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ runId: 'run-existing', continuation: true });
+      // The pin is a pin, not a re-entry: with no input there is nothing to
+      // continue, so a resume would name a run that may not exist.
+      const run = transport.openRun({ runId: 'run-pinned' });
       await run.end({ reason: 'complete' });
 
-      expect(run.runId).toBe('run-existing');
-      expect(channel.publishNames()).toContain('ai-run-resume');
-      expect(channel.publishNames()).not.toContain('ai-run-start');
+      expect(run.runId).toBe('run-pinned');
+      expect(channel.publishNames()).toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
     });
 
-    it('throws when continuation is supplied without a runId', async () => {
-      const { transport } = await setup();
-
-      expect(() => transport.openRun({ continuation: true })).toThrowErrorInfo({
-        code: ErrorCode.InvalidArgument,
-        message: 'unable to open run; continuation requires a runId',
-      });
-    });
-
-    it('accepts a continuation flag that agrees with the input', async () => {
+    it('opens fresh when a located input carries no run-id, even under a pin', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }), continuation: true });
+      const run = transport.openRun({ input: locatedInput({}), runId: 'run-1' });
       await run.end({ reason: 'complete' });
 
-      expect(run.runId).toBe('run-continued');
-      expect(channel.publishNames()).toContain('ai-run-resume');
-    });
-
-    it('throws when continuation: false contradicts an input carrying a run-id', async () => {
-      const { transport } = await setup();
-
-      expect(() =>
-        transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-1' }), continuation: false }),
-      ).toThrowErrorInfo({
-        code: ErrorCode.InvalidArgument,
-        message: "unable to open run; the continuation flag contradicts the input's run-id header",
-      });
-    });
-
-    it('throws when continuation: true contradicts an input without a run-id', async () => {
-      const { transport } = await setup();
-
-      expect(() => transport.openRun({ input: locatedInput({}), runId: 'run-1', continuation: true })).toThrowErrorInfo(
-        {
-          code: ErrorCode.InvalidArgument,
-          message: "unable to open run; the continuation flag contradicts the input's run-id header",
-        },
-      );
+      expect(channel.publishNames()).toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
     });
 
     it('stamps parent structure on the run-start', async () => {

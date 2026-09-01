@@ -1,13 +1,14 @@
 /**
  * The drop-in criterion: the ChatTransport goes straight into `useChat` and
- * nothing else is needed — no companion hook, no `setMessages` from outside.
- * Every message on screen arrived through the transport's streams.
+ * nothing else is needed to render a conversation — no companion hook, no
+ * `setMessages` for anything the transport produces. Every message on screen
+ * here arrived through one of the transport's streams.
  *
  * These tests instantiate a concrete `AbstractChat` subclass (what useChat
  * wraps) whose message state is mutated ONLY by the Chat's own state
- * callbacks, and drive the three paths the old sync hook used to carry: a
- * fresh send, a tool-continuation resume, and a reload with a run still in
- * flight (`resumeStream` → `reconnectToStream`).
+ * callbacks, and drive the adapter's three send-side paths: a fresh send, a
+ * tool resolution (which opens a new run), and a reload that walks history and
+ * resumes the run still in flight.
  */
 
 import type * as AI from 'ai';
@@ -15,7 +16,7 @@ import { AbstractChat, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
-import { FakeClientTransport, messageEvent, runEndEvent, runStartEvent, runSuspendEvent } from './helpers.js';
+import { FakeClientTransport, messageEvent, runEndEvent, runStartEvent, stubChatFetch } from './helpers.js';
 
 class TestChat extends AbstractChat<AI.UIMessage> {
   constructor(options: Omit<ConstructorParameters<typeof AbstractChat<AI.UIMessage>>[0], 'state'>) {
@@ -37,21 +38,14 @@ class TestChat extends AbstractChat<AI.UIMessage> {
   }
 }
 
-/**
- * Stub global fetch to answer every POST with the given run id.
- * @param runId - The run id the chat route names.
- */
-const stubChatRoute = (runId: string): void => {
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock resolves synchronously
-  const fetchMock = vi.fn(() => Promise.resolve(Response.json({ runId }, { status: 200 })));
-  vi.stubGlobal('fetch', fetchMock);
+/** Let the Chat's own promise chains settle without leaning on wall-clock time. */
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 };
-
-const flush = async (): Promise<void> => new Promise((r) => setTimeout(r, 10));
 
 describe('ChatTransport drives useChat with no external message state', () => {
   beforeEach(() => {
-    stubChatRoute('run-1');
+    stubChatFetch();
   });
 
   afterEach(() => {
@@ -60,8 +54,8 @@ describe('ChatTransport drives useChat with no external message state', () => {
 
   it('a fresh send lands the assistant message through the stream alone', async () => {
     const fake = new FakeClientTransport();
+    fake.autoRunId = 'run-1';
     const transport = createChatTransport({ transport: fake, channelName: 'ai:test' });
-    transport.seed([]);
     const chat = new TestChat({ transport, generateId: () => 'u1' });
 
     const sendPromise = chat.sendMessage({ text: 'Hello' });
@@ -90,17 +84,18 @@ describe('ChatTransport drives useChat with no external message state', () => {
     expect(assistant?.parts).toContainEqual(expect.objectContaining({ type: 'text', text: 'Hi there' }));
   });
 
-  it('a tool-continuation resume publishes the resolution and streams the follow-up', async () => {
+  it('a resolved tool publishes the output and the follow-up arrives on a new run', async () => {
     const fake = new FakeClientTransport();
+    fake.autoRunId = 'run-1';
     const transport = createChatTransport({ transport: fake, channelName: 'ai:test' });
-    transport.seed([]);
     const chat = new TestChat({
       transport,
       generateId: () => 'u1',
       sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     });
 
-    // Round 1: the agent calls a client tool and suspends.
+    // Round 1: the agent calls a client tool, then ends its run. The run has
+    // done the work it was asked for; the conversation carries on in a new one.
     const sendPromise = chat.sendMessage({ text: 'Where am I?' });
     await flush();
     fake.emit(
@@ -116,14 +111,13 @@ describe('ChatTransport drives useChat with no external message state', () => {
         },
       ),
     );
-    fake.emit(runSuspendEvent('run-1'));
+    fake.emit(runEndEvent('run-1'));
     await sendPromise;
 
-    // Round 2: the client resolves the tool; the resume publishes the chunk
-    // body under the suspended run and streams the agent's follow-up.
-    stubChatRoute('run-1');
-    // Not awaited: the automatic resubmission this triggers only settles once
-    // the follow-up run ends, which the fake emits below.
+    // Round 2: the client resolves the tool. useChat resubmits automatically,
+    // naming the assistant it resolved, and the adapter publishes the output
+    // addressed by that message's own id with no run id on it.
+    fake.autoRunId = 'run-2';
     const toolOutputPromise = chat.addToolOutput({
       tool: 'getLocation',
       toolCallId: 'call-1',
@@ -137,12 +131,12 @@ describe('ChatTransport drives useChat with no external message state', () => {
       kind: 'chunk',
       payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { city: 'Berlin' }, dynamic: true },
     });
-    expect(action?.opts).toEqual({ codecMessageId: 'wire-a1', runId: 'run-1' });
+    expect(action?.opts).toEqual({ codecMessageId: 'a1' });
 
     await flush();
     fake.emit(
       messageEvent(
-        { codecMessageId: 'wire-a2', runId: 'run-1', role: 'assistant' },
+        { codecMessageId: 'wire-a2', runId: 'run-2', role: 'assistant' },
         {
           outputs: [
             { type: 'start', messageId: 'a2' },
@@ -156,7 +150,7 @@ describe('ChatTransport drives useChat with no external message state', () => {
         },
       ),
     );
-    fake.emit(runEndEvent('run-1'));
+    fake.emit(runEndEvent('run-2'));
     await toolOutputPromise;
 
     await vi.waitFor(() => {
@@ -167,7 +161,7 @@ describe('ChatTransport drives useChat with no external message state', () => {
     });
   });
 
-  it('a reload with a run in flight resumes it through resumeStream', async () => {
+  it('a reload walks history and resumes the run still in flight', async () => {
     const fake = new FakeClientTransport();
     fake.historyBatches = [
       {
@@ -188,8 +182,13 @@ describe('ChatTransport drives useChat with no external message state', () => {
       },
     ];
     const transport = createChatTransport({ transport: fake, channelName: 'ai:test' });
-    transport.seed([]);
     const chat = new TestChat({ transport, generateId: () => 'u1' });
+
+    // The application's hydration: walk, hand the finished messages to
+    // setMessages, then resume. The walk withholds a1 because run-1 has not
+    // ended, so the stream is that message's only producer.
+    const { messages } = await transport.readSince();
+    expect(messages).toEqual([]);
 
     const resumePromise = chat.resumeStream();
     await flush();

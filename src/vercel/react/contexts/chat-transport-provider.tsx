@@ -16,6 +16,7 @@
 
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
+import type { Logger } from '../../../logger.js';
 import type { ClientTransportProviderProps } from '../../../react/index.js';
 import { ClientTransportProvider, useClientTransport } from '../../../react/index.js';
 import type { VercelInput, VercelOutput } from '../../codec/index.js';
@@ -36,12 +37,6 @@ export interface ChatTransportProviderProps
    * adapter is recreated only when the transport is.
    */
   api?: string;
-  /**
-   * Page bound for the adapter's `reconnectToStream` history scan. Defaults
-   * to 5 pages. Must stay constant for the provider's lifetime, like
-   * {@link api}.
-   */
-  reconnectScanPages?: number;
 }
 
 /**
@@ -50,16 +45,16 @@ export interface ChatTransportProviderProps
  * @param props - The adapter's route options plus children.
  * @param props.channelName - The conversation's channel name (also the provider key).
  * @param props.api - The chat route URL.
- * @param props.reconnectScanPages - The reconnect scan's page bound.
+ * @param props.logger - Logger handed to the adapter, so its diagnostics reach the same place the transport's do.
  * @param props.children - Descendants that consume the pair.
  * @returns The children wrapped in {@link ChatTransportContext}.
  */
 const ChatTransportBridge = ({
   channelName,
   api,
-  reconnectScanPages,
+  logger,
   children,
-}: PropsWithChildren<{ channelName: string; api?: string; reconnectScanPages?: number }>): ReactNode => {
+}: PropsWithChildren<{ channelName: string; api?: string; logger?: Logger }>): ReactNode => {
   const { transport, error } = useClientTransport<VercelInput, VercelOutput>();
 
   const adapterRef = useRef<ChatTransportSlot['chatTransport']>(undefined);
@@ -81,7 +76,7 @@ const ChatTransportBridge = ({
         transport,
         channelName,
         ...(api === undefined ? {} : { api }),
-        ...(reconnectScanPages === undefined ? {} : { reconnectScanPages }),
+        ...(logger === undefined ? {} : { logger }),
       });
     }
   }
@@ -143,15 +138,12 @@ const ChatTransportBridge = ({
  * @param props - Provider configuration; see {@link ChatTransportProviderProps}.
  * @param props.children - Descendant components that consume the pair.
  * @param props.api - The chat route URL.
- * @param props.reconnectScanPages - The reconnect scan's page bound.
  * @returns A React element wrapping children with both transport contexts.
  */
-export const ChatTransportProvider = ({
-  children,
-  api,
-  reconnectScanPages,
-  ...providerProps
-}: ChatTransportProviderProps): ReactNode => {
+export const ChatTransportProvider = ({ children, api, ...providerProps }: ChatTransportProviderProps): ReactNode => {
+  // `logger` rides ClientTransportOptions, so it reaches the generic provider
+  // through the spread below; the adapter needs it handed over explicitly.
+  const { logger } = providerProps;
   // The codec value is stable for the provider's lifetime so the generic
   // provider's channel options never churn.
   const codec = useMemo(() => createUIMessageCodec(), []);
@@ -163,7 +155,7 @@ export const ChatTransportProvider = ({
       <ChatTransportBridge
         channelName={providerProps.channelName}
         api={api}
-        reconnectScanPages={reconnectScanPages}
+        logger={logger}
       >
         {children}
       </ChatTransportBridge>

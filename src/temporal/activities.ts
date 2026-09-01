@@ -171,10 +171,9 @@ export const createFramingActivities = <TInput, TOutput>(
           ...(onPage && { onPage }),
           // Bounded on `maxHistoryPages` alone: `historyPageSize` has a
           // transport-side default, so requiring both would silently ignore a
-          // caller who set only the bound. `limit` counts events while
-          // `historyPageSize` bounds wire messages, so the product is an
-          // exact page bound: `limit` caps the wire messages scanned, page
-          // granular, so the product bounds the pages the scan fetches.
+          // caller who set only the bound. `limit` caps the wire messages
+          // scanned and is page granular, so the product bounds the pages the
+          // scan fetches.
           ...(options.maxHistoryPages !== undefined && {
             limit: options.maxHistoryPages * (options.historyPageSize ?? DEFAULT_LOCATE_PAGE_SIZE),
           }),
@@ -219,14 +218,22 @@ export const createFramingActivities = <TInput, TOutput>(
         // waits for the echo, so the hand-off to the next activity happens
         // strictly after the open is on the wire. Subscribing after openRun is
         // safe: no await separates them, so the echo cannot be delivered in
-        // between. The transport reports the failure two ways, and either may
-        // be the one a given run gets, so both feed the same rejection (the
-        // second is a no-op).
+        // between. The transport reports the failure on both paths — the
+        // `onError` hook and the handle's `opened` — so both feed the same
+        // rejection and whichever calls it first decides what this activity
+        // throws. That is usually `onError`, whose error is wrapped as
+        // `SendFailed`; the second call is a no-op.
         //
         // .catch(): rejection-only view — `opened` resolving must not settle
         // the race, only the echo may.
         run.opened.catch(failOpen);
         const opened = awaitRunOpen(transport, run.runId, cancelSignal);
+        // The loser of the race stays pending with its abort listener
+        // attached; pre-handle it so a later cancel cannot surface as an
+        // unhandled rejection.
+        opened.catch(() => {
+          /* observed via the race */
+        });
         await Promise.race([opened, openFailed]);
 
         return { runId: run.runId, invocationId: input.invocationId };

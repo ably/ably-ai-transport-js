@@ -92,23 +92,6 @@ export const HEADER_FORK_OF = 'fork-of';
  */
 export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 
-/**
- * Header: the run-id this client tool-result fork SUPERSEDES — the suspended run
- * whose pending tool call the fork resolves.
- *
- * A client tool-result forks its own reply run (a same-parent sibling of the
- * suspended run). The suspended run is then dead: nothing will ever resume it
- * (its answer went to the fork). The client stamps this header with that run's
- * id so a consumer reconstructing conversation structure can mark it
- * superseded and EXCLUDE it from branch selection — so a single client's
- * single response renders as ONE linear reply (the dead trunk hidden), while
- * genuinely concurrent forks from multiple clients still surface as sibling
- * branches. Distinct from `fork-of` / `msg-regenerate`,
- * which create a NAVIGABLE sibling (both kept visible); `supersedes` HIDES the
- * superseded run. Value is a run-id, not a codec-message-id.
- */
-export const HEADER_SUPERSEDES = 'supersedes';
-
 // ---------------------------------------------------------------------------
 // Run lifecycle headers
 // ---------------------------------------------------------------------------

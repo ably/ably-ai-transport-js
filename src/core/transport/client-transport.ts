@@ -112,7 +112,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: WireCodec<TInput, TOutput>;
   private readonly _clientId: string | undefined;
-  private readonly _historyPageSize: number;
   private readonly _logger: Logger;
   /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded. */
   private readonly _decoder: Decoder<TInput, TOutput>;
@@ -153,7 +152,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     this._channel = options.channel;
     this._codec = options.codec;
     this._clientId = options.clientId;
-    this._historyPageSize = options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ClientTransport',
     });
@@ -162,7 +160,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     this.on = forwardReceiverOn(this._receiver);
     this._historyPager = new HistoryPager({
       channel: this._channel,
-      pageSize: this._historyPageSize,
+      pageSize: options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE,
       decoder: this._decoder,
       logger: this._logger,
       onDecodeError: (err) => {

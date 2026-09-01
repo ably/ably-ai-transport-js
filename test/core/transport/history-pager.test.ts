@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Decoder } from '../../../src/core/codec/types.js';
 import { HistoryPager } from '../../../src/core/transport/history-pager.js';
+import { ErrorCode } from '../../../src/errors.js';
 import { createMockChannel } from '../../helper/mock-channel.js';
 import { boomMsg, outputMsg } from '../../helper/wire-messages.js';
 
@@ -75,6 +76,36 @@ describe('HistoryPager', () => {
     // the older one.
     expect(first.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['two']);
     expect(second.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one']);
+  });
+
+  it('rejects an aborted call before opening the cursor, and stays walkable after', async () => {
+    const channel = createMockChannel([[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]]);
+    const pager = new HistoryPager<TestInput, TestOutput>({ channel, pageSize: 10, decoder: createDecoder() });
+
+    await expect(pager.next({ signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.OperationCancelled,
+    );
+    // Checked before the attach, so an aborted call costs no page fetch — and
+    // the signal is never bound to the shared cursor, which would wedge a
+    // later call's `hasNext()` at false.
+    expect(channel.history).not.toHaveBeenCalled();
+
+    const batch = await pager.next();
+    expect(batch.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['two']);
+  });
+
+  it('isolates a follower from the link ahead of it failing', async () => {
+    const channel = createMockChannel([[outputMsg('s1', 'one')]]);
+    const pager = new HistoryPager<TestInput, TestOutput>({ channel, pageSize: 10, decoder: createDecoder() });
+
+    // The chain exists so one caller walks at a time; a link's failure is its
+    // own caller's to observe, and must not reject the caller behind it.
+    const failing = pager.next({ signal: AbortSignal.abort() });
+    const follower = pager.next();
+
+    await expect(failing).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    const batch = await follower;
+    expect(batch.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one']);
   });
 
   it('routes a decode failure to onDecodeError and keeps the rest of the batch', async () => {

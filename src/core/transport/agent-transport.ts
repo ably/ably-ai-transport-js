@@ -2,7 +2,7 @@
  * The agent transport: open runs, publish output, and observe the channel —
  * cancel signals route onto the matching run handle's `abortSignal`.
  *
- * {@link createAgentTransport} composes the agent write path — the
+ * {@link DefaultAgentTransport} composes the agent write path — the
  * run-manager lifecycle publisher and the {@link createRunStepWriter} step/pipe
  * machinery — with its own receive path: it mints a codec decoder, wraps it in
  * a receive transport, and — once {@link AgentTransport.connect} subscribes and
@@ -88,11 +88,6 @@ const DEFERRED_CANCEL_LIMIT = 200;
 const PRE_OPEN_STEER_LIMIT = 200;
 
 /**
- * A run registered for cancel routing, from `openRun` until it ends. A
- * suspended run stays registered — a cancel addressed to it should still fire
- * its abort signal, since a later invocation may be about to continue it.
- */
-/**
  * The resolved parameters `_createRun` builds a run handle from. The public
  * verbs (`openRun`, `adoptRun`) own all identity, input and structure
  * resolution and hand the result here verbatim.
@@ -106,6 +101,8 @@ interface CreateRunParams {
   open: 'start' | 'resume' | 'adopt';
   /** The triggering input's codec-message-id, when known. */
   inputCodecMessageId?: string;
+  /** The triggering input's publisher, stamped on the opening event as `input-client-id`. */
+  inputClientId?: string;
   /** Structural parent codec-message-id (fresh open only). */
   parent?: string;
   /** Forked codec-message-id for an edit (fresh open only). */
@@ -114,6 +111,11 @@ interface CreateRunParams {
   regenerates?: string;
 }
 
+/**
+ * A run registered for cancel routing, from the open verb until it ends. A
+ * suspended run stays registered — a cancel addressed to it should still fire
+ * its abort signal, since a later invocation may be about to continue it.
+ */
 interface RegisteredRun {
   /** The run's id. */
   runId: string;
@@ -173,6 +175,13 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
   private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /** Cancels addressed by run-id whose run is not registered yet, for a durable continuation's `openRun` to pull. */
   private readonly _deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
+  /**
+   * Run-ids this process has registered at least once. A cancel for one of
+   * them is never buffered: the run existed here and has since ended, so
+   * holding the cancel would abort a later `adoptRun` of the same id — which
+   * is exactly how a durable agent re-enters a run under a stable id.
+   */
+  private readonly _seenRunIds = new Map<string, true>();
   /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
   private readonly _preOpenSteersByRunId = new Map<string, Set<string>>();
 
@@ -214,9 +223,17 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     this._onMessage = (message) => {
       this._handleMessage(message);
     };
+    // A caller-owned channel can already be ATTACHED, and attaching an
+    // attached channel emits no state change — seed from the current state or
+    // the first continuity loss is swallowed as "not attached yet".
+    this._hasAttachedOnce = this._channel.state === 'attached';
     this._onChannelStateChange = (stateChange) => {
       this._handleChannelStateChange(stateChange);
     };
+    // Registered once here, not in connect(): connect() is idempotent and
+    // retryable, and ably-js keeps listeners in an array with no dedup, so a
+    // retried connect would emit each continuity loss once per attempt.
+    this._channel.on(this._onChannelStateChange);
   }
 
   /**
@@ -235,7 +252,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       return;
     }
     if (!isContinuityLost(stateChange)) return;
-    this._logger.warn('AgentTransport.handleChannelStateChange(); channel continuity lost, aborting registered runs', {
+    this._logger.warn('AgentTransport._handleChannelStateChange(); channel continuity lost, aborting registered runs', {
       current: stateChange.current,
       resumed: stateChange.resumed,
       runs: this._registeredRuns.size,
@@ -250,7 +267,6 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       return Promise.reject(this._closedError('connect'));
     }
     this._logger.trace('AgentTransport.connect();');
-    this._channel.on(this._onChannelStateChange);
     return this._connectGuard.connect(async () =>
       subscribeAndAttach(this._channel, this._onMessage, this._logger, 'AgentTransport', (error) => {
         this._receiver.emitError(error);
@@ -290,6 +306,11 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         invocationId,
         open: continuation ? 'resume' : 'start',
         inputCodecMessageId: opts?.inputCodecMessageId ?? inputMeta?.codecMessageId,
+        // The triggering input's publisher, stamped on the opening event as
+        // `input-client-id`. It is how a consumer tells which client's send a
+        // run answers, so several clients on one channel can agree that only
+        // the sender executes the run's client-side tools.
+        inputClientId: inputMeta?.clientId,
         // Structure defaults from the located input apply to a fresh open
         // only: a resume never re-stamps structure, and the input's own
         // anchors must not leak into a resumed run's output fallbacks.
@@ -421,6 +442,11 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       },
     };
     this._registeredRuns.set(runId, registration);
+    // Remember the id for as long as the deferred buffers hold entries, so a
+    // cancel arriving after this run ends is dropped rather than held for the
+    // next adoption of the same id.
+    evictOldestIfFull(this._seenRunIds, runId, DEFERRED_CANCEL_LIMIT);
+    this._seenRunIds.set(runId, true);
     if (inputCodecMessageId !== undefined) {
       this._runIdByInputCodecMessageId.set(inputCodecMessageId, runId);
     }
@@ -443,7 +469,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       }
     };
 
-    // Pull the steers that landed before this openRun (between connect() and
+    // Pull the steers that landed before this run was registered (between connect() and
     // here, after the attach point). One onSteer hint covers the batch.
     {
       const bufferedSteers = this._preOpenSteersByRunId.get(runId);
@@ -454,7 +480,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           if (trackSteer(id)) seededAny = true;
         }
         if (seededAny) {
-          this._logger.debug('AgentTransport.openRun(); seeded pre-open steers', { runId });
+          this._logger.debug('AgentTransport._createRun(); seeded pre-open steers', { runId });
           notifySteer();
         }
       }
@@ -497,6 +523,9 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         forkOf: params.forkOf,
         regenerates: params.regenerates,
         invocationId,
+        // The triggering input's publisher, so several clients on one channel
+        // can agree that only the sender executes the run's client-side tools.
+        inputClientId: params.inputClientId,
         // Anchor the opening event to its trigger, so a client that published
         // the input resolves the run-id from the run-start's
         // input-codec-message-id header (PublishInputResult.runId).
@@ -512,7 +541,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // one waiting on the opening event's channel echo) can observe. A run whose
     // open failed receives no signals, so drop its registration.
     openPromise.catch((error: unknown) => {
-      this._logger.error('AgentTransport.openRun(); open publish failed', { runId });
+      this._logger.error('AgentTransport._createRun(); open publish failed', { runId });
       deregister();
       const onError = hooks?.onError;
       if (!onError) return;
@@ -584,7 +613,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         parentFallback: params.parent,
         forkOf: params.forkOf,
         regenerates: params.regenerates,
-        inputClientId: undefined,
+        inputClientId: params.inputClientId,
         inputCodecMessageId,
       }),
     });
@@ -887,17 +916,32 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * @param inputCodecMessageId - The triggering input's codec-message-id.
    * @param msg - The raw cancel message (passed to `onCancel`).
    */
-  private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
-    const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, DEFERRED_CANCEL_LIMIT);
+  /**
+   * Hold a cancel whose target is not registered yet, so the `openRun` that
+   * establishes it can pull and honour it.
+   * @param buffer - The buffer to hold it in, keyed by input-codec-message-id or by run-id.
+   * @param key - The key the pulling side will look under.
+   * @param msg - The cancel message.
+   * @param keyName - The key's name, for the log context.
+   */
+  private _bufferDeferredCancel(
+    buffer: Map<string, Ably.InboundMessage>,
+    key: string,
+    msg: Ably.InboundMessage,
+    keyName: 'inputCodecMessageId' | 'runId',
+  ): void {
+    const evicted = evictOldestIfFull(buffer, key, DEFERRED_CANCEL_LIMIT);
     if (evicted !== undefined) {
       this._logger.warn('AgentTransport._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
-        evictedInputCodecMessageId: evicted,
+        keyName,
+        evicted,
         limit: DEFERRED_CANCEL_LIMIT,
       });
     }
-    this._deferredCancels.set(inputCodecMessageId, msg);
+    buffer.set(key, msg);
     this._logger.debug('AgentTransport._bufferDeferredCancel(); buffered early cancel', {
-      inputCodecMessageId,
+      keyName,
+      key,
       serial: msg.serial,
     });
   }
@@ -931,24 +975,23 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       // it. A run-id cancel can likewise race a durable continuation's
       // `openRun` (the client knows the run-id before this process registers
       // it), so buffer that by run-id the same way.
+      // Both keys buffer when both are present: a durable continuation's
+      // `openRun` resolves its own input-codec-message-id, which may not be
+      // the one this cancel names, so a run-id-only pull has to find it too.
       if (inputCodecMessageId !== undefined) {
-        this._bufferDeferredCancel(inputCodecMessageId, msg);
-      } else if (runId !== undefined) {
-        const evicted = evictOldestIfFull(this._deferredCancelsByRunId, runId, DEFERRED_CANCEL_LIMIT);
-        if (evicted !== undefined) {
-          this._logger.warn(
-            'AgentTransport._handleCancelMessage(); deferred run-id cancel buffer full, dropping oldest',
-            {
-              evictedRunId: evicted,
-              limit: DEFERRED_CANCEL_LIMIT,
-            },
-          );
+        this._bufferDeferredCancel(this._deferredCancels, inputCodecMessageId, msg, 'inputCodecMessageId');
+      }
+      if (runId !== undefined) {
+        if (this._seenRunIds.has(runId)) {
+          // The run ran here and has ended. Buffering now would abort the next
+          // adoption of the same run-id instead of cancelling anything.
+          this._logger.debug('AgentTransport._handleCancelMessage(); cancel for an already-ended run, dropping', {
+            runId,
+            serial: msg.serial,
+          });
+          return;
         }
-        this._deferredCancelsByRunId.set(runId, msg);
-        this._logger.debug('AgentTransport._handleCancelMessage(); buffered early run-id cancel', {
-          runId,
-          serial: msg.serial,
-        });
+        this._bufferDeferredCancel(this._deferredCancelsByRunId, runId, msg, 'runId');
       }
       return;
     }

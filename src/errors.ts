@@ -57,7 +57,7 @@ export enum ErrorCode {
    * retry helps depends on the `cause` (a transient disconnect clears, a
    * capability or auth rejection does not).
    */
-  SessionSubscriptionFailed = 104001,
+  SubscriptionFailed = 104001,
 
   /**
    * The run's `onCancel` hook threw while the SDK was processing a cancel
@@ -91,7 +91,7 @@ export enum ErrorCode {
    * `resumed: false`. Active streams can no longer be guaranteed to receive
    * all events.
    */
-  SessionContinuityNotGuaranteed = 104006,
+  ContinuityNotGuaranteed = 104006,
 
   /**
    * An error occurred while piping a response stream to the channel — either
@@ -107,7 +107,7 @@ export enum ErrorCode {
    * sending and receiving; only that one message's processing failed. The
    * thrown value is the `cause`.
    */
-  SessionMessageProcessingFailed = 104009,
+  MessageProcessingFailed = 104009,
 
   /**
    * Channel history pagination failed after bounded retry — either the initial
@@ -116,7 +116,7 @@ export enum ErrorCode {
    * not already an `Ably.ErrorInfo`. The original failure is preserved as
    * `cause` where available.
    */
-  SessionHistoryFetchFailed = 104011,
+  HistoryFetchFailed = 104011,
 
   /**
    * The run's `onSteer` hook threw while the SDK was notifying it that a

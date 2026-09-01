@@ -300,9 +300,9 @@ describe('SteerCoordinator', () => {
       await flush();
       const id = lastSteerCodecMessageId(h);
       coord.observeMessage(ablyMsg('ai-input', { [HEADER_CODEC_MESSAGE_ID]: id }));
-      const err = new Ably.ErrorInfo('continuity lost', ErrorCode.SessionContinuityNotGuaranteed, 500);
+      const err = new Ably.ErrorInfo('continuity lost', ErrorCode.ContinuityNotGuaranteed, 500);
       coord.drainContinuityLost(err);
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.ContinuityNotGuaranteed);
     });
 
     it('resolves pending-echo published with undefined and rejects outcome', async () => {
@@ -310,10 +310,10 @@ describe('SteerCoordinator', () => {
       // Steer without echoing — pending-echo entry stays registered.
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const err = new Ably.ErrorInfo('continuity lost', ErrorCode.SessionContinuityNotGuaranteed, 500);
+      const err = new Ably.ErrorInfo('continuity lost', ErrorCode.ContinuityNotGuaranteed, 500);
       coord.drainContinuityLost(err);
       await expect(published).resolves.toEqual({ serial: undefined });
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.ContinuityNotGuaranteed);
     });
   });
 

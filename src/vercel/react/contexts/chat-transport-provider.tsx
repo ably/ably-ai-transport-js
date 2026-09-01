@@ -33,8 +33,9 @@ export interface ChatTransportProviderProps
   extends Omit<ClientTransportProviderProps<VercelInput, VercelOutput>, 'codec'>, PropsWithChildren {
   /**
    * The chat route URL the adapter POSTs the invocation pointer to. Defaults
-   * to `/api/chat`. Must stay constant for the provider's lifetime: the
-   * adapter is recreated only when the transport is.
+   * to `/api/chat`. Changing it rebuilds the adapter and closes the one it
+   * replaces, which terminates any stream `useChat` is reading — so change it
+   * only when you mean to, never as a value recomputed per render.
    */
   api?: string;
 }
@@ -63,22 +64,29 @@ const ChatTransportBridge = ({
   // double renders' memo results) must still be closed.
   const createdAdaptersRef = useRef<ChatTransportSlot['chatTransport'][]>([]);
 
+  // `logger` is an object, so an inline one would change identity every render
+  // and rebuild the adapter each time — closing the previous one, which ends
+  // the stream useChat is mid-read on. It is read through a ref instead, so
+  // only the transport, the channel name and the route URL rebuild.
+  const loggerRef = useRef(logger);
+  loggerRef.current = logger;
+
   const slot = useMemo<ChatTransportSlot>(() => {
     if (!transport) return { transport: undefined, chatTransport: undefined, error };
     const chatTransport = createChatTransport({
       transport,
       channelName,
       ...(api === undefined ? {} : { api }),
-      ...(logger === undefined ? {} : { logger }),
+      ...(loggerRef.current === undefined ? {} : { logger: loggerRef.current }),
     });
     createdAdaptersRef.current.push(chatTransport);
     return { transport, chatTransport, error: undefined };
-  }, [transport, error, channelName, api, logger]);
+  }, [transport, error, channelName, api]);
 
   // Close every adapter the committed one replaced or superseded: a prior
-  // adapter (new transport or changed route options) and any discarded
+  // adapter (a new transport or a changed route URL) and any discarded
   // render's creation. Without this a replaced adapter would stay subscribed
-  // to a live transport, buffering pre-seed events for its lifetime.
+  // to a live transport, holding its live buffer for the transport's lifetime.
   useEffect(() => {
     const survivors: ChatTransportSlot['chatTransport'][] = [];
     for (const adapter of createdAdaptersRef.current) {
@@ -86,6 +94,26 @@ const ChatTransportBridge = ({
       else adapter?.close();
     }
     createdAdaptersRef.current = survivors;
+  }, [slot]);
+
+  // Close the surviving adapter when the component truly unmounts. Closing
+  // the underlying ClientTransport does not cover it: `ChatTransport.close()`
+  // also terminates the readers useChat holds, and a stream that never ends
+  // leaves useChat stuck on `streaming`.
+  //
+  // The close is scheduled as a microtask, the same shape the generic
+  // provider uses: Strict Mode remounts synchronously before any microtask
+  // drains, so the remount's setup clears the flag and cancels the close.
+  const pendingCloseRef = useRef(false);
+  useEffect(() => {
+    pendingCloseRef.current = false;
+    return () => {
+      pendingCloseRef.current = true;
+      const adapter = slot.chatTransport;
+      void Promise.resolve().then(() => {
+        if (pendingCloseRef.current) adapter?.close();
+      });
+    };
   }, [slot]);
 
   const parentContext = useContext(ChatTransportContext);

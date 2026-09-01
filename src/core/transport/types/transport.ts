@@ -181,7 +181,7 @@ export interface TransportReceiver<TInput, TOutput> {
    * decode failures, and (on the client transport) channel continuity loss —
    * each an `Ably.ErrorInfo` with a distinguishing `code`. A single decode
    * failure drops that one message and emits the error rather than tearing
-   * down the stream; a `SessionContinuityNotGuaranteed` error means live delivery may
+   * down the stream; a `ContinuityNotGuaranteed` error means live delivery may
    * silently have gaps until the consumer re-hydrates.
    * @param event - The literal `'error'`.
    * @param handler - Called with each error.
@@ -232,13 +232,14 @@ export interface PublishInputResult {
   runId: Promise<string>;
 }
 
-/** Options for {@link ClientTransport.history} and {@link AgentTransport.history}. */
+/** Options for {@link ClientTransport.history}, {@link AgentTransport.history} and {@link AgentTransport.locateInput}. */
 export interface TransportHistoryOptions {
   /**
    * Keep fetching pages until at least this many wire messages have been
    * scanned. Page granular: the call finishes the page it is on, so the batch
-   * may exceed the limit. Omit to fetch one page per call — the caller's own
-   * loop is then the pager, so counting calls counts pages.
+   * may exceed the limit. What omitting it means differs by caller: `history()`
+   * fetches one page per call, so the caller's own loop is the pager and
+   * counting calls counts pages; `locateInput()` scans to the channel start.
    */
   limit?: number;
   /**
@@ -619,7 +620,7 @@ export interface OpenRunHooks<TOutput> {
 
   /**
    * Called with non-fatal run-scoped errors that have no other delivery
-   * path. Fires in three scenarios:
+   * path. Fires in four scenarios:
    * - Stream failures in `pipe` — the underlying error is also returned on
    *   {@link StreamResult.error}, but this callback delivers it wrapped as an
    *   `Ably.ErrorInfo` (code `RunResponseStreamFailed`) for standardized observability.

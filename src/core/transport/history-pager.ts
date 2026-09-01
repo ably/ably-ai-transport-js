@@ -45,14 +45,22 @@ export interface HistoryPagerOptions<TInput, TOutput> {
  * caller's to observe — a follower is isolated from a prior link's rejection.
  */
 export class HistoryPager<TInput, TOutput> {
-  private readonly _options: HistoryPagerOptions<TInput, TOutput>;
+  private readonly _channel: HistoryPagerOptions<TInput, TOutput>['channel'];
+  private readonly _pageSize: number;
+  private readonly _decoder: HistoryPagerOptions<TInput, TOutput>['decoder'];
+  private readonly _logger: HistoryPagerOptions<TInput, TOutput>['logger'];
+  private readonly _onDecodeError: HistoryPagerOptions<TInput, TOutput>['onDecodeError'];
   /** The lazily opened backward cursor; `undefined` until the first walk. */
   private _cursor: HistoryPagesCursor | undefined;
   /** Tail of the single-flight chain — always a settled or in-flight void promise. */
   private _tail: Promise<void> = Promise.resolve();
 
   constructor(options: HistoryPagerOptions<TInput, TOutput>) {
-    this._options = options;
+    this._channel = options.channel;
+    this._pageSize = options.pageSize;
+    this._decoder = options.decoder;
+    this._logger = options.logger;
+    this._onDecodeError = options.onDecodeError;
   }
 
   /**
@@ -79,7 +87,6 @@ export class HistoryPager<TInput, TOutput> {
   }
 
   private async _walk(opts: TransportHistoryOptions | undefined): Promise<TransportHistoryResult<TInput, TOutput>> {
-    const { channel, pageSize, decoder, logger, onDecodeError } = this._options;
     // Check before the cursor is opened, so an already-aborted call costs no
     // attach and no page fetch. The signal is deliberately not bound to the
     // cursor: it is shared across calls, and an aborted signal would wedge its
@@ -88,17 +95,17 @@ export class HistoryPager<TInput, TOutput> {
     if (opts?.signal?.aborted) {
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
-    this._cursor ??= await loadHistoryPages(channel, {
-      pageLimit: pageSize,
+    this._cursor ??= await loadHistoryPages(this._channel, {
+      pageLimit: this._pageSize,
       untilAttach: true,
-      logger,
+      logger: this._logger,
     });
     return walkHistoryBatch(
       {
         cursor: this._cursor,
-        decoder,
-        logger,
-        ...(onDecodeError && { onDecodeError }),
+        decoder: this._decoder,
+        logger: this._logger,
+        ...(this._onDecodeError === undefined ? {} : { onDecodeError: this._onDecodeError }),
       },
       opts,
     );

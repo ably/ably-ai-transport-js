@@ -460,7 +460,7 @@ class DefaultChatTransport<
     // on `streaming`. Other transport errors (a single decode failure, a
     // cancel-publish failure) drop one message and are not stream-fatal.
     this._unsubscribeError = this._transport.on('error', (error) => {
-      if (!errorInfoIs(error, ErrorCode.SessionContinuityNotGuaranteed)) return;
+      if (!errorInfoIs(error, ErrorCode.ContinuityNotGuaranteed)) return;
       this._logger.error('ChatTransport(); continuity lost, failing open streams');
       for (const fail of this._streamFailers) fail(error);
     });

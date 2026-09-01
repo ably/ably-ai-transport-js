@@ -29,7 +29,7 @@ import { errorCause, errorMessage } from '../../utils.js';
  * guard requires the channel to be ATTACHED/ATTACHING by the time `connect()`
  * resolves, so `attach()` (idempotent — a no-op when already attaching/attached)
  * makes that guarantee hold. On success logs at debug; on failure builds a
- * `SessionSubscriptionFailed`, logs at error, hands it to `onError`, and rejects
+ * `SubscriptionFailed`, logs at error, hands it to `onError`, and rejects
  * with it.
  *
  * Retry-safe: `subscribe()` registers the listener synchronously, before the
@@ -44,7 +44,7 @@ import { errorCause, errorMessage } from '../../utils.js';
  * @param onError - Called with the subscription error before it is thrown
  *   (both transports emit it on their `error` stream).
  * @returns A promise that resolves once subscribed and attached, or rejects with
- *   the `SessionSubscriptionFailed`.
+ *   the `SubscriptionFailed`.
  */
 export const subscribeAndAttach = async (
   channel: Ably.RealtimeChannel,
@@ -68,7 +68,7 @@ export const subscribeAndAttach = async (
     // mislabelled as a subscribe failure.
     const errInfo = new Ably.ErrorInfo(
       `unable to subscribe and attach channel; ${errorMessage(error)}`,
-      ErrorCode.SessionSubscriptionFailed,
+      ErrorCode.SubscriptionFailed,
       500,
       errorCause(error),
     );
@@ -80,9 +80,9 @@ export const subscribeAndAttach = async (
 
 /**
  * Wrap a failure thrown while processing an inbound channel message as a
- * `SessionMessageProcessingFailed`, preserving the original as `cause`. Single
+ * `MessageProcessingFailed`, preserving the original as `cause`. Single
  * source of truth for the message-processing error shape both transports
- * surface. Kept distinct from the connect-time `SessionSubscriptionFailed`:
+ * surface. Kept distinct from the connect-time `SubscriptionFailed`:
  * the subscription survives this, so the transport stays usable and the fix
  * is in the handler.
  * @param error - The thrown value.
@@ -91,7 +91,7 @@ export const subscribeAndAttach = async (
 export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
   new Ably.ErrorInfo(
     `unable to process channel message; ${errorMessage(error)}`,
-    ErrorCode.SessionMessageProcessingFailed,
+    ErrorCode.MessageProcessingFailed,
     500,
     errorCause(error),
   );
@@ -171,8 +171,7 @@ export class ConnectGuard {
       // Do not cache the rejection: clear the promise so a later connect()
       // retries, and keep the cause so requireConnected() can surface it.
       this._promise = undefined;
-      this._lastError =
-        errorCause(error) ?? new Ably.ErrorInfo(errorMessage(error), ErrorCode.SessionSubscriptionFailed, 500);
+      this._lastError = errorCause(error) ?? new Ably.ErrorInfo(errorMessage(error), ErrorCode.SubscriptionFailed, 500);
       throw error;
     }
   }
@@ -232,7 +231,7 @@ export const isContinuityLost = (stateChange: Ably.ChannelStateChange): boolean 
 };
 
 /**
- * Build the `SessionContinuityNotGuaranteed` error for a continuity-breaking state
+ * Build the `ContinuityNotGuaranteed` error for a continuity-breaking state
  * change, attaching the state change's `reason` as `cause`.
  * @param stateChange - The continuity-breaking state change.
  * @param verb - The operation that can no longer proceed, for the
@@ -243,7 +242,7 @@ export const continuityLostError = (stateChange: Ably.ChannelStateChange, verb: 
   const { current } = stateChange;
   return new Ably.ErrorInfo(
     `unable to ${verb}; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
-    ErrorCode.SessionContinuityNotGuaranteed,
+    ErrorCode.ContinuityNotGuaranteed,
     500,
     stateChange.reason,
   );

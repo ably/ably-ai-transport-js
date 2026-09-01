@@ -149,7 +149,7 @@ describe('walkHistoryBatch', () => {
     expect(result.exhausted).toBe(true);
     expect(errors).toHaveLength(1);
     // The decoder throw arrives wrapped as the shared message-processing error.
-    expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+    expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.MessageProcessingFailed);
   });
 
   it('completes the batch when onPage throws', async () => {

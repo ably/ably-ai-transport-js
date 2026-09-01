@@ -94,9 +94,8 @@ export interface RunManager {
   startRun(runId: string, clientId?: string, metadata?: StartRunMetadata): Promise<void>;
   /**
    * Suspend a run. Publishes run-suspend on the channel and drops the run's
-   * active-run entry — the agent process terminates on suspend, so there is no
-   * live AbortController to retain. A cancel arriving during suspension is a
-   * no-op; the resuming invocation re-registers the run via {@link startRun}.
+   * active-run entry. A cancel arriving during suspension is a no-op; the
+   * resuming invocation re-registers the run via {@link startRun}.
    * Carries the same per-invocation attribution as {@link endRun}
    * (`inputClientId`, `inputCodecMessageId`), since a suspend is the terminal
    * event of the suspending invocation just as run-end is of an ending one.

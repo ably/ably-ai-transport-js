@@ -34,6 +34,7 @@ import {
   EVENT_CANCEL,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
+  HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INPUT_CODEC_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
@@ -103,10 +104,13 @@ const wireMsg = (headers: Record<string, string>): Ably.InboundMessage =>
  * Build a {@link LocatedInput} whose meta carries the given transport headers —
  * the located-input fixture the openRun tests hand to the transport.
  * @param transport - The transport-tier headers on the input's wire message.
+ * @param clientId - The publishing client's id, when the test needs one.
  * @returns The located input.
  */
-const locatedInput = (transport: Record<string, string>): LocatedInput<unknown> => ({
-  meta: wireMetaFromMessage(inboundMessage({ name: 'ai-input', transport, serial: 'trigger-serial' })),
+const locatedInput = (transport: Record<string, string>, clientId?: string): LocatedInput<unknown> => ({
+  meta: wireMetaFromMessage(
+    inboundMessage({ name: 'ai-input', transport, serial: 'trigger-serial', ...(clientId ? { clientId } : {}) }),
+  ),
   inputs: [],
 });
 
@@ -153,6 +157,20 @@ const receiptOf = (channel: MockChannel, name: string): string | undefined => {
   if (!msg) throw new Error(`expected ${name}`);
   // CAST: the mock captured the outbound message; only its extras are read.
   return getTransportHeaders(msg as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_IDS];
+};
+
+/**
+ * Read one transport header off a published lifecycle message.
+ * @param channel - The mock channel that captured the publish.
+ * @param name - The lifecycle message name.
+ * @param header - The transport header to read.
+ * @returns The header value, or `undefined`.
+ */
+const headerOf = (channel: MockChannel, name: string, header: string): string | undefined => {
+  const msg = channel.publishCalls.find((m) => m.name === name);
+  if (!msg) throw new Error(`expected ${name}`);
+  // CAST: the mock captured the outbound message; only its extras are read.
+  return getTransportHeaders(msg as Ably.InboundMessage)[header];
 };
 
 /**
@@ -214,10 +232,10 @@ describe('createAgentTransport', () => {
       channel.subscribe.mockRejectedValueOnce(new Error('subscribe blew up'));
 
       await expect(transport.connect()).rejects.toMatchObject({
-        code: ErrorCode.SessionSubscriptionFailed,
+        code: ErrorCode.SubscriptionFailed,
       });
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionFailed);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SubscriptionFailed);
     });
 
     it('gates history and locateInput until connect() is called', async () => {
@@ -255,7 +273,7 @@ describe('createAgentTransport', () => {
 
       expect(events).toHaveLength(0);
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.MessageProcessingFailed);
     });
   });
 
@@ -326,6 +344,37 @@ describe('createAgentTransport', () => {
       await flushMicrotasks();
 
       expect(other.abortSignal.aborted).toBe(false);
+    });
+
+    it('does not resurrect a cancel that arrives after the run ended', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      await run.end({ reason: 'complete' });
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+
+      // A durable agent re-enters a run under a stable id, so a cancel held
+      // past the terminal would abort the adoption instead of the run it was
+      // aimed at.
+      const adopted = transport.adoptRun('run-1');
+      await flushMicrotasks();
+
+      expect(adopted.abortSignal.aborted).toBe(false);
+    });
+
+    it('buffers a cancel carrying both ids under each of them', async () => {
+      const { transport, channel } = await setup();
+
+      // A continuation's openRun resolves its own input-codec-message-id,
+      // which need not be the one this cancel names — so a run-id-only pull
+      // has to find it too.
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-later', [HEADER_INPUT_CODEC_MESSAGE_ID]: 'in-other' }));
+      await flushMicrotasks();
+      const run = transport.openRun({ runId: 'run-later' });
+      await flushMicrotasks();
+
+      expect(run.abortSignal.aborted).toBe(true);
     });
 
     it('leaves the run running when onCancel returns false', async () => {
@@ -801,6 +850,29 @@ describe('createAgentTransport', () => {
     });
   });
 
+  describe('run-start headers', () => {
+    it("stamps the triggering input's publisher as input-client-id", async () => {
+      const { transport, channel } = await setup();
+
+      transport.openRun({ input: locatedInput({ [HEADER_CODEC_MESSAGE_ID]: 'cm-1' }, 'sender-a') });
+      await flushMicrotasks();
+
+      // Several clients share the channel, so a consumer needs to know whose
+      // send a run answers — it is how they agree that only the sender runs
+      // the run's client-side tools.
+      expect(headerOf(channel, 'ai-run-start', HEADER_INPUT_CLIENT_ID)).toBe('sender-a');
+    });
+
+    it('omits input-client-id when the run opens with no located input', async () => {
+      const { transport, channel } = await setup();
+
+      transport.openRun({ runId: 'run-1' });
+      await flushMicrotasks();
+
+      expect(headerOf(channel, 'ai-run-start', HEADER_INPUT_CLIENT_ID)).toBeUndefined();
+    });
+  });
+
   describe('channel continuity', () => {
     it('aborts every registered run and surfaces the loss', async () => {
       const { transport, channel, errors } = await setup();
@@ -816,22 +888,44 @@ describe('createAgentTransport', () => {
       // published during the gap never lands — an in-flight run would keep
       // driving the model and could no longer be cancelled.
       expect(aborted).toEqual(['run-1']);
-      expect(errors.at(-1)).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
+      expect(errors.at(-1)).toBeErrorInfoWithCode(ErrorCode.ContinuityNotGuaranteed);
     });
 
     it('ignores state changes before the first attach', async () => {
-      const { transport, channel, errors } = await setup();
+      // A channel that has never attached: the transport must not read an
+      // early SUSPENDED as continuity lost, because there was none to lose.
+      const channel = createMockChannel();
+      channel.state = 'initialized';
+      const transport = createAgentTransport<TestInput, TestOutput>({ channel, codec: createMockCodec() });
+      const errors: Ably.ErrorInfo[] = [];
+      transport.on('error', (error) => errors.push(error));
+      await transport.connect();
+
       const run = transport.openRun({ runId: 'run-1' });
       let aborted = false;
       run.abortSignal.addEventListener('abort', () => {
         aborted = true;
       });
 
-      // There is no continuity to lose before the channel has ever attached.
       channel.emitStateChange({ current: 'suspended', previous: 'attaching', resumed: false });
 
       expect(aborted).toBe(false);
       expect(errors).toHaveLength(0);
+    });
+
+    it('treats a channel already attached at construction as having attached', async () => {
+      // The caller owns the channel and may hand over an attached one;
+      // attaching an attached channel emits no state change, so a transport
+      // that waited for one would swallow the first continuity loss.
+      const { transport, channel, errors } = await setup();
+      const run = transport.openRun({ runId: 'run-1' });
+      const aborted: string[] = [];
+      run.abortSignal.addEventListener('abort', () => aborted.push(run.runId));
+
+      channel.emitStateChange({ current: 'suspended', previous: 'attached', resumed: false });
+
+      expect(aborted).toEqual(['run-1']);
+      expect(errors.at(-1)).toBeErrorInfoWithCode(ErrorCode.ContinuityNotGuaranteed);
     });
   });
 
@@ -877,6 +971,28 @@ describe('createAgentTransport', () => {
         statusCode: 500,
         cause: { code: 40160 },
       });
+    });
+
+    it('deregisters a run whose opening publish failed, so a later cancel for it is a no-op', async () => {
+      const { transport, channel } = await setup();
+      channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 40160, 401));
+
+      const run = transport.openRun(
+        { runId: 'run-1' },
+        {
+          onError: () => {
+            /* the failure is asserted by the sibling test; observed here only to silence it */
+          },
+        },
+      );
+      for (let tick = 0; tick < 4; tick++) await flushMicrotasks();
+
+      // The run never reached the wire, so nothing addressed to it should
+      // still be routable — and a later adoption of the same id must start
+      // clean rather than inherit an abort.
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+      expect(run.abortSignal.aborted).toBe(false);
     });
 
     it('publishes ai-run-start with a minted run-id and returns the run handle', async () => {
@@ -1468,7 +1584,7 @@ describe('createAgentTransport', () => {
         'kept',
       ]);
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.MessageProcessingFailed);
     });
   });
 });

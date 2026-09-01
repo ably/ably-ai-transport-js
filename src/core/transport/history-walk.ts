@@ -70,7 +70,10 @@ export const walkHistoryBatch = async <TInput, TOutput>(
 
   const rawPages: (readonly Ably.InboundMessage[])[] = [];
   let scanned = 0;
-  while (cursor.hasNext() && (opts?.limit === undefined ? rawPages.length === 0 : scanned < opts.limit)) {
+  // No limit means one page per call — the caller's own loop is the pager.
+  // With a limit, keep fetching until that many wire messages are scanned.
+  const wantsAnotherPage = (): boolean => (opts?.limit === undefined ? rawPages.length === 0 : scanned < opts.limit);
+  while (cursor.hasNext() && wantsAnotherPage()) {
     if (opts?.signal?.aborted) {
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }

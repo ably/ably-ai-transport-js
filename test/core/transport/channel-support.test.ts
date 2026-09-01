@@ -23,8 +23,7 @@ const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- listener identity only
 const noopListener = (): void => {};
 
-const subscribeError = (): Ably.ErrorInfo =>
-  new Ably.ErrorInfo('attach timed out', ErrorCode.SessionSubscriptionFailed, 500);
+const subscribeError = (): Ably.ErrorInfo => new Ably.ErrorInfo('attach timed out', ErrorCode.SubscriptionFailed, 500);
 
 describe('ConnectGuard', () => {
   it('reports not attempted until connect() is called', () => {
@@ -67,7 +66,7 @@ describe('ConnectGuard', () => {
       .mockRejectedValueOnce(subscribeError())
       .mockReturnValueOnce(Promise.resolve());
 
-    await expect(guard.connect(attempt)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionFailed);
+    await expect(guard.connect(attempt)).rejects.toBeErrorInfoWithCode(ErrorCode.SubscriptionFailed);
     // Stays attempted after a failure, so close() still tears down the
     // subscription the failed attempt's subscribe() may have registered.
     expect(guard.attempted).toBe(true);
@@ -83,7 +82,7 @@ describe('ConnectGuard', () => {
     const cause = subscribeError();
     await expect(guard.connect(vi.fn<() => Promise<void>>().mockRejectedValue(cause))).rejects.toBe(cause);
     await expect(guard.requireConnected('send')).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionFailed,
+      code: ErrorCode.SubscriptionFailed,
       statusCode: 500,
       message: 'unable to send; connect() failed, call connect() again to retry; attach timed out',
       cause,
@@ -102,20 +101,20 @@ describe('ConnectGuard', () => {
 
     await expect(connectPromise).rejects.toBe(cause);
     await expect(guarded).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionFailed,
+      code: ErrorCode.SubscriptionFailed,
       statusCode: 500,
       message: 'unable to send; connect() failed, call connect() again to retry; attach timed out',
       cause,
     });
   });
 
-  it('wraps a non-ErrorInfo attempt failure as a SessionSubscriptionFailed', async () => {
+  it('wraps a non-ErrorInfo attempt failure as a SubscriptionFailed', async () => {
     const guard = new ConnectGuard();
     await expect(guard.connect(vi.fn<() => Promise<void>>().mockRejectedValue(new Error('boom')))).rejects.toThrow(
       'boom',
     );
     await expect(guard.requireConnected('send')).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionFailed,
+      code: ErrorCode.SubscriptionFailed,
       statusCode: 500,
       message: 'unable to send; connect() failed, call connect() again to retry; boom',
     });
@@ -141,11 +140,11 @@ describe('isContinuityLost', () => {
 });
 
 describe('continuityLostError', () => {
-  it('builds a SessionContinuityNotGuaranteed error with the given verb and the state reason as cause', () => {
+  it('builds a ContinuityNotGuaranteed error with the given verb and the state reason as cause', () => {
     const reason = new Ably.ErrorInfo('attach failed', 80002, 500);
     const err = continuityLostError(stateChange('suspended', true, reason), 'deliver events');
     expect(err).toBeErrorInfo({
-      code: ErrorCode.SessionContinuityNotGuaranteed,
+      code: ErrorCode.ContinuityNotGuaranteed,
       statusCode: 500,
       message: 'unable to deliver events; channel continuity lost (suspended)',
     });
@@ -185,7 +184,7 @@ describe('subscribeAndAttach', () => {
 
     const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'AgentTransport', onError);
     await expect(rejection).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionFailed,
+      code: ErrorCode.SubscriptionFailed,
       statusCode: 500,
       message: 'unable to subscribe and attach channel; attach refused',
       cause,
@@ -206,7 +205,7 @@ describe('subscribeAndAttach', () => {
 
     const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'ClientTransport', onError);
     await expect(rejection).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionFailed,
+      code: ErrorCode.SubscriptionFailed,
       statusCode: 500,
       message: 'unable to subscribe and attach channel; attach timed out',
       cause,
@@ -234,10 +233,10 @@ describe('subscribeAndAttach', () => {
 });
 
 describe('wrapMessageProcessingError', () => {
-  it('wraps a thrown value as a SessionMessageProcessingFailed preserving the cause', () => {
+  it('wraps a thrown value as a MessageProcessingFailed preserving the cause', () => {
     const cause = new Ably.ErrorInfo('boom', 50000, 500);
     expect(wrapMessageProcessingError(cause)).toBeErrorInfo({
-      code: ErrorCode.SessionMessageProcessingFailed,
+      code: ErrorCode.MessageProcessingFailed,
       statusCode: 500,
       message: 'unable to process channel message; boom',
       cause,

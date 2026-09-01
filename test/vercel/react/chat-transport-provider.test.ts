@@ -90,14 +90,13 @@ const createFakeTransport = (): ClientTransport<unknown, unknown> =>
   }) as unknown as ClientTransport<unknown, unknown>;
 
 const wrap =
-  (props: { channelName: string; api?: string; reconnectScanPages?: number; strict?: boolean }) =>
+  (props: { channelName: string; api?: string; strict?: boolean }) =>
   ({ children }: { children: ReactNode }): ReactNode => {
     const provider = createElement(
       ChatTransportProvider,
       {
         channelName: props.channelName,
         ...(props.api === undefined ? {} : { api: props.api }),
-        ...(props.reconnectScanPages === undefined ? {} : { reconnectScanPages: props.reconnectScanPages }),
       },
       children,
     );
@@ -155,15 +154,16 @@ describe('ChatTransportProvider', () => {
   });
 
   it('closes the replaced adapter when a route option changes on the same transport', () => {
+    // The wrapper re-reads this on each render, so rerender() below
+    // re-renders the provider with the changed route option.
+    const api = { value: '/api/first' };
     const { result, rerender } = renderHook(() => useChatTransport(), {
-      // The wrapper re-reads apiRef on each render, so rerender() below
-      // re-renders the provider with the changed route option.
       wrapper: ({ children }: { children: ReactNode }): ReactNode =>
-        wrap({ channelName: 'ai:test', api: apiRef.value })({ children }),
+        wrap({ channelName: 'ai:test', api: api.value })({ children }),
     });
     const first = result.current.chatTransport;
 
-    apiRef.value = '/api/other';
+    api.value = '/api/other';
     rerender();
 
     const creations = created();
@@ -173,6 +173,22 @@ describe('ChatTransportProvider', () => {
     expect(creations[1]?.adapter.closeCalls).toBe(0);
     // The same transport backs both adapters — only the adapter was rebuilt.
     expect(creations[0]?.options.transport).toBe(creations[1]?.options.transport);
+  });
+
+  it('closes the surviving adapter on unmount', async () => {
+    const { result, unmount } = renderHook(() => useChatTransport(), {
+      wrapper: wrap({ channelName: 'ai:test' }),
+    });
+    const adapter = result.current.chatTransport;
+
+    unmount();
+    // The close is deferred a microtask so Strict Mode's remount can cancel
+    // it; a real unmount has no remount, so it lands.
+    await Promise.resolve();
+
+    // Closing the underlying transport is not enough: only the adapter's own
+    // close terminates the readers useChat holds.
+    expect(created().find(({ adapter: a }) => a === adapter)?.adapter.closeCalls).toBe(1);
   });
 
   it('creates exactly one live adapter under Strict Mode, closing any discarded creation', () => {
@@ -185,6 +201,3 @@ describe('ChatTransportProvider', () => {
     expect(result.current.chatTransport).toBe(live[0]?.adapter);
   });
 });
-
-/** Mutable api value the route-option-change test rerenders against. */
-const apiRef = { value: '/api/first' };

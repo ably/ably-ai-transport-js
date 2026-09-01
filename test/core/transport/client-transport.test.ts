@@ -286,10 +286,10 @@ describe('createClientTransport', () => {
       channel.subscribe.mockRejectedValueOnce(new Error('subscribe blew up'));
 
       await expect(transport.connect()).rejects.toMatchObject({
-        code: ErrorCode.SessionSubscriptionFailed,
+        code: ErrorCode.SubscriptionFailed,
       });
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionFailed);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SubscriptionFailed);
     });
 
     it('gates publishInput, cancel, and history until connect() is called', async () => {
@@ -333,7 +333,7 @@ describe('createClientTransport', () => {
       expect(events).toHaveLength(0);
       expect(raw).toHaveLength(0);
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.MessageProcessingFailed);
     });
   });
 
@@ -552,10 +552,10 @@ describe('createClientTransport', () => {
 
       fixture.channel.emitStateChange({ current: 'attached', previous: 'attached', resumed: false });
 
-      await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.ContinuityNotGuaranteed });
       // The loss also surfaces once on the error stream.
       expect(fixture.errors).toHaveLength(1);
-      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
+      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.ContinuityNotGuaranteed);
     });
   });
 
@@ -680,13 +680,13 @@ describe('createClientTransport', () => {
 
       fixture.channel.emitStateChange({ current: 'attached', previous: 'attached', resumed: false });
 
-      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.ContinuityNotGuaranteed });
       await expect(unechoed.published).resolves.toEqual({ serial: undefined });
-      await expect(unechoed.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      await expect(unechoed.outcome).rejects.toMatchObject({ code: ErrorCode.ContinuityNotGuaranteed });
       // The loss itself surfaces once on the error stream, so a consumer that
       // was not awaiting a drained promise still learns delivery may have gaps.
       expect(fixture.errors).toHaveLength(1);
-      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
+      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.ContinuityNotGuaranteed);
     });
 
     it('ignores channel state changes before the first attach', async () => {
@@ -709,7 +709,7 @@ describe('createClientTransport', () => {
       // The first attach arms the detector; the next loss drains.
       channel.emitStateChange({ current: 'attached', previous: 'attaching', resumed: false });
       channel.emitStateChange({ current: 'failed', previous: 'attached', resumed: false });
-      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.ContinuityNotGuaranteed });
     });
   });
 
@@ -794,7 +794,7 @@ describe('createClientTransport', () => {
 
       expect(result.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['kept']);
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.MessageProcessingFailed);
     });
   });
 

@@ -303,9 +303,9 @@ describe('ChatTransport', () => {
       const stream = await chat.sendMessages(sendOptions([userMessage('u1', 'hi')]));
       await Promise.resolve();
 
-      fake.emitError(new Ably.ErrorInfo('continuity lost', ErrorCode.SessionContinuityNotGuaranteed, 500));
+      fake.emitError(new Ably.ErrorInfo('continuity lost', ErrorCode.ContinuityNotGuaranteed, 500));
 
-      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
+      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.ContinuityNotGuaranteed);
       expect(chat.streaming).toBe(false);
     });
 
@@ -315,7 +315,7 @@ describe('ChatTransport', () => {
       const stream = await chat.sendMessages(sendOptions([userMessage('u1', 'hi')]));
       await Promise.resolve();
 
-      fake.emitError(new Ably.ErrorInfo('one bad message', ErrorCode.SessionMessageProcessingFailed, 500));
+      fake.emitError(new Ably.ErrorInfo('one bad message', ErrorCode.MessageProcessingFailed, 500));
       fake.emit(outputEvent('run-1', 'wire-a1', assistantChunks('a1', 'still here')));
       fake.emit(runEndEvent('run-1'));
 

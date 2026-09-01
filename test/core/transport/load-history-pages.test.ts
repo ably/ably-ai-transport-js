@@ -69,7 +69,7 @@ describe('loadHistoryPages', () => {
     expect(channel.history).toHaveBeenCalledWith({ limit: 10, untilAttach: true });
   });
 
-  it('retries the initial history call with backoff before rejecting `SessionHistoryFetchFailed`', async () => {
+  it('retries the initial history call with backoff before rejecting `HistoryFetchFailed`', async () => {
     const channel = createMockChannel([[ablyMsg()]]);
     // Two transient failures; the third call falls through to the mock's
     // default implementation, which serves the page.
@@ -146,7 +146,7 @@ describe('loadHistoryPages', () => {
     expect(nextCalls).toBe(2);
   });
 
-  it('rejects `SessionHistoryFetchFailed` when a mid-walk page.next() exhausts retries', async () => {
+  it('rejects `HistoryFetchFailed` when a mid-walk page.next() exhausts retries', async () => {
     const m1 = ablyMsg();
     // CAST: the cursor only reads `items`, `hasNext()`, and `next()`; `next()`
     // always fails so the walk exhausts its retries.
@@ -165,7 +165,7 @@ describe('loadHistoryPages', () => {
       retryBackoffMs: 1,
     });
     expect(await cursor.next()).toEqual([m1]);
-    await expect(cursor.next()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
+    await expect(cursor.next()).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
   });
 
   it('hasNext() returns false once the signal aborts', async () => {
@@ -178,7 +178,7 @@ describe('loadHistoryPages', () => {
     expect(cursor.hasNext()).toBe(false);
   });
 
-  it('rejects `SessionHistoryFetchFailed` after retries are exhausted', async () => {
+  it('rejects `HistoryFetchFailed` after retries are exhausted', async () => {
     const channel = createMockChannel();
     channel.history.mockRejectedValue(new Error('permanent'));
 
@@ -188,7 +188,7 @@ describe('loadHistoryPages', () => {
         maxRetries: 1,
         retryBackoffMs: 1,
       }),
-    ).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
   });
 
   it('throws `OperationCancelled` when the signal aborts during retry backoff', async () => {

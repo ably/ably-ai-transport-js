@@ -6,7 +6,7 @@
  * event decoding. Stream trackers are version-guarded: a delivery whose
  * `Message.version.serial` the tracker has already incorporated decodes to
  * nothing, so the same decoder instance can serve both the live
- * subscription and a backwards history walk without double-decoding.
+ * subscription and history hydration without double-decoding.
  *
  * Domain decoders call `createDecoderCore(hooks)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
@@ -144,7 +144,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
    *   the mutation it describes is already incorporated (a history aggregate
    *   covered by live deltas, a resume retransmission, a whole-wire replay).
    * - The tracker is closed — the stream has ended and its accumulated text
-   *   has been dropped, so nothing further can fold into it. In-contract
+   *   has been dropped, so nothing further can merge into it. In-contract
    *   replays are already covered by the version check; this catches
    *   out-of-contract version-less deliveries for an ended stream.
    *
@@ -365,15 +365,18 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     }
 
     // --- Replacement (NOT a prefix match) ---
-    // The payload diverged from what this decoder accumulated: the missing
-    // piece sits inside content this fold already delivered, and a provider
-    // reducer can only append to an open part, so no emittable delta exists.
-    // The wire itself is whole (an update replaces the message data), so a
-    // fresh decode — history, or a refold — yields the full content. This live
-    // fold delivers nothing; it swaps its baseline so later appends extend the
-    // update's content, and a terminal status still closes the group so the
-    // consumer's open part ends rather than staying open forever.
-    const priorLength = tracker.accumulated.length;
+    // The payload diverged from what this decoder accumulated, so no delta
+    // describes the change and the missing tail is unrecoverable. Deliver the
+    // payload whole rather than sit on stale content until something
+    // re-decodes the message.
+    //
+    // Close the open group before re-opening it. A provider reducer can only
+    // append to an open part, so a fresh opener stacked on a still-open part
+    // leaves that part streaming forever — a spinner that never stops. Ending
+    // first settles what the consumer already has, and the re-opened group
+    // carries the replacement.
+    const outputs = this._hooks.buildEndEvents(tracker, tracker.codecHeaders);
+
     tracker.accumulated = data;
     // Merge rather than replace: the identity keys (the group kind, the stream
     // id) are what the build hooks dispatch on, so an update that omits a tier
@@ -381,14 +384,14 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     tracker.codecHeaders = { ...tracker.codecHeaders, ...codec };
     tracker.transportHeaders = { ...tracker.transportHeaders, ...transport };
 
-    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); non-prefix replacement, content dropped', {
+    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); payload replaced, delivering whole', {
       serial,
       streamId: tracker.streamId,
-      priorLength,
       replacementLength: data.length,
     });
 
-    const outputs: TEvent[] = [];
+    outputs.push(...this._hooks.buildStartEvents(tracker));
+    if (data.length > 0) outputs.push(...this._hooks.buildDeltaEvents(tracker, data));
     this._applyTerminalStatus(tracker, status, tracker.codecHeaders, outputs);
 
     return outputs;

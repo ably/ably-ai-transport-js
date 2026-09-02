@@ -383,7 +383,7 @@ describe('createDecoderCore', () => {
   // -- message.update (replacement) ----------------------------------------
 
   describe('message.update (replacement)', () => {
-    it('drops a non-prefix replacement, warns, and swaps the baseline for later deltas', () => {
+    it('delivers a non-prefix replacement whole, warns, and swaps the baseline for later deltas', () => {
       const { logger, warn } = createMockLogger();
       const decoder = createDecoderCore(hooks, logger);
 
@@ -402,11 +402,15 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      // The missing piece sits inside content this fold already delivered, and
-      // a provider reducer can only append to an open part — so nothing is
-      // emitted, and the wire (which the update made whole) is the authority a
-      // refold reads.
-      expect(outputs).toEqual([]);
+      // No delta describes the change, so the group the consumer has open is
+      // closed and a fresh one carries the whole payload. Closing first is
+      // what keeps an append-only provider reducer honest: a fresh opener
+      // stacked on a still-open part leaves that part streaming forever.
+      expect(outputs).toEqual([
+        { type: 'end', streamId: 'id-1' },
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'completely different' },
+      ]);
       expect(warn).toHaveBeenCalledTimes(1);
 
       // The baseline swapped to the update's content: a later update that
@@ -420,7 +424,7 @@ describe('createDecoderCore', () => {
       expect(tail).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' plus' }]);
     });
 
-    it('closes the group when the replacement is terminal, without re-delivering content', () => {
+    it('delivers the content and closes the group when the replacement is terminal', () => {
       const decoder = createDecoderCore(hooks);
 
       decoder.decode(
@@ -438,9 +442,14 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      // The consumer's open part is ended rather than left streaming forever;
-      // the replacement's content itself is not re-delivered.
-      expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
+      // The replacement's content is delivered, and the consumer's open part
+      // is ended rather than left streaming forever.
+      expect(outputs).toEqual([
+        { type: 'end', streamId: 'id-1' },
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'replaced' },
+        { type: 'end', streamId: 'id-1' },
+      ]);
 
       // The tracker is closed: further deliveries for the serial decode to nothing.
       const after = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'more' }, {}));
@@ -468,7 +477,14 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
+      // Every event still names the original stream. A replacement that
+      // overwrote the tiers instead of merging them would lose the id here.
+      expect(outputs).toEqual([
+        { type: 'end', streamId: 'id-1' },
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'different' },
+        { type: 'end', streamId: 'id-1' },
+      ]);
     });
   });
 

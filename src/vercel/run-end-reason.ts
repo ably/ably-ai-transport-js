@@ -17,9 +17,10 @@ import { ErrorCode } from '../errors.js';
  * wakes the agent into a fresh run. An agent serving that adapter therefore
  * ends the run on a `'suspend'` outcome too — it produced the tool calls it was
  * asked for, so `AgentRunTransport.end({ reason: 'complete' })` is the
- * terminal. A run that suspends publishes no `ai-run-end`, and the adapter
- * reads run-end as the only proof that no more data is coming, so a suspended
- * run's message is withheld from hydration for good.
+ * terminal. A run that suspends publishes no `ai-run-end`, so a consumer's
+ * stream has no terminal to close on — which is the reason to end rather than
+ * suspend here. The adapter does read a suspend as terminal for hydration, so
+ * the run's message is reported by `readSince` rather than withheld.
  *
  * To make the ordinary case a one-liner the non-`'suspend'` arms are
  * deliberately assignable to

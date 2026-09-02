@@ -242,14 +242,6 @@ interface RunCollector<TMetadata, TDataParts extends AI.UIDataTypes, TTools exte
 }
 
 /**
- * The supersede filter's key: a step id is caller-supplied, so two runs can
- * share one, and keying on the step alone would let an older run's output
- * supersede a newer run's.
- * @param runId - The run the event belongs to, when it names one.
- * @param stepId - The step attempt's id.
- * @returns A key unique to the run-and-step pair.
- */
-/**
  * Reject when a promise has not settled within the bound.
  *
  * The run id arrives over the channel and nothing else bounds that wait: a
@@ -302,6 +294,14 @@ const asErrorInfo = (error: unknown, code: ErrorCode, statusCode: number, operat
   return new Ably.ErrorInfo(`unable to ${operation}; ${errorMessage(error)}`, code, statusCode, cause);
 };
 
+/**
+ * The supersede filter's key: a step id is caller-supplied, so two runs can
+ * share one, and keying on the step alone would let an older run's output
+ * supersede a newer run's.
+ * @param runId - The run the event belongs to, when it names one.
+ * @param stepId - The step attempt's id.
+ * @returns A key unique to the run-and-step pair.
+ */
 const attemptKey = (runId: string | undefined, stepId: string): string => `${runId ?? ''}\u0000${stepId}`;
 
 /**
@@ -351,6 +351,18 @@ const dropSupersededAttempts = <TMetadata, TDataParts extends AI.UIDataTypes, TT
 };
 
 /**
+ * Whether an event is a run's terminal (its `end` or `suspend` lifecycle).
+ *
+ * Delivering one closes the consumer's stream, so a replay has to order it
+ * after everything it should carry.
+ * @param event - The adapter event to classify.
+ * @returns True when the event ends or suspends its run.
+ */
+const isRunTerminal = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
+  event: AdapterEvent<TMetadata, TDataParts, TTools>,
+): boolean => event.kind === 'run-lifecycle' && (event.event.type === 'end' || event.event.type === 'suspend');
+
+/**
  * Join two event sequences, dropping any event whose delivery has already been
  * seen. A second walk can put one event in both the retention and the live
  * buffer, and delivering it twice would duplicate its content in the reducer.
@@ -364,18 +376,6 @@ const dropSupersededAttempts = <TMetadata, TDataParts extends AI.UIDataTypes, TT
  * @param events - The events to join, oldest first.
  * @returns The events with duplicate deliveries removed, order preserved.
  */
-/**
- * Whether an event is a run's terminal (its `end` or `suspend` lifecycle).
- *
- * Delivering one closes the consumer's stream, so a replay has to order it
- * after everything it should carry.
- * @param event - The adapter event to classify.
- * @returns True when the event ends or suspends its run.
- */
-const isRunTerminal = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
-  event: AdapterEvent<TMetadata, TDataParts, TTools>,
-): boolean => event.kind === 'run-lifecycle' && (event.event.type === 'end' || event.event.type === 'suspend');
-
 const dedupeByDelivery = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
   events: AdapterEvent<TMetadata, TDataParts, TTools>[],
 ): AdapterEvent<TMetadata, TDataParts, TTools>[] => {
@@ -1059,7 +1059,7 @@ class DefaultChatTransport<
       // Keep the retention and append the terminal rather than dropping it: a
       // run that ends between the walk and the reconnect still has a withheld
       // message to deliver, and replaying its own end is what closes that
-      // stream. Dropping it here lost the message until a page reload.
+      // stream.
       const retained = this._retained.get(runId);
       if (retained) retained.push(event);
       return;

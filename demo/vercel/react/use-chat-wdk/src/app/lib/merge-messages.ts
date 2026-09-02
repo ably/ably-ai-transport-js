@@ -49,7 +49,6 @@ interface Bucket {
   chunks: UIMessageChunk[];
 }
 
-/** The `toolCallId` a chunk carries, read structurally so the check tracks the installed `ai` major. */
 /**
  * Recursively sort object keys so two values that differ only in key order
  * serialise the same. A redelivered wire event comes back through the codec's
@@ -90,6 +89,7 @@ const mergeMessage = (existing: UIMessage | undefined, incoming: UIMessage): UIM
   return { ...existing, parts };
 };
 
+/** The `toolCallId` a chunk carries, read structurally so the check tracks the installed `ai` major. */
 function chunkToolCallId(chunk: UIMessageChunk): string | undefined {
   return 'toolCallId' in chunk && typeof chunk.toolCallId === 'string' ? chunk.toolCallId : undefined;
 }

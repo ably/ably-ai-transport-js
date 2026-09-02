@@ -34,7 +34,8 @@ import type { VercelInput, VercelOutput } from '../../src/vercel/codec/index.js'
 import { createUIMessageCodec } from '../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../helper/realtime-client.js';
-import { textResponseStream } from './helpers.js';
+import { foldWithProviderReducer } from '../helper/ui-message-fold.js';
+import { createEventRecorder, drainHistory, textResponseStream } from './helpers.js';
 
 const codec = createUIMessageCodec();
 
@@ -44,26 +45,6 @@ const noop = (): void => {
 };
 
 type Event = TransportEvent<VercelInput, VercelOutput>;
-
-/**
- * Wait until `predicate` holds over the collected events, polling.
- * @param events - The live event collection to poll.
- * @param predicate - The condition to wait for.
- * @param timeoutMs - How long to wait before failing.
- * @returns Resolves when the predicate holds.
- */
-const waitForEvents = async (
-  events: Event[],
-  predicate: (events: Event[]) => boolean,
-  timeoutMs = 15_000,
-): Promise<void> => {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (predicate(events)) return;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for events (collected ${String(events.length)})`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-};
 
 /**
  * The application's demultiplex-and-merge: bucket output chunks (and
@@ -112,15 +93,8 @@ const mergeMessages = async (events: Event[]): Promise<AI.UIMessage[]> => {
       continue;
     }
     if (bucket.chunks.length === 0) continue;
-    const stream = new ReadableStream<AI.UIMessageChunk>({
-      start: (controller) => {
-        for (const chunk of bucket.chunks) controller.enqueue(chunk);
-        controller.close();
-      },
-    });
-    let last: AI.UIMessage | undefined;
-    for await (const message of AI.readUIMessageStream({ stream })) last = message;
-    if (last) messages.push(last);
+    const merged = await foldWithProviderReducer(bucket.chunks);
+    if (merged) messages.push(merged);
   }
   return messages;
 };
@@ -148,6 +122,8 @@ interface Fixture {
   client: ClientTransport<VercelInput, VercelOutput>;
   agent: AgentTransport<VercelInput, VercelOutput>;
   events: Event[];
+  /** Resolve once the predicate holds over the client's events. */
+  waitFor: (predicate: (events: Event[]) => boolean) => Promise<void>;
 }
 
 /**
@@ -177,29 +153,28 @@ const setup = async (prefix: string, opts?: { connectAgent?: boolean }): Promise
   });
   await client.connect();
   if (opts?.connectAgent !== false) await agent.connect();
-  const events: Event[] = [];
-  client.subscribe((event) => events.push(event));
-  return { channelName, client, agent, events };
+  const recorder = createEventRecorder<VercelInput, VercelOutput>();
+  client.subscribe(recorder.record);
+  return { channelName, client, agent, events: recorder.events, waitFor: recorder.waitFor };
 };
 
 /**
- * Locate the trigger, retrying while channel-history persistence catches up
- * with the publish. Each attempt scans on a throwaway decoder, so repeats are
- * safe.
+ * Locate the input that woke this invocation.
+ *
+ * No retry and no sleep: the trigger is published before the agent attaches,
+ * and `locateInput` scans history bounded at the attach point, so the platform
+ * has already persisted it by the time the attach completes.
  * @param agent - The connected agent transport.
  * @param eventId - The triggering input's event id.
  * @returns The located trigger.
  */
-const locateWithRetry = async (
+const locateTrigger = async (
   agent: AgentTransport<VercelInput, VercelOutput>,
   eventId: string,
 ): Promise<LocatedInput<VercelInput>> => {
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const located = await agent.locateInput(eventId);
-    if (located) return located;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  throw new Error('trigger not found in history');
+  const located = await agent.locateInput(eventId);
+  if (!located) throw new Error(`trigger ${eventId} not found in history`);
+  return located;
 };
 
 /**
@@ -215,7 +190,7 @@ const runAgentTurn = async (
   eventId: string,
   source: ReadableStream<VercelOutput>,
 ): Promise<string> => {
-  const located = await locateWithRetry(agent, eventId);
+  const located = await locateTrigger(agent, eventId);
   const run = agent.openRun({
     ...(located.meta.transportMessageId !== undefined && { inputTransportMessageId: located.meta.transportMessageId }),
   });
@@ -230,7 +205,7 @@ describe('standalone transport integration', () => {
   });
 
   it('send → stream → receive: a text turn round-trips and merges through the provider reducer', async () => {
-    const { client, agent, events } = await setup('t-text', { connectAgent: false });
+    const { client, agent, events, waitFor } = await setup('t-text', { connectAgent: false });
 
     const sent = await client.publishInput({
       kind: 'message',
@@ -239,7 +214,7 @@ describe('standalone transport integration', () => {
     await agent.connect();
     const runId = await runAgentTurn(agent, sent.eventId, textResponseStream('a1', 't1', 'Hello human'));
 
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
 
     // The client's runId watch resolved from the run's start event.
     await expect(sent.runId).resolves.toBe(runId);
@@ -257,7 +232,7 @@ describe('standalone transport integration', () => {
   }, 45_000);
 
   it('tool call through the transport: the client resolution merges onto the assistant', async () => {
-    const { client, agent, events } = await setup('t-tool', { connectAgent: false });
+    const { client, agent, events, waitFor } = await setup('t-tool', { connectAgent: false });
 
     const sent = await client.publishInput({
       kind: 'message',
@@ -266,7 +241,7 @@ describe('standalone transport integration', () => {
     await agent.connect();
 
     // Turn 1: the agent calls a client tool and suspends.
-    const located = await locateWithRetry(agent, sent.eventId);
+    const located = await locateTrigger(agent, sent.eventId);
     const run = agent.openRun({
       ...(located.meta.transportMessageId !== undefined && {
         inputTransportMessageId: located.meta.transportMessageId,
@@ -289,7 +264,7 @@ describe('standalone transport integration', () => {
       }),
     );
     await run.suspend();
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'suspend'));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'suspend'));
 
     // The assistant's transport-message-id, read off the wire like the useChat
     // adapter does.
@@ -309,9 +284,7 @@ describe('standalone transport integration', () => {
       { transportMessageId: assistantId, runId: run.runId },
     );
 
-    await waitForEvents(events, (all) =>
-      all.some((e) => e.kind === 'message' && e.inputs.some((input) => input.kind === 'chunk')),
-    );
+    await waitFor((all) => all.some((e) => e.kind === 'message' && e.inputs.some((input) => input.kind === 'chunk')));
 
     const messages = await mergeMessages(events);
     const assistant = messages.find((m) => m.id === 'a1');
@@ -323,7 +296,7 @@ describe('standalone transport integration', () => {
   }, 45_000);
 
   it('cancel chain: a client cancel aborts the agent stream and the run ends cancelled', async () => {
-    const { client, agent, events } = await setup('t-cancel');
+    const { client, agent, events, waitFor } = await setup('t-cancel');
 
     const run = agent.openRun();
     // A stream that never closes on its own — only the cancel ends it.
@@ -336,7 +309,7 @@ describe('standalone transport integration', () => {
     });
     const pipePromise = run.pipe(openStream);
 
-    await waitForEvents(events, (all) => all.some((e) => e.kind === 'message' && e.outputs.length > 0));
+    await waitFor((all) => all.some((e) => e.kind === 'message' && e.outputs.length > 0));
     await client.cancel(run.runId);
 
     const result = await pipePromise;
@@ -344,7 +317,7 @@ describe('standalone transport integration', () => {
     expect(run.abortSignal.aborted).toBe(true);
     await run.end({ reason: 'cancelled' });
 
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end'));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end'));
     const end = lifecycleOf(events).find((e) => e.type === 'end');
     expect(end).toMatchObject({ type: 'end', reason: 'cancelled' });
   }, 45_000);
@@ -369,8 +342,8 @@ describe('standalone transport integration', () => {
     await agent.connect();
     // The client's own subscription never sees its publishes here, so the
     // agent's is what confirms the steer reached the channel at all.
-    const agentEvents: Event[] = [];
-    agent.subscribe((event) => agentEvents.push(event));
+    const agentRecorder = createEventRecorder<VercelInput, VercelOutput>();
+    agent.subscribe(agentRecorder.record);
 
     const run = agent.openRun();
     await run.pipe(textResponseStream('a1', 't1', 'thinking'));
@@ -385,7 +358,7 @@ describe('standalone transport integration', () => {
     const published = await steer.published;
     expect(published.serial).toBeDefined();
 
-    await waitForEvents(agentEvents, (all) => all.some((e) => e.kind === 'message' && e.inputs.length > 0), 20_000);
+    await agentRecorder.waitFor((all) => all.some((e) => e.kind === 'message' && e.inputs.length > 0));
 
     // The outcome settles off the run's next lifecycle bracket, which the
     // agent publishes — so the client does receive that one.
@@ -394,7 +367,7 @@ describe('standalone transport integration', () => {
   }, 45_000);
 
   it('multi-run sequential: two turns land as two runs with disjoint events', async () => {
-    const { client, agent, events, channelName } = await setup('t-multi', { connectAgent: false });
+    const { client, agent, events, channelName, waitFor } = await setup('t-multi', { connectAgent: false });
 
     const first = await client.publishInput({
       kind: 'message',
@@ -402,7 +375,7 @@ describe('standalone transport integration', () => {
     });
     await agent.connect();
     const runA = await runAgentTurn(agent, first.eventId, textResponseStream('a1', 't1', 'answer one'));
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runA));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runA));
 
     const second = await client.publishInput({
       kind: 'message',
@@ -417,7 +390,7 @@ describe('standalone transport integration', () => {
     });
     await secondAgent.connect();
     const runB = await runAgentTurn(secondAgent, second.eventId, textResponseStream('a2', 't2', 'answer two'));
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runB));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runB));
 
     expect(runA).not.toBe(runB);
     const messages = await mergeMessages(events);
@@ -431,7 +404,7 @@ describe('standalone transport integration', () => {
   }, 45_000);
 
   it('concurrent runs: interleaved streams demultiplex by transport-message-id', async () => {
-    const { agent, events } = await setup('t-concurrent');
+    const { agent, events, waitFor } = await setup('t-concurrent');
 
     const runA = agent.openRun();
     const runB = agent.openRun();
@@ -441,7 +414,7 @@ describe('standalone transport integration', () => {
     ]);
     await Promise.all([runA.end({ reason: 'complete' }), runB.end({ reason: 'complete' })]);
 
-    await waitForEvents(events, (all) => lifecycleOf(all).filter((e) => e.type === 'end').length === 2);
+    await waitFor((all) => lifecycleOf(all).filter((e) => e.type === 'end').length === 2);
 
     const messages = await mergeMessages(events);
     const texts = messages.map((message) => textOf(message));
@@ -451,7 +424,7 @@ describe('standalone transport integration', () => {
   }, 45_000);
 
   it('history paging: a fresh client pages backwards to chronological batches', async () => {
-    const { client, agent, channelName, events } = await setup('t-history', { connectAgent: false });
+    const { client, agent, channelName, waitFor } = await setup('t-history', { connectAgent: false });
 
     const sent = await client.publishInput({
       kind: 'message',
@@ -459,7 +432,7 @@ describe('standalone transport integration', () => {
     });
     await agent.connect();
     const runId = await runAgentTurn(agent, sent.eventId, textResponseStream('a1', 't1', 'remembered'));
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
 
     // A fresh transport (a reloaded page) sees nothing live and pages history.
     const lateRealtime = ablyRealtimeClient();
@@ -470,12 +443,7 @@ describe('standalone transport integration', () => {
     });
     await late.connect();
 
-    let all: Event[] = [];
-    for (;;) {
-      const batch = await late.history();
-      all = [...batch.events, ...all];
-      if (batch.exhausted) break;
-    }
+    const all = await drainHistory(late);
 
     const messages = await mergeMessages(all);
     expect(messages.map((message) => textOf(message))).toEqual(['history please', 'remembered']);
@@ -533,31 +501,26 @@ describe('standalone transport integration', () => {
       codec,
     });
     await client.connect();
-    const live: Event[] = [];
-    client.subscribe((event) => live.push(event));
+    const liveRecorder = createEventRecorder<VercelInput, VercelOutput>();
+    client.subscribe(liveRecorder.record);
 
-    let history: Event[] = [];
-    for (;;) {
-      const batch = await client.history();
-      history = [...batch.events, ...history];
-      if (batch.exhausted) break;
-    }
+    const history = await drainHistory(client);
 
     releaseSecondHalf();
     await pipePromise;
     await run.end({ reason: 'complete' });
-    await waitForEvents(live, (all) => lifecycleOf(all).some((e) => e.type === 'end'));
+    await liveRecorder.waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end'));
 
     // History and live share one decoder: merging history-then-live in
     // delivery order yields ONE message with the full text — no duplicated
     // prefix, no dedup needed.
-    const messages = await mergeMessages([...history, ...live]);
+    const messages = await mergeMessages([...history, ...liveRecorder.events]);
     expect(messages).toHaveLength(1);
     expect(textOf(messages[0])).toBe('first half second half');
   }, 45_000);
 
   it('error propagation: a run ending in error reaches the client with the error detail', async () => {
-    const { agent, events } = await setup('t-error');
+    const { agent, events, waitFor } = await setup('t-error');
 
     const run = agent.openRun();
     await run.pipe(
@@ -574,7 +537,7 @@ describe('standalone transport integration', () => {
       error: new ErrorInfo('model exploded', ErrorCode.RunResponseStreamFailed, 500),
     });
 
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end'));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end'));
     const end = lifecycleOf(events).find((e) => e.type === 'end');
     expect(end).toMatchObject({ type: 'end', reason: 'error' });
     const message = end?.type === 'end' && end.reason === 'error' ? end.error.message : undefined;
@@ -582,7 +545,7 @@ describe('standalone transport integration', () => {
   }, 45_000);
 
   it('multi-client sync: two clients on one channel both merge the streamed response', async () => {
-    const { client, agent, channelName, events } = await setup('t-sync', { connectAgent: false });
+    const { client, agent, channelName, events, waitFor } = await setup('t-sync', { connectAgent: false });
 
     const otherRealtime = ablyRealtimeClient();
     const other = createClientTransport<VercelInput, VercelOutput>({
@@ -590,8 +553,8 @@ describe('standalone transport integration', () => {
       codec,
     });
     await other.connect();
-    const otherEvents: Event[] = [];
-    other.subscribe((event) => otherEvents.push(event));
+    const otherRecorder = createEventRecorder<VercelInput, VercelOutput>();
+    other.subscribe(otherRecorder.record);
 
     const sent = await client.publishInput({
       kind: 'message',
@@ -600,17 +563,17 @@ describe('standalone transport integration', () => {
     await agent.connect();
     const runId = await runAgentTurn(agent, sent.eventId, textResponseStream('a1', 't1', 'synced'));
 
-    await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
-    await waitForEvents(otherEvents, (all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
+    await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
+    await otherRecorder.waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end' && e.runId === runId));
 
     const merged = await mergeMessages(events);
-    const otherMerged = await mergeMessages(otherEvents);
+    const otherMerged = await mergeMessages(otherRecorder.events);
     expect(textOf(merged.at(-1))).toBe('synced');
     expect(textOf(otherMerged.at(-1))).toBe('synced');
   }, 45_000);
 
   it('durable cross-process re-entry: a second transport ends the run via adoptRun', async () => {
-    const { agent, events, channelName } = await setup('t-durable');
+    const { agent, events, channelName, waitFor } = await setup('t-durable');
 
     // Process 1 opens the run and streams, then hands off without a terminal.
     const run = agent.openRun();
@@ -624,19 +587,14 @@ describe('standalone transport integration', () => {
       codec,
     });
     await second.connect();
-    let all: Event[] = [];
-    for (;;) {
-      const batch = await second.history();
-      all = [...batch.events, ...all];
-      if (batch.exhausted) break;
-    }
+    const all = await drainHistory(second);
     const lastLifecycle = lifecycleOf(all).findLast((e) => e.runId === run.runId);
     expect(lastLifecycle?.type).toBe('start');
 
     const adopted = second.adoptRun(run.runId);
     await adopted.end({ reason: 'complete' });
 
-    await waitForEvents(events, (list) => lifecycleOf(list).some((e) => e.type === 'end'));
+    await waitFor((list) => lifecycleOf(list).some((e) => e.type === 'end'));
     const lifecycle = lifecycleOf(events).map((e) => e.type);
     // Exactly one open and one terminal: the re-entry published nothing extra.
     expect(lifecycle).toEqual(['start', 'end']);

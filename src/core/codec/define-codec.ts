@@ -144,9 +144,9 @@ class DefaultCodecEncoder<TInput extends { kind: string }, TOutput extends { typ
   }
 
   async publishInput(input: TInput, options?: WriteOptions): Promise<Ably.PublishResult> {
-    // No `messageId` threads into inputs — user-message parts carry no
-    // transport transport-message-id today; inputs rely on opts.messageId stamped
-    // by the transport.
+    // No `messageId` threads into inputs: a user-message part carries no
+    // transport-message-id of its own, so an input's identity comes from
+    // `opts.messageId`, which the transport stamps.
     return this._inputEncoder.encode(input, this._core, { opts: options });
   }
 

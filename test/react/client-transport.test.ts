@@ -22,16 +22,7 @@ import { ClientTransportProvider } from '../../src/react/contexts/client-transpo
 import { useClientTransport } from '../../src/react/use-client-transport.js';
 import { useAblyMessages } from '../../src/react/use-transport-ably-messages.js';
 import { useTransportEvents } from '../../src/react/use-transport-events.js';
-
-/** Flush microtasks (but NOT macrotasks) so the deferred unmount close fires. */
-const flushMicrotasks = async (): Promise<void> => {
-  await new Promise<void>((resolve) => {
-    queueMicrotask(resolve);
-  });
-  await new Promise<void>((resolve) => {
-    queueMicrotask(resolve);
-  });
-};
+import { flushMicrotasks } from '../helper/streams.js';
 
 /**
  * A provider tree on one channel, for asserting what a channelName change does.
@@ -222,7 +213,7 @@ describe('ClientTransportProvider', () => {
     await act(flushMicrotasks);
 
     // A second transport is built for the new channel, and the superseded one
-    // is closed — leaving it open would leak an attached channel.
+    // is closed — leaving it open would leak an ATTACHED channel.
     expect(createClientTransportMock).toHaveBeenCalledTimes(2);
     expect(first.closeCalls).toBe(1);
     expect(second.connectCalls).toBe(1);
@@ -261,7 +252,7 @@ describe('ClientTransportProvider', () => {
   });
 
   it('surfaces a construction throw as the handle error without crashing the tree', () => {
-    const error = new Ably.ErrorInfo('unable to create client transport; boom', ErrorCode.BadRequest, 400);
+    const error = new Ably.ErrorInfo('unable to create client transport; boom', ErrorCode.InvalidArgument, 400);
     createClientTransportMock.mockImplementation(() => {
       throw error;
     });
@@ -270,6 +261,27 @@ describe('ClientTransportProvider', () => {
 
     expect(result.current.transport).toBeUndefined();
     expect(result.current.error).toBe(error);
+  });
+
+  it('leaves the event hooks inert when construction failed', () => {
+    // The provider deliberately supports a transport-less slot, so the hooks
+    // under it must tolerate one rather than throw on an absent transport.
+    createClientTransportMock.mockImplementation(() => {
+      throw new Ably.ErrorInfo('unable to create client transport; boom', ErrorCode.InvalidArgument, 400);
+    });
+    const handler = vi.fn();
+
+    const events = renderHook(
+      () => {
+        useTransportEvents(handler);
+      },
+      { wrapper: wrapDefault },
+    );
+    const messages = renderHook(() => useAblyMessages(), { wrapper: wrapDefault });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(events.result.current).toBeUndefined();
+    expect(messages.result.current).toEqual([]);
   });
 });
 

@@ -50,7 +50,7 @@ import { evictOldestIfFull } from './internal/bounded-map.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { loadHistoryPages } from './load-history-pages.js';
 import { createReceiveTransport, forwardReceiverOn, type ReceiveTransport } from './receive-transport.js';
-import { createRunManager, type RunManager } from './run-manager.js';
+import { createRunManager, type RunManager, type RunTerminalAttribution } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import type {
@@ -367,6 +367,20 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    */
   private _createRun(params: CreateRunParams, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> {
     const { runId, invocationId, inputTransportMessageId } = params;
+    /**
+     * The attribution both terminals carry, matching what `ai-run-start`
+     * stamped. `input-client-id` is what lets several clients on one channel
+     * agree which of them owns the run, so a terminal that dropped it would
+     * leave a late-joining client unable to resolve the owner from the run's
+     * own lifecycle events.
+     * @returns The terminal attribution for this run.
+     */
+    const terminalAttribution = (): RunTerminalAttribution => ({
+      invocationId,
+      inputClientId: params.inputClientId,
+      inputTransportMessageId,
+      consideredInputIds: consideredInputIds(),
+    });
 
     // The run's cancel controller: an accepted cancel aborts it, ending
     // in-flight pipes `'cancelled'` and firing the handle's `abortSignal`.
@@ -432,7 +446,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           500,
           errorCause(error),
         );
-        this._logger.error('AgentTransport.notifySteer(); onSteer threw', { runId });
+        this._logger.error('AgentTransport.notifySteer(); onSteer threw', { runId, error: errorMessage(error) });
         this._receiver.emitError(errInfo);
       }
     };
@@ -497,6 +511,11 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           runId,
           source: buffered === undefined ? 'cancelled-run' : 'buffered',
         });
+        // Fire-and-forget: openRun returns the handle synchronously, so there
+        // is nothing to await this on. With no onCancel hook the abort happens
+        // before the first await; a hook error is surfaced inside
+        // _cancelRegistration, and a dispatch failure lands on the error
+        // stream through _reportCancelRoutingFailure.
         this._cancelRegistration(registration, pending).catch((error: unknown) => {
           this._reportCancelRoutingFailure(error, { runId });
         });
@@ -549,7 +568,10 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // one waiting on the opening event's channel echo) can observe. A run whose
     // open failed receives no signals, so drop its registration.
     openPromise.catch((error: unknown) => {
-      this._logger.error('AgentTransport._createRun(); open publish failed', { runId });
+      this._logger.error('AgentTransport._createRun(); open publish failed', {
+        runId,
+        error: errorMessage(error),
+      });
       deregister();
       // This run never reached the wire, so it is not "already ended" — a
       // retry under the same pinned id is expected, and a cancel arriving in
@@ -573,8 +595,13 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
             );
       try {
         onError(errInfo);
-      } catch {
-        this._logger.error('AgentTransport._createRun(); onError callback threw', { runId });
+      } catch (callbackError) {
+        // The only record of this: the run's own error hook is what threw, so
+        // there is nowhere else to route it.
+        this._logger.error('AgentTransport._createRun(); onError callback threw', {
+          runId,
+          error: errorMessage(callbackError),
+        });
       }
     });
 
@@ -646,14 +673,19 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     const createStep = (stepOpts?: StepOptions): RunStepTransport<TOutput> => {
       const step = stepWriter.createStep(stepOpts);
       let starting: Promise<void> | undefined;
-      // A single shared in-flight start, recorded only once it resolves: a
-      // failed start must not leave the wrapper believing the step opened, or
-      // every later pipe/send rejects with advice this surface cannot act on.
+      // One shared in-flight start, cleared again if it fails. A latched but
+      // failed start would make every later pipe/send reject with "call
+      // start() first", which this wrapper's caller cannot act on because the
+      // surface exposes no start(); clearing it lets the next call retry.
       const ensureStarted = async (): Promise<void> => {
-        starting ??= step.start().catch((error: unknown) => {
-          starting = undefined;
-          throw error;
-        });
+        starting ??= (async () => {
+          try {
+            await step.start();
+          } catch (error) {
+            starting = undefined;
+            throw error;
+          }
+        })();
         await starting;
       };
       return {
@@ -668,7 +700,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           await ensureStarted();
           await step.send(event);
         },
-        end: async (params: StepEndParams): Promise<StepEndResult> => step.end(params),
+        end: async (params?: StepEndParams): Promise<StepEndResult> => step.end(params),
       };
     };
 
@@ -712,7 +744,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         state = 'suspended';
         await publishLifecycleEvent(
           { phase: 'run-suspend', component: 'AgentRunTransport', method: 'suspend', runId, logger: this._logger },
-          async () => this._runManager.suspendRun(runId, invocationId, undefined, undefined, consideredInputIds()),
+          async () => this._runManager.suspendRun(runId, terminalAttribution()),
         );
       },
       resume: async (): Promise<void> => {
@@ -747,22 +779,18 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         // step-close failure must not block the run terminal.
         try {
           await stepWriter.closeActiveStep(stepEndReasonFor(params.reason));
-        } catch {
-          this._logger.error('AgentRunTransport.end(); failed to auto-close active step', { runId });
+        } catch (closeError) {
+          // Best-effort and deliberately tolerated: a step-close failure must
+          // not block the run terminal, so this log is its only record.
+          this._logger.warn('AgentRunTransport.end(); failed to auto-close active step', {
+            runId,
+            error: errorMessage(closeError),
+          });
         }
         const error = params.reason === 'error' ? params.error : undefined;
         const serial = await publishLifecycleEvent(
           { phase: 'run-end', component: 'AgentRunTransport', method: 'end', runId, logger: this._logger },
-          async () =>
-            this._runManager.endRun(
-              runId,
-              params.reason,
-              invocationId,
-              undefined,
-              undefined,
-              error,
-              consideredInputIds(),
-            ),
+          async () => this._runManager.endRun(runId, params.reason, terminalAttribution(), error),
         );
         return { serial };
       },
@@ -940,7 +968,10 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         500,
         errorCause(error),
       );
-      this._logger.error('AgentTransport._cancelRegistration(); onCancel threw', { runId });
+      this._logger.error('AgentTransport._cancelRegistration(); onCancel threw', {
+        runId,
+        error: errorMessage(error),
+      });
       // Route to the run's onError when it supplied one, otherwise the
       // transport's error stream — one delivery path, never both. A throwing
       // onError means the dispatch could not complete: report that on the

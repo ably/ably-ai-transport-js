@@ -921,7 +921,7 @@ describe('createAgentTransport', () => {
     it("stamps the triggering input's publisher as input-client-id", async () => {
       const { transport, channel } = await setup();
 
-      transport.openRun({ input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-1' }, 'sender-a') });
+      transport.openRun({ input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'tm-1' }, 'sender-a') });
       await flushMicrotasks();
 
       // Several clients share the channel, so a consumer needs to know whose
@@ -937,6 +937,31 @@ describe('createAgentTransport', () => {
       await flushMicrotasks();
 
       expect(headerOf(channel, 'ai-run-start', HEADER_INPUT_CLIENT_ID)).toBeUndefined();
+    });
+
+    it('re-stamps the input attribution on ai-run-end', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'tm-1' }, 'sender-a') });
+      await flushMicrotasks();
+      await run.end({ reason: 'complete' });
+
+      // A client that joins mid-run resolves the owner from whichever of the
+      // run's lifecycle events it sees, so the terminal carries the same
+      // attribution the start did.
+      expect(headerOf(channel, 'ai-run-end', HEADER_INPUT_CLIENT_ID)).toBe('sender-a');
+      expect(headerOf(channel, 'ai-run-end', HEADER_INPUT_TRANSPORT_MESSAGE_ID)).toBe('tm-1');
+    });
+
+    it('re-stamps the input attribution on ai-run-suspend', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'tm-1' }, 'sender-a') });
+      await flushMicrotasks();
+      await run.suspend();
+
+      expect(headerOf(channel, 'ai-run-suspend', HEADER_INPUT_CLIENT_ID)).toBe('sender-a');
+      expect(headerOf(channel, 'ai-run-suspend', HEADER_INPUT_TRANSPORT_MESSAGE_ID)).toBe('tm-1');
     });
   });
 
@@ -1175,12 +1200,12 @@ describe('createAgentTransport', () => {
     it('anchors the opening event to its trigger with input-transport-message-id', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ inputTransportMessageId: 'cm-trigger' });
+      const run = transport.openRun({ inputTransportMessageId: 'tm-trigger' });
       await run.end({ reason: 'complete' });
 
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
-      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-trigger');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('tm-trigger');
     });
 
     it('a trigger carrying a run-id header resumes that run', async () => {
@@ -1222,14 +1247,14 @@ describe('createAgentTransport', () => {
       const { transport, channel } = await setup();
 
       const run = transport.openRun({
-        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-from-trigger' }),
+        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'tm-from-trigger' }),
       });
       await run.end({ reason: 'complete' });
 
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
       expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe(
-        'cm-from-trigger',
+        'tm-from-trigger',
       );
     });
 
@@ -1237,14 +1262,14 @@ describe('createAgentTransport', () => {
       const { transport, channel } = await setup();
 
       const run = transport.openRun({
-        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-from-trigger' }),
-        inputTransportMessageId: 'cm-explicit',
+        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'tm-from-trigger' }),
+        inputTransportMessageId: 'tm-explicit',
       });
       await run.end({ reason: 'complete' });
 
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
-      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-explicit');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('tm-explicit');
     });
   });
 

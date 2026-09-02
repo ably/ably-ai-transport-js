@@ -3,7 +3,7 @@
  *
  * Reads outputs from a ReadableStream, writes them to an encoder via
  * `publishOutput`, and handles cancel/error. No dependencies on run
- * state or session internals.
+ * state or transport internals.
  */
 
 import type { Logger } from '../../logger.js';
@@ -165,7 +165,9 @@ export const pipeStream = async <TInput, TOutput>(
   } catch (error) {
     reason = 'error';
     caughtError = error instanceof Error ? error : new Error(String(error));
-    logger?.error('pipeStream(); stream error', { error: caughtError.message });
+    // The step writer logs this failure at error with the run it belongs to.
+    // Kept at debug so one stream failure does not produce two error lines.
+    logger?.debug('pipeStream(); stream error', { error: caughtError.message });
     try {
       await encoder.close();
     } catch {

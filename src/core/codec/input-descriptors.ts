@@ -107,7 +107,7 @@ export type InputEventSpecFor<C> = [PayloadOf<C>] extends [never]
 /**
  * A single-event input descriptor spec, narrowed to input member `C`. `fields`
  * and `data` operate on the member's {@link PayloadOf payload}; the driver wraps
- * the `{ kind, transportMessageId, payload }` envelope on decode and unwraps it on
+ * the `{ kind, payload }` envelope on decode and unwraps it on
  * encode. A `wireOnly` event carries no payload (kind only).
  * @template C - The narrowed input member.
  */

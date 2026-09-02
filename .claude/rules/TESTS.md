@@ -16,10 +16,15 @@ and `vitest.config.integration.ts` (`*.integration.test.ts`).
 
 Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage on non-React code, 80%+ on React hooks.
 
+One exception: the React surface is tested per _surface_, not per module. A provider and the hooks that read from it only mean anything together — a hook test needs the provider mounted around it — so `test/react/` holds one suite per provider-and-its-hooks rather than one per file.
+
 ### Style
 
 - Mock the channel and the codec encoder rather than the Ably SDK; shared mocks live in `test/helper/`
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
+- React suites select jsdom per file with a `// @vitest-environment jsdom`
+  docblock and drive components through `@testing-library/react`; the vitest
+  config carries no environment setting
 - For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain the reader
 
 ### What to unit test
@@ -59,15 +64,16 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
 - Clean up clients in `afterEach` via `closeAllClients()`
-- 30s test timeout; individual tests should complete in 2-5s
-- Shared test helpers live in `test/helper/`
-- Stand a transport pair up with `createAgentEndpoint()` / `createClientEndpoint()`
-  from `test/helper/transport-pair.ts`; they register for `closeAllTransports()`,
-  which runs alongside `closeAllClients()` in `afterEach`
-- Await events, never clocks: `recordEvents()` from
-  `test/helper/transport-events.ts` buffers from the moment an endpoint exists
-  and resolves on a predicate. Helpers take no timeout — the 30s test timeout
-  is the only deadline
+- Shared unit-tier helpers live in `test/helper/`; the transport tier's own
+  fixtures and waiting primitives live in `test/integration/helpers.ts`
+- **Await events, never clocks.** `createEventRecorder()` buffers every
+  classified event as it arrives and re-checks pending predicates on each one,
+  so a test awaits the event it needs instead of polling a growing array.
+  Recorders take no timeout — vitest's own test timeout is the only deadline,
+  and a test that hangs is a test that found something.
+- A helper that reads channel history (`locateInput`, `history()`) needs no
+  retry: the trigger is published before the agent attaches, and the scan is
+  bounded at the attach point, so the platform has persisted it by then.
 
 ### What the tier covers today
 
@@ -75,40 +81,26 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 and tool-call roundtrip over a real channel, proving the wire format and Ably's
 message serialization.
 
-**Transport level**, in `test/core/transport/transport.integration.test.ts` and
-`test/core/transport/transport-history.integration.test.ts`: three scenarios a
-mock channel cannot stand in for.
+**Transport level**, in `test/integration/transport.integration.test.ts`:
+send-and-stream, a tool call resolving through the transport, the cancel chain,
+steering settling for a client running with `echoMessages: false`, sequential
+and concurrent runs, backwards history paging, the attach boundary, error
+propagation, multi-client sync, and durable cross-process re-entry through
+`adoptRun`.
 
-1. **Send → stream → receive.** A client publishes an input, the agent opens a
-   run naming it and streams a response, and the client's event stream carries
-   the optimistic echo, the wire echo, the run and step brackets, and the
-   streamed output — plus the run-id the client learns from the `ai-run-start`
-   its own input triggered.
-2. **History paging.** A fresh client pages backwards from its attach point
-   and receives chronological batches of classified events, each call
-   returning a strictly older slice, with a completed stream merged into one
-   message's worth of output. Messages published after the attach point stay
-   outside the window.
-3. **Attach boundary.** A run streaming across a client's attach point yields
-   one message's worth of events. The live merge and the history walk share a
-   decoder, so the accumulated prefix is delivered once, not twice — the
-   spanning message, when the window includes it, comes back from history
-   carrying its metadata and no events.
+Rather than list the scenarios here — the suite's own `it` titles are the
+authoritative list — this is what the tier is _for_, and what a new scenario
+should need to earn a place in it:
 
-These three need real Ably: message appends, the platform's conversion of the
-first post-attach append into a full-contents update, `untilAttach` paging and
-serial allocation have no mock equivalent.
-
-Seven scenarios are outstanding. Each rests on the unit tier alone and is
-untested over real Ably:
-
-1. Tool call through the transport
-2. Cancel chain: client cancel → agent abort → stream closes
-3. Multi-run sequential, and concurrent runs
-4. Steering: a steer lands on an open run and its outcome resolves
-5. Durable cross-process re-entry: a second transport adopts an open run and ends it
-6. Error propagation: agent error mid-stream, client observes the run's error terminal
-7. Multi-client sync: two clients on the same channel both see the streamed response
+- **Message appends.** The streaming wire is one message updated in place, and
+  a mock channel cannot reproduce the platform's append semantics.
+- **The first post-attach append**, which the platform converts into a
+  full-contents update. That conversion is what the decoder's mid-stream-join
+  repair exists for.
+- **`untilAttach` paging and serial allocation.** Both the attach boundary and
+  every serial a terminal reports come from the platform.
+- **`echoMessages: false`.** A client that never receives its own publish can
+  only settle a steer from the publish acknowledgement, which needs a real ack.
 
 `test/core/transport/codec-transport.test.ts` is the unit test that composes a
 real codec with both real transports against a mock channel, so the

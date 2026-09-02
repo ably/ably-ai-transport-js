@@ -124,11 +124,10 @@ export const ClientTransportProvider = <TInput, TOutput>({
       // This is the only place a construction failure surfaces, so the
       // original has to survive: `client.channels.get()` throws a plain Error
       // on a closed client or a bad channel name, and "unknown error" leaves
-      // the developer nothing to act on. InternalError rather than BadRequest,
-      // because a fault inside the SDK is not invalid caller input.
+      // the developer nothing to act on.
       transportOptions.logger?.error('ClientTransportProvider(); transport construction failed', {
         channelName,
-        error,
+        error: errorMessage(error),
       });
       // `errorCause` only propagates a value that is already an ErrorInfo, and
       // `client.channels.get()` throws a plain Error — so wrap it to give the

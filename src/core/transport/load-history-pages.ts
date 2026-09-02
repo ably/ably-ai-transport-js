@@ -121,6 +121,7 @@ const fetchPageWithRetry = async (
       if (attempt === maxRetries) break;
       const backoff = initialBackoffMs * 2 ** attempt;
       logger?.debug('loadHistoryPages.fetchPageWithRetry(); page fetch failed, retrying', {
+        error: errorMessage(error),
         attempt: attempt + 1,
         maxRetries,
         backoff,

@@ -158,6 +158,30 @@ describe('defineCodec — foreign messages', () => {
   });
 });
 
+describe('defineCodec — adapterTag', () => {
+  it('carries a supplied adapterTag onto the built codec', () => {
+    const tagged = defineCodec<NoopInput, QuirkyOutput>()({
+      adapterTag: 'some-codec',
+      output: () => [],
+      input: ({ event }) => [event('noop', { fields: [] })],
+    });
+
+    expect(tagged.adapterTag).toBe('some-codec');
+  });
+
+  it('omits the key entirely when no adapterTag is supplied', () => {
+    // The field is optional on WireCodec, so a codec opts out by not setting
+    // it. Spreading `undefined` would put the key on the object and defeat
+    // that, which is what `channelAgent` reads.
+    const untagged = defineCodec<NoopInput, QuirkyOutput>()({
+      output: () => [],
+      input: ({ event }) => [event('noop', { fields: [] })],
+    });
+
+    expect('adapterTag' in untagged).toBe(false);
+  });
+});
+
 describe('defineCodec — encoder wiring', () => {
   it('publishes an output event as an ai-output message carrying its wire kind', async () => {
     const writer = createMockWriter();
@@ -178,13 +202,24 @@ describe('defineCodec — encoder wiring', () => {
     const writer = createMockWriter();
     const encoder = codec.createEncoder(writer);
 
-    await encoder.publishInput({ kind: 'noop', transportMessageId: 'cm-1', payload: {} });
+    await encoder.publishInput({ kind: 'noop', transportMessageId: 'tm-1', payload: {} });
 
     expect(writer.published).toHaveLength(1);
     const msg = writer.published[0];
     if (!msg) throw new Error('no publish');
     expect(msg.name).toBe(EVENT_AI_INPUT);
     expect(headersOf(msg).kind).toBe('noop');
+  });
+
+  it('surfaces the channel publish acknowledgement from publishInput', async () => {
+    // The Encoder contract reports the ACK so a caller can record the serial
+    // its input landed on. defineCodec forwards it rather than dropping it.
+    const writer = createMockWriter();
+    const encoder = codec.createEncoder(writer);
+
+    const result = await encoder.publishInput({ kind: 'noop', transportMessageId: 'tm-1', payload: {} });
+
+    expect(result).toEqual({ serials: ['serial-1'] });
   });
 
   it('round-trips an output event through encode then decode', async () => {

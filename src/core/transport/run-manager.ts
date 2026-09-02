@@ -1,8 +1,9 @@
 /**
  * Server-side run state management and lifecycle event publishing.
  *
- * Owns the authoritative run lifecycle. Tracks active runs with their
- * AbortControllers and clientIds. Publishes run-start, run-resume, run-suspend, and
+ * Owns the authoritative run lifecycle. Tracks each active run's owning
+ * clientId; the abort controllers live with the agent transport's own
+ * registration. Publishes run-start, run-resume, run-suspend, and
  * run-end events on the Ably channel so all clients can react to run
  * state changes.
  */
@@ -60,6 +61,25 @@ export interface StepClientScopes {
 // Interface
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-invocation attribution stamped on a run's terminal lifecycle event.
+ * Both terminals carry the same set, because a suspend is the terminal event
+ * of the suspending invocation just as a run-end is of an ending one.
+ */
+export interface RunTerminalAttribution {
+  /** Agent-minted invocation id, carried on the terminal event. */
+  invocationId?: string;
+  /** ClientId of the triggering input's publisher, re-stamped as `input-client-id`. */
+  inputClientId?: string;
+  /** Transport-message-id of the triggering input, re-stamped as `input-transport-message-id`. */
+  inputTransportMessageId?: string;
+  /**
+   * Transport-message-ids of every input the run's output has considered,
+   * stamped as the `input-transport-message-ids` bracket receipt when non-empty.
+   */
+  consideredInputIds?: string[];
+}
+
 /** Manages active runs and publishes run lifecycle events on the channel. */
 export interface RunManager {
   /**
@@ -86,8 +106,10 @@ export interface RunManager {
   startRun(runId: string, clientId?: string, metadata?: StartRunMetadata): Promise<void>;
   /**
    * Suspend a run. Publishes run-suspend on the channel and drops the run's
-   * active-run entry. A cancel arriving during suspension is a no-op; the
-   * resuming invocation re-registers the run via {@link startRun}.
+   * active-run entry. The agent transport keeps its own registration, so a
+   * cancel addressed to a suspended run still fires its abort signal; the
+   * resuming invocation re-publishes the run's opening event via
+   * {@link startRun}.
    * Carries the same per-invocation attribution as {@link endRun}
    * (`inputClientId`, `inputTransportMessageId`), since a suspend is the terminal
    * event of the suspending invocation just as run-end is of an ending one.
@@ -95,13 +117,7 @@ export interface RunManager {
    * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output has considered so far.
    */
-  suspendRun(
-    runId: string,
-    invocationId?: string,
-    inputClientId?: string,
-    inputTransportMessageId?: string,
-    consideredInputIds?: string[],
-  ): Promise<void>;
+  suspendRun(runId: string, attribution?: RunTerminalAttribution): Promise<void>;
   /**
    * End a run. Publishes run-end on the channel (stamping `reason` as the
    * run-reason header) and drops the run's active-run entry. Carries the same
@@ -119,11 +135,8 @@ export interface RunManager {
   endRun(
     runId: string,
     reason: RunEndReason,
-    invocationId?: string,
-    inputClientId?: string,
-    inputTransportMessageId?: string,
+    attribution?: RunTerminalAttribution,
     error?: Ably.ErrorInfo,
-    consideredInputIds?: string[],
   ): Promise<string | undefined>;
   /**
    * Publish `ai-step-start` to open a step attempt within a run. Carries
@@ -220,31 +233,17 @@ class DefaultRunManager implements RunManager {
     this._logger?.debug('DefaultRunManager.startRun(); run started', { runId });
   }
 
-  async suspendRun(
-    runId: string,
-    invocationId?: string,
-    inputClientId?: string,
-    inputTransportMessageId?: string,
-    consideredInputIds?: string[],
-  ): Promise<void> {
+  async suspendRun(runId: string, attribution?: RunTerminalAttribution): Promise<void> {
     this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
-    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, {
-      invocationId,
-      inputClientId,
-      inputTransportMessageId,
-      consideredInputIds,
-    });
+    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, { ...attribution });
     this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
   }
 
   async endRun(
     runId: string,
     reason: RunEndReason,
-    invocationId?: string,
-    inputClientId?: string,
-    inputTransportMessageId?: string,
+    attribution?: RunTerminalAttribution,
     error?: Ably.ErrorInfo,
-    consideredInputIds?: string[],
   ): Promise<string | undefined> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
     // Stamp error detail only for a terminal error the agent chose to surface
@@ -253,10 +252,7 @@ class DefaultRunManager implements RunManager {
     const errorAttribution = reason === 'error' && error ? { errorCode: error.code, errorMessage: error.message } : {};
     const serial = await this._publishTerminal(EVENT_RUN_END, runId, {
       reason,
-      invocationId,
-      inputClientId,
-      inputTransportMessageId,
-      consideredInputIds,
+      ...attribution,
       ...errorAttribution,
     });
     this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason, serial });

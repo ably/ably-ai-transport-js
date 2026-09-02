@@ -28,6 +28,7 @@ import type { OpenAIInput, OpenAIOutput } from './events.js';
  * OpenAI Responses codec implementing `WireCodec<OpenAIInput, OpenAIOutput>`.
  */
 export const ResponsesCodec = defineCodec<OpenAIInput, OpenAIOutput>()({
+  adapterTag: 'openai-responses',
   output: outputs,
   input: inputs,
   decoderSynthesiseLifecycle: createResponsesDecodeLifecycle,

@@ -367,10 +367,10 @@ describe('createClientTransport', () => {
     it('honours an explicit transportMessageId', async () => {
       const { transport, encoderCalls } = await setup();
 
-      await transport.publishInput({ kind: 'user-message', content: 'hi' }, { transportMessageId: 'cmid-1' });
+      await transport.publishInput({ kind: 'user-message', content: 'hi' }, { transportMessageId: 'tmid-1' });
 
       const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
-      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('cmid-1');
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('tmid-1');
     });
 
     it('stamps user headers into Ably extras.headers, outside the ai envelope', async () => {

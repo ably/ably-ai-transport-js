@@ -35,6 +35,13 @@ import {
 } from '../src/index.js';
 import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../src/openai/index.js';
 import { ResponsesCodec } from '../src/openai/index.js';
+import type { ClientTransportHandle, UseClientTransportOptions } from '../src/react/index.js';
+import {
+  ClientTransportProvider,
+  useAblyMessages,
+  useClientTransport,
+  useTransportEvents,
+} from '../src/react/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
 
@@ -116,6 +123,27 @@ describe.each([
     expect(unexpected, 'a wire codec carries encode, decode, and its adapter tag').toEqual([]);
     expect(codec.createDecoder()).toBeDefined();
     expect(typeof codec.createEncoder).toBe('function');
+  });
+});
+
+describe('@ably/ai-transport/react', () => {
+  it('publishes the provider and the three hooks', () => {
+    // The codec suites never import this barrel, so a dropped export would
+    // otherwise surface only in a consumer's build.
+    expect(ClientTransportProvider).toBeTypeOf('function');
+    expect(useClientTransport).toBeTypeOf('function');
+    expect(useTransportEvents).toBeTypeOf('function');
+    expect(useAblyMessages).toBeTypeOf('function');
+  });
+
+  it("publishes the types a caller needs to name a hook's options and handle", () => {
+    // Spelled on locals: dropping a type export fails the typecheck here
+    // rather than in a consumer's build.
+    const options: UseClientTransportOptions = {};
+    const handle: ClientTransportHandle = { transport: undefined, error: undefined };
+
+    expect(options).toEqual({});
+    expect(handle.transport).toBeUndefined();
   });
 });
 

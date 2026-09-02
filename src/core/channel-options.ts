@@ -32,7 +32,7 @@ import type * as Ably from 'ably';
  * extra modes (e.g. {@link OBJECT_MODES}) grants the same access as the default
  * set plus those extras.
  */
-export const AIT_BASE_MODES: readonly Ably.ChannelMode[] = [
+const AIT_BASE_MODES: readonly Ably.ChannelMode[] = [
   'PUBLISH',
   'SUBSCRIBE',
   'PRESENCE',

@@ -1084,6 +1084,50 @@ describe('Vercel decoder', () => {
   // -- stream replacement (non-prefix update) -------------------------------
 
   describe('stream replacement', () => {
+    it('never completes a diverged tool-input with the partial it had accumulated', () => {
+      // The regression guard for the reason a diverged update emits nothing.
+      // A tool-input's terminal carries the accumulated arguments, so a
+      // synthesised close built from a half-received stream would hand the
+      // application `tool-input-available` with truncated JSON — a tool call
+      // presented as complete, executed with garbage arguments.
+      const decoder = createDecoder();
+
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'tc-1',
+            [HEADER_RUN_ID]: 'run-1',
+            kind: 'tool-input',
+            toolCallId: 'tc-1',
+            toolName: 'getWeather',
+          },
+        ),
+      );
+      decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '{"city":"Lon' }, {}),
+      );
+
+      const { outputs } = decoder.decode(
+        withHeaders(
+          {
+            action: 'message.update',
+            serial: 's1',
+            name: EVENT_AI_OUTPUT,
+            data: '{"city":"Paris"}',
+            version: { serial: 'v2' },
+          },
+          { [HEADER_STREAM]: 'true' },
+        ),
+      );
+
+      // No terminal at all, and in particular none carrying the partial.
+      expect(eventTypesOf(outputs)).not.toContain('tool-input-available');
+      expect(outputs).toEqual([]);
+    });
+
     it('folds a terminal diverged update through the provider reducer, leaving no part streaming', async () => {
       // A recovery update whose data does not extend what this decoder
       // accumulated delivers no content (the wire is the authority a refold

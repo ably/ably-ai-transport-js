@@ -187,16 +187,16 @@ export const HEADER_ERROR_MESSAGE = 'error-message';
 // ---------------------------------------------------------------------------
 
 /**
- * Message name: client->agent cancel intent. Targets a run by `run-id` (a
- * continuation, whose run-id the client already knows) and/or by
- * `input-transport-message-id` (a fresh send, whose run-id the agent mints at
- * run-start — so the client can only key the cancel by the triggering input's
- * transport-message-id it owns at send time). The agent resolves whichever is
- * present to the registered run; a cancel that arrives before the run is known
- * (the input-event lookup hasn't resolved the input id to a run yet) is
- * buffered by `input-transport-message-id` and honoured when the run resolves it.
- * Also carries an `event-id` so channel rewind redelivers it to a per-request /
- * serverless agent that attaches after the cancel was published.
+ * Message name: client->agent cancel intent. Addresses its run by `run-id`
+ * alone. A client that published the input but has not yet learned the run-id
+ * awaits `PublishInputResult.runId`, which resolves from the run-start's
+ * `input-transport-message-id` header, before cancelling — so a cancel always
+ * names a run.
+ *
+ * A cancel that races its `openRun` is buffered by run-id on the agent side and
+ * honoured the moment the run registers. Each cancel also carries an `event-id`
+ * so channel rewind redelivers it to a per-request or serverless agent that
+ * attaches after the cancel was published.
  */
 export const EVENT_CANCEL = 'ai-cancel';
 
@@ -214,7 +214,8 @@ export const EVENT_RUN_SUSPEND = 'ai-run-suspend';
 /**
  * Message name: server publishes this when a subsequent invocation re-enters an
  * already-started run (e.g. a tool-result follow-up under the same `runId`).
- * A pure re-entry signal, distinguished from `ai-run-start` by name alone.
+ * It carries the run's identity and attribution headers, and nothing that
+ * re-establishes the run — the original `ai-run-start` already did that.
  */
 export const EVENT_RUN_RESUME = 'ai-run-resume';
 

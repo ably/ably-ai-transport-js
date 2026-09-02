@@ -70,7 +70,7 @@ export const outputMsg = (serial: string, text: string, runId = 'R1'): Ably.Inbo
         transport: {
           [HEADER_RUN_ID]: runId,
           [HEADER_ROLE]: 'assistant',
-          [HEADER_TRANSPORT_MESSAGE_ID]: `cmid-${text}`,
+          [HEADER_TRANSPORT_MESSAGE_ID]: `tmid-${text}`,
         },
       },
     },

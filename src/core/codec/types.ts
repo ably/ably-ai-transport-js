@@ -255,9 +255,10 @@ export interface Decoder<TInput, TOutput> {
  */
 export interface WireCodec<TInput, TOutput> {
   /**
-   * Optional Ably-Agent identifier. When present, the agent-registration path
-   * registers it on the channel (so traffic is attributed to this codec); when
-   * absent, the codec opts out of registration. Read directly by `registerAgent`.
+   * Optional Ably-Agent identifier. When present, the caller stamps it on the
+   * channel alongside this SDK's own agent, so traffic is attributed to this
+   * codec; when absent, the codec opts out. Read by `channelAgent`, which
+   * renders the `params.agent` string.
    */
   readonly adapterTag?: string;
   /** Create a stateful encoder bound to the given channel. */

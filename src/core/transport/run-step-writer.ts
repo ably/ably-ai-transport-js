@@ -21,7 +21,7 @@ import * as Ably from 'ably';
 import { HEADER_STEER_TRANSPORT_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause } from '../../utils.js';
+import { errorCause, errorMessage } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
@@ -517,7 +517,7 @@ export const createRunStepWriter = <TInput, TOutput>(
         500,
         errorCause(result.error),
       );
-      logger?.error('RunStepWriter.pipe(); stream error', { runId });
+      logger?.error('RunStepWriter.pipe(); stream error', { runId, error: result.error.message });
       runOnError?.(errInfo);
     }
 
@@ -638,8 +638,14 @@ export const createRunStepWriter = <TInput, TOutput>(
         // completion; a missing step-end on a dying connection is non-impactful.
         try {
           await settle(stepEndReasonFor(result.reason));
-        } catch {
-          logger?.error('RunStepWriter.pipe(); failed to close implicit step', { runId, stepId });
+        } catch (closeError) {
+          // Best-effort and deliberately tolerated: a missing step-end on a
+          // dying connection is non-impactful, so this log is its only record.
+          logger?.warn('RunStepWriter.pipe(); failed to close implicit step', {
+            runId,
+            stepId,
+            error: errorMessage(closeError),
+          });
         }
       }
       return result;

@@ -33,7 +33,6 @@ const buildAgents = (codec?: { readonly adapterTag?: string }): Record<string, s
  * string. Pass it through as the channel's `params.agent` when resolving the
  * channel, or as a `<ChannelProvider options>` seed so ably-js's own React
  * hooks append their agent to this one rather than replacing it.
- * Spec: AIT-CT1a, AIT-CT1a2, AIT-CT1a3, AIT-ST1a, AIT-ST1a2, AIT-ST1a3.
  * @param codec - The codec whose optional identifier opts into registration.
  * @param codec.adapterTag - The optional Ably-Agent identifier; registered as an agent when present.
  * @returns The channel `params.agent` string.

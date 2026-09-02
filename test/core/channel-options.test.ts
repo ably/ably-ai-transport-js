@@ -10,7 +10,7 @@
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { AIT_BASE_MODES, OBJECT_MODES, resolveChannelModes } from '../../src/core/channel-options.js';
+import { OBJECT_MODES, resolveChannelModes } from '../../src/core/channel-options.js';
 
 describe('resolveChannelModes', () => {
   it('returns undefined when no extra modes are requested', () => {
@@ -21,7 +21,11 @@ describe('resolveChannelModes', () => {
   it('unions the base modes with the requested extras', () => {
     const resolved = resolveChannelModes(OBJECT_MODES);
     // Every base mode and every object mode must be present.
-    for (const mode of [...AIT_BASE_MODES, ...OBJECT_MODES]) {
+    // The base set is internal now: a caller only ever sees it through the
+    // resolver, so assert the server-default modes by name rather than
+    // re-exporting the constant just for this.
+    const baseModes = ['PUBLISH', 'SUBSCRIBE', 'PRESENCE', 'PRESENCE_SUBSCRIBE', 'ANNOTATION_PUBLISH'] as const;
+    for (const mode of [...baseModes, ...OBJECT_MODES]) {
       expect(resolved).toContain(mode);
     }
   });

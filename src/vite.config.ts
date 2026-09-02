@@ -8,7 +8,7 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
-      exclude: ['vercel/**', 'openai/**'],
+      exclude: ['react/**', 'vercel/**', 'openai/**'],
     }),
   ],
   build: {

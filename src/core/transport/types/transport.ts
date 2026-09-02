@@ -432,9 +432,10 @@ export interface StepOptions {
 /** Parameters for {@link RunStepTransport.end}. */
 export interface StepEndParams {
   /**
-   * The terminal reason. Omit to derive it from the step's piped output —
-   * `failed` if any {@link RunStepTransport.pipe} errored, else `complete` — so
-   * the common "compute an outcome, then end" flow needs no `try`/`catch`.
+   * The terminal reason. Omit to derive it from the step's piped output:
+   * `cancelled` if a pipe was cancelled or the run's signal aborted, `failed`
+   * if any {@link RunStepTransport.pipe} errored, else `complete`. The common
+   * "compute an outcome, then end" flow therefore needs no `try`/`catch`.
    * Pass an explicit reason to override.
    */
   reason?: StepEndReason;
@@ -853,10 +854,10 @@ export interface AgentRunTransport<TOutput> {
    */
   suspend(): Promise<void>;
   /**
-   * Publish `ai-run-resume`, re-entering the run. A pure re-entry signal — it
-   * is a pure re-entry signal, distinguished from `ai-run-start` by its
-   * message name. Re-opens a suspended handle's publish
-   * surface once the publish succeeds. Throws once the run has ended.
+   * Publish `ai-run-resume`, re-entering the run — a pure re-entry signal,
+   * distinguished from `ai-run-start` by its message name. Re-opens a
+   * suspended handle's publish surface once the publish succeeds. Throws once
+   * the run has ended.
    */
   resume(): Promise<void>;
   /**

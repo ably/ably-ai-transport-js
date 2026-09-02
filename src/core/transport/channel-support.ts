@@ -72,7 +72,10 @@ export const subscribeAndAttach = async (
       500,
       errorCause(error),
     );
-    logger?.error(`${component}.connect(); subscribe or attach failed`);
+    logger?.error(`${component}.connect(); subscribe or attach failed`, {
+      channel: channel.name,
+      error: errorMessage(error),
+    });
     onError(errInfo);
     throw errInfo;
   }

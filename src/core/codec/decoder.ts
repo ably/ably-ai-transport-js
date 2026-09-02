@@ -366,17 +366,26 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     // --- Replacement (NOT a prefix match) ---
     // The payload diverged from what this decoder accumulated, so no delta
-    // describes the change and the missing tail is unrecoverable. Deliver the
-    // payload whole rather than sit on stale content until something
-    // re-decodes the message.
+    // describes the change. Nothing is emitted, and that is deliberate.
     //
-    // Close the open group before re-opening it. A provider reducer can only
-    // append to an open part, so a fresh opener stacked on a still-open part
-    // leaves that part streaming forever — a spinner that never stops. Ending
-    // first settles what the consumer already has, and the re-opened group
-    // carries the replacement.
-    const outputs = this._hooks.buildEndEvents(tracker, tracker.codecHeaders);
-
+    // A provider reducer can only append to an open part, so there are three
+    // things this could do and two of them corrupt the consumer's view:
+    //
+    //   - Close the open group, then re-open it carrying the new content. The
+    //     close is built from what the tracker holds, and a content-bearing
+    //     end (Vercel's `tool-input-available`, OpenAI's `arguments`) would
+    //     claim the stale partial as complete. A truncated tool-call argument
+    //     presented as final is worse than no update at all.
+    //   - Re-open without closing. The consumer's existing part never ends, so
+    //     it streams forever.
+    //   - Emit nothing, and keep the live view on the content it already has.
+    //
+    // So: swap the baseline so later appends extend the update's content, and
+    // let a terminal status still close the group rather than leaving the part
+    // open. The wire itself is whole, because an update replaces the message
+    // data, so a fresh decode — history, or a re-merge with a new decoder —
+    // yields the full content.
+    const priorLength = tracker.accumulated.length;
     tracker.accumulated = data;
     // Merge rather than replace: the identity keys (the group kind, the stream
     // id) are what the build hooks dispatch on, so an update that omits a tier
@@ -384,14 +393,14 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     tracker.codecHeaders = { ...tracker.codecHeaders, ...codec };
     tracker.transportHeaders = { ...tracker.transportHeaders, ...transport };
 
-    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); payload replaced, delivering whole', {
+    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); non-prefix replacement, content dropped', {
       serial,
       streamId: tracker.streamId,
+      priorLength,
       replacementLength: data.length,
     });
 
-    outputs.push(...this._hooks.buildStartEvents(tracker));
-    if (data.length > 0) outputs.push(...this._hooks.buildDeltaEvents(tracker, data));
+    const outputs: TEvent[] = [];
     this._applyTerminalStatus(tracker, status, tracker.codecHeaders, outputs);
 
     return outputs;

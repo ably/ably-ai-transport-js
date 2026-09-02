@@ -11,22 +11,44 @@
  *   the AI SDK's own vocabulary. It replays through the SDK's reducer
  *   (`readUIMessageStream`) onto the message holding that `toolCallId`, so the
  *   SDK decides what a resolved tool part looks like.
- * - `kind: 'approval'` names its assistant message and tool call directly, and
- *   flips that part from `approval-requested` to `approval-responded`. The
- *   codec defines this body because the SDK has no stream part for it.
+ * - `kind: 'approval'` names its assistant message and tool call directly.
+ *   The SDK has no stream part for a decision, which is why the codec defines
+ *   the body — but it does have a `tool-approval-response` chunk, so the
+ *   decision is rebuilt as one and replayed through the same reducer. The SDK
+ *   owns the state transition, including the `isAutomatic` and `signature`
+ *   fields a hand-written flip would drop.
  * - `kind: 'regenerate'` names the message useChat asked to redo. The agent
  *   acts on that; the conversation is unchanged.
+ *
+ * What is left here is the part no reducer can do for itself: deciding which
+ * stored message a body addresses, and putting a message into the list.
  */
 
 import { isDynamicToolUIPart, isToolUIPart, readUIMessageStream } from 'ai';
 import type { UIMessage, UIMessageChunk } from 'ai';
-import type { VercelApprovalDecision, VercelInput } from '@ably/ai-transport/vercel';
-
-type UIPart = UIMessage['parts'][number];
+import type { VercelInput } from '@ably/ai-transport/vercel';
 
 /** Whether a message holds a tool part for the given call. */
 const holdsToolCall = (message: UIMessage, toolCallId: string): boolean =>
   message.parts.some((part) => (isToolUIPart(part) || isDynamicToolUIPart(part)) && part.toolCallId === toolCallId);
+
+/**
+ * The approval id the SDK keys a decision on: the one it minted on the tool
+ * part when it asked. The codec's decision body names the call, not the
+ * approval, because the call is what the application addresses.
+ * @param message - The message holding the gated call.
+ * @param toolCallId - The call the decision answers.
+ * @returns The approval id, or `undefined` when that call is not awaiting one.
+ */
+const approvalIdFor = (message: UIMessage, toolCallId: string): string | undefined => {
+  for (const part of message.parts) {
+    if (!isToolUIPart(part) && !isDynamicToolUIPart(part)) continue;
+    if (part.toolCallId !== toolCallId) continue;
+    if (part.state !== 'approval-requested') continue;
+    return part.approval.id;
+  }
+  return undefined;
+};
 
 /** A one-chunk stream — the reducer takes a stream, and a resolution is a single chunk. */
 function chunkStream(chunk: UIMessageChunk): ReadableStream<UIMessageChunk> {
@@ -43,25 +65,6 @@ async function applyChunk(message: UIMessage, chunk: UIMessageChunk): Promise<UI
   let updated = message;
   for await (const next of readUIMessageStream({ message, stream: chunkStream(chunk) })) updated = next;
   return updated;
-}
-
-/** Flip one `approval-requested` tool part to `approval-responded`, carrying the decision. */
-function applyApproval(message: UIMessage, decision: VercelApprovalDecision): UIMessage {
-  const parts = message.parts.map((part): UIPart => {
-    if (!isToolUIPart(part) && !isDynamicToolUIPart(part)) return part;
-    if (part.state !== 'approval-requested') return part;
-    if (part.toolCallId !== decision.toolCallId) return part;
-    return {
-      ...part,
-      state: 'approval-responded' as const,
-      approval: {
-        id: part.approval.id,
-        approved: decision.approved,
-        ...(decision.reason === undefined ? {} : { reason: decision.reason }),
-      },
-    };
-  });
-  return { ...message, parts };
 }
 
 /**
@@ -93,7 +96,16 @@ export async function applyInputs(stored: UIMessage[], inputs: VercelInput[]): P
         const at = messages.findIndex((message) => message.id === input.payload.messageId);
         const target = at === -1 ? undefined : messages[at];
         if (target === undefined) break;
-        messages[at] = applyApproval(target, input.payload);
+        const approvalId = approvalIdFor(target, input.payload.toolCallId);
+        // No approval pending for that call — a foreign publisher, or a
+        // decision the store already holds the answer to.
+        if (approvalId === undefined) break;
+        messages[at] = await applyChunk(target, {
+          type: 'tool-approval-response',
+          approvalId,
+          approved: input.payload.approved,
+          ...(input.payload.reason === undefined ? {} : { reason: input.payload.reason }),
+        });
         break;
       }
       case 'regenerate': {

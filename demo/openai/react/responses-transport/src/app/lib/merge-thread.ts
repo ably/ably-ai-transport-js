@@ -113,7 +113,17 @@ export interface ThreadMerge {
   apply(event: TransportEvent<OpenAIInput, OpenAIOutput>): void;
   /** The thread's messages, in first-seen transport-message-id order. */
   messages(): ThreadMessage[];
-  /** Every observed run's merged state, keyed by run-id, in first-seen order. */
+  /**
+   * Every run this merge has **observed live**, keyed by run-id, in first-seen
+   * order. Nothing stores this: {@link seed} adopts messages only, and the runs
+   * a seeded thread came from have ended.
+   *
+   * It is live transport state, which is what its readers want. The transcript
+   * renders a streaming bubble and a failed run's error from it, and the
+   * client-tool gate uses it to tell a run still producing output from one that
+   * has finished — a run absent from it is finished, because a seeded thread's
+   * runs are over.
+   */
   runs(): ReadonlyMap<string, RunSummary>;
   /** The run with the most recent lifecycle activity, or undefined before any run event. */
   activeRunId(): string | undefined;

@@ -119,6 +119,32 @@ describe('applyInputs', () => {
     expect(toolPart).toMatchObject({ state: 'approval-requested' });
   });
 
+  it('ignores a decision for a call with no approval pending', async () => {
+    // The tool part is already resolved, so there is no approval id to key the
+    // SDK's chunk on and nothing to decide.
+    const stored: UIMessage[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-getWeatherForecast',
+            toolCallId: 'call-2',
+            state: 'output-available',
+            input: { location: 'London, UK' },
+            output: { summary: 'sunny' },
+          },
+        ],
+      },
+    ];
+
+    const messages = await applyInputs(stored, [
+      { kind: 'approval', payload: { messageId: 'a1', toolCallId: 'call-2', approved: true } },
+    ]);
+
+    expect(messages).toEqual(stored);
+  });
+
   it('contributes nothing for a regenerate input — the agent acts on it, not the conversation', async () => {
     const stored = [userMessage('u1', 'hello')];
 

@@ -43,8 +43,8 @@ import { createModel } from './model';
 import { tools } from './tools';
 import { makeChecklistTool } from './checklist-tool';
 import { checklistFrom, type ChecklistItemRow, type ChecklistRoot } from '../../lib/checklist';
-import { getExistingMessages } from '../../lib/get-existing-messages';
-import { saveMessages, setActiveRun } from '../../lib/message-store';
+import { applyInputs } from '../../lib/apply-input';
+import { loadConversation, saveMessages, setActiveRun } from '../../lib/message-store';
 
 /**
  * The pointer body the useChat adapter POSTs. The adapter also sends `runId`
@@ -112,8 +112,8 @@ export async function POST(req: Request) {
     }
 
     // The conversation for the model: the store, plus the input that woke this
-    // invocation (see get-existing-messages.ts). No channel history is paged.
-    conversation = await getExistingMessages(channelName, located);
+    // invocation (see lib/apply-input.ts). No channel history is paged.
+    conversation = await applyInputs(loadConversation(channelName).messages, located.inputs);
 
     // Opening from the located input anchors the run to its trigger, so
     // cancels route back here and the client can resolve the run id off the

@@ -65,7 +65,7 @@ How it works:
 
 1. Builds a fresh Ably client and channel, and a `createAgentTransport` over it.
 2. `connect()`, then `locateInput(eventId)` finds the triggering input in channel history (404 if missing).
-3. Builds the model context with `getExistingMessages` (`src/app/lib/get-existing-messages.ts`): the conversation the store holds, with the located input applied to it (`src/app/lib/apply-input.ts`). No channel history is paged.
+3. Builds the model context by reading the store and applying the located input to it (`src/app/lib/apply-input.ts`). No channel history is paged.
 4. Opens a run anchored to the located input, writes the turn and the open run id to the store, and answers 202. Nothing is read from the response body: the client resolves the run id off the channel, from the `ai-run-start` that names the input it published.
 5. Inside `after()`: `streamText` with the conversation and tools, pipes the UIMessage chunk stream into `run.pipe(...)`, then `run.end(...)` — including when a client tool or approval is pending, because the client's resolution wakes a new run rather than resuming this one.
 6. `toUIMessageStream({ originalMessages, onEnd })` puts the AI SDK in its own persistence mode: `onEnd` hands back the whole updated conversation, so the store write needs no merge of the demo's own. The open run is cleared once the run is over.
@@ -74,7 +74,7 @@ How it works:
 
 `src/app/lib/message-store.ts` is an in-memory stand-in for the database an app would keep conversations in, keyed by channel name and lost on restart. `GET /api/messages` (`src/app/api/messages/route.ts`) serves it and touches no Ably connection, because it stands in for a query against the app's own database. There is no write side on that route — the agent route owns every write.
 
-`src/app/lib/apply-input.ts` is the one thing the store cannot supply: the input that woke the agent, which is still only on the channel. A user turn replaces or appends a message; a tool resolution replays through the AI SDK's own reducer (`readUIMessageStream`) onto the message holding that call; an approval decision flips its tool part. Nothing bigger is needed, because the store already holds every earlier turn.
+`src/app/lib/apply-input.ts` is the one thing the store cannot supply: the input that woke the agent, which is still only on the channel. A user turn replaces or appends a message; a tool resolution and an approval decision both replay through the AI SDK's own reducer (`readUIMessageStream`) — the decision as a `tool-approval-response` chunk — so the SDK owns every state transition. What is left is the part no reducer can do for itself: deciding which stored message a body addresses, and putting a message into the list.
 
 ## Reflecting SDK changes
 

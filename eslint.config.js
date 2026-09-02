@@ -43,6 +43,7 @@ export default [
       'typedoc/**',
       '.github',
       '.claude/worktrees/**',
+      'react/**',
       'vercel/**',
       'openai/**',
     ],
@@ -137,7 +138,7 @@ export default [
     },
   },
   {
-    files: ['test/**/*.ts'],
+    files: ['test/**/*.{ts,tsx}'],
 
     rules: {
       // ably 2.22 added @deprecated v1-callback overloads to these channel
@@ -154,7 +155,7 @@ export default [
     },
   },
   {
-    files: ['**/*.ts'],
+    files: ['**/*.{ts,tsx}'],
 
     rules: {
       '@typescript-eslint/no-unused-vars': ['error'],

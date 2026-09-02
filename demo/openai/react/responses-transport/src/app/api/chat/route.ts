@@ -9,10 +9,17 @@
  * via `locateInput`); a continuation input carries the run-id header of the
  * run it resumes, so the trigger alone decides whether the open is a fresh
  * `ai-run-start` or an `ai-run-resume`. The conversation for the model comes from
- * `getExistingMessages` — the demo's one swappable history source, which pages
- * the transport's history to exhaustion and merges it through the same merge
- * helper the frontend renders with — then flattens into the `/responses`
- * `input` array by `toResponsesInput`.
+ * `getExistingMessages`, which pages the transport's history to exhaustion and
+ * merges it through the same merge helper the frontend renders with, then
+ * flattens into the `/responses` `input` array by `toResponsesInput`.
+ *
+ * That same page is what populates the demo's conversation store
+ * (`lib/message-store.ts`), which clients hydrate from over
+ * `GET /api/messages`. The server owns every write, so a client cannot put
+ * anything in the store the agent did not produce, and the read path touches
+ * no Ably connection. The write covers this invocation's trigger and every
+ * earlier run; the run about to start is what a hydrating client walks the
+ * channel for.
  *
  * Tools run inside the agentic loop (`runAgentLoop`). A server-executed tool
  * does not suspend the run — the loop runs it, publishes its
@@ -39,7 +46,8 @@ import { channelAgent, createAgentTransport } from '@ably/ai-transport';
 
 import { responsesCodec, toResponsesInput } from '../../lib/openai-thread';
 
-import { getExistingMessages } from '../../lib/get-existing-messages';
+import { getExistingMessages, storableConversation } from '../../lib/get-existing-messages';
+import { saveConversation } from '../../lib/message-store';
 import { runAgentLoop } from './agent-stream';
 
 /** The wake body the demo's client POSTs (see `wakeAgent` in `src/app/helpers.ts`). */
@@ -84,12 +92,22 @@ export async function POST(req: Request) {
     return Response.json({ error: `no input event found for eventId ${body.eventId}` }, { status: 400 });
   }
 
-  // The conversation for the model: the existing thread via the demo's one
-  // swappable history source (see get-existing-messages.ts), flattened into
-  // the /responses input array. The triggering input is already on the channel
-  // (the client publishes before it POSTs), so the merge covers it too.
-  const { messages: priorMessages } = await getExistingMessages(transport);
-  const input = toResponsesInput(priorMessages);
+  // The conversation for the model: the existing thread read off the channel
+  // (see get-existing-messages.ts), flattened into the /responses input array.
+  // The triggering input is already on the channel (the client publishes
+  // before it POSTs), so the merge covers it too.
+  const existing = await getExistingMessages(transport);
+  const input = toResponsesInput(existing.messages);
+
+  // Write the store from the page just read, as merged messages rather than
+  // events — the merge happens once, here, with OpenAI's own accumulator. The
+  // server owns every write, so the client never puts anything here that the
+  // agent did not produce. This one page is the whole cost: it stores this
+  // invocation's own trigger and every earlier run, leaving only the run about
+  // to start for a hydrating client to walk. A run still streaming is left out
+  // entirely, because its accumulated prefix must be decoded once and only
+  // once (see `storableConversation`).
+  await saveConversation(body.channelName, storableConversation(existing));
 
   // The trigger drives the open: a continuation input carries the run-id
   // header of the run it resumes, and a fresh send carries none — the
@@ -103,7 +121,7 @@ export async function POST(req: Request) {
       // of work under its own pipe, so a run produces several messages. It emits
       // both the model's events and the codec's function_call_output /
       // tool-approval-request events, and returns the aggregate outcome.
-      const outcome = await runAgentLoop({ run, input, priorMessages });
+      const outcome = await runAgentLoop({ run, input, priorMessages: existing.messages });
       if (run.abortSignal.aborted) {
         // A client cancel (or request abort) stopped the stream; the agent owns
         // publishing the terminal.

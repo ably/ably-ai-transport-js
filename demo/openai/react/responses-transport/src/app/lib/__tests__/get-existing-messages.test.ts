@@ -11,7 +11,7 @@ import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
 import type { OpenAIInput } from '../openai-thread';
 
-import { getExistingMessages, seedableEvents, serialOf } from '../get-existing-messages';
+import { getExistingMessages, seedableEvents, serialOf, storableConversation } from '../get-existing-messages';
 
 type Event = TransportEvent<OpenAIInput, OpenAIOutput>;
 type Batch = TransportHistoryResult<OpenAIInput, OpenAIOutput>;
@@ -153,5 +153,60 @@ describe('seedableEvents', () => {
 
   it('reports an undefined watermark for an empty conversation', () => {
     expect(seedableEvents([])).toEqual({ events: [], latestSerial: undefined });
+  });
+});
+
+describe('storableConversation', () => {
+  it('merges the storable events into messages and runs', async () => {
+    const existing = await getExistingMessages(
+      stubHistory([
+        {
+          events: [
+            userEvent('cm-u1', 'prompt', 's-1'),
+            runStartEvent('run-1', 's-2'),
+            assistantEvent('cm-a1', 'run-1', 's-3'),
+            runEndEvent('run-1', 's-4'),
+          ],
+          exhausted: true,
+        },
+      ]),
+    );
+
+    const storable = storableConversation(existing);
+
+    expect(storable.messages.map((message) => message.transportMessageId)).toEqual(['cm-u1']);
+    expect(storable.runs).toEqual([['run-1', { status: 'complete' }]]);
+    expect(storable.latestSerial).toBe('s-4');
+  });
+
+  it('leaves a run that has not ended out of the messages and the watermark', async () => {
+    const existing = await getExistingMessages(
+      stubHistory([
+        {
+          events: [
+            userEvent('cm-u1', 'prompt', 's-1'),
+            runStartEvent('run-1', 's-2'),
+            runEndEvent('run-1', 's-3'),
+            runStartEvent('run-2', 's-4'),
+            assistantEvent('cm-a2', 'run-2', 's-5'),
+          ],
+          exhausted: true,
+        },
+      ]),
+    );
+
+    const storable = storableConversation(existing);
+
+    // The open run is producing cm-a2; storing its prefix would have the next
+    // client decode that run a second time.
+    expect(storable.messages.map((message) => message.transportMessageId)).toEqual(['cm-u1']);
+    expect(storable.runs.map(([runId]) => runId)).toEqual(['run-1']);
+    expect(storable.latestSerial).toBe('s-3');
+  });
+
+  it('stores nothing for an empty conversation', async () => {
+    const existing = await getExistingMessages(stubHistory([{ events: [], exhausted: true }]));
+
+    expect(storableConversation(existing)).toEqual({ messages: [], runs: [] });
   });
 });

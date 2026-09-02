@@ -3,23 +3,20 @@
  * transport's event stream.
  *
  * On mount it hydrates from the messages endpoint (`GET /api/messages`), which
- * returns the conversation's decoded events plus the serial of the newest one
- * — the seam. The hook merges those events, then pages `transport.history()`
- * backwards only for the gap between the seam and its own live attach point
- * (each call returns the next OLDER chronological batch, so batches prepend
- * and events at or before the seam are dropped), then merges live events from
- * `useTransportEvents`. Live events that arrive while hydration is still in
- * flight are buffered and merged after, keeping the merge's input in
- * chronological order — that ordering is what lets a mid-run reload (partial
- * history plus a live continuation) merge to one message. All merging goes
- * through `createThreadMerge` (see `../lib/merge-thread.ts`); this hook only
- * owns the ordering and the React state.
+ * returns the conversation the server's store holds: already-merged messages
+ * and runs, plus the serial they are complete up to — the seam. Those seed the
+ * merge, so nothing already merged is merged again. The hook then pages
+ * `transport.history()` backwards only for the gap between the seam and its
+ * own live attach point (each call returns the next OLDER chronological batch,
+ * so batches prepend and events at or before the seam are dropped), and merges
+ * live events from `useTransportEvents` on top.
  *
- * The hook also owns the write side: once a run stops streaming it saves the
- * conversation's completed runs back to the store, so the next page load reads
- * them out of the store instead of walking the channel for them. Persistence
- * is client-owned in this demo, which is what keeps the messages endpoint a
- * plain database read.
+ * Live events that arrive while hydration is still in flight are buffered and
+ * merged after, keeping the merge's input in chronological order — that
+ * ordering is what lets a mid-run reload (partial history plus a live
+ * continuation) merge to one message. All merging goes through
+ * `createThreadMerge` (see `../lib/merge-thread.ts`); this hook only owns the
+ * ordering and the React state.
  */
 
 import { useClientTransport, useTransportEvents } from '@ably/ai-transport/react';
@@ -28,7 +25,7 @@ import type { OpenAIOutput } from '@ably/ai-transport/openai';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { createThreadMerge, type RunSummary, type ThreadMerge, type ThreadMessage } from '../lib/merge-thread';
-import { seedableEvents, serialOf, type ThreadEvent } from '../lib/get-existing-messages';
+import { serialOf } from '../lib/get-existing-messages';
 import type { StoredConversation } from '../lib/message-store';
 import type { OpenAIInput } from '../lib/openai-thread';
 
@@ -85,19 +82,8 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
   const mergeRef = useRef<ThreadMerge>(createThreadMerge());
   const bufferRef = useRef<TransportEvent<OpenAIInput, OpenAIOutput>[]>([]);
   const hydratedRef = useRef(false);
-  // Every event this merge has applied, in the order it applied them — the
-  // conversation as this client would save it.
-  const appliedRef = useRef<ThreadEvent[]>([]);
-  const wasRunningRef = useRef(false);
-  // Saving stays off until a hydration pass has succeeded. A save after a
-  // failed pass would carry a watermark newer than the store's over a
-  // conversation missing everything the pass never read, and the store cannot
-  // tell that from a legitimate write.
-  const savingRef = useRef(false);
-  const channelNameRef = useRef(channelName);
   const onMergeErrorRef = useRef(options.onMergeError);
   useEffect(() => {
-    channelNameRef.current = channelName;
     onMergeErrorRef.current = options.onMergeError;
   });
 
@@ -115,7 +101,6 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
   }, []);
 
   const applyEvent = useCallback((event: TransportEvent<OpenAIInput, OpenAIOutput>) => {
-    appliedRef.current.push(event);
     try {
       mergeRef.current.apply(event);
     } catch (error) {
@@ -129,26 +114,6 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     }
   }, []);
 
-  /**
-   * Save the conversation to the demo's store, keeping only its completed runs
-   * (see `seedableEvents`). The whole conversation goes, not the newest run
-   * alone: the store's watermark promises that everything at or before it is
-   * held, and a run-sized write cannot honour that for a run another
-   * participant sent or the hydration walk recovered.
-   */
-  const save = useCallback(() => {
-    if (!savingRef.current) return;
-    const { events, latestSerial } = seedableEvents(appliedRef.current);
-    if (events.length === 0) return;
-    // Fire-and-forget: nothing reads the response, and a failed save only means
-    // the next page load walks those runs out of channel history instead.
-    void fetch('/api/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channelName: channelNameRef.current, events, latestSerial }),
-    }).catch(() => undefined);
-  }, []);
-
   useTransportEvents<OpenAIInput, OpenAIOutput>((event) => {
     if (!hydratedRef.current) {
       bufferRef.current.push(event);
@@ -156,13 +121,6 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     }
     applyEvent(event);
     publish(true);
-    // Save on the edge where the last active run stops streaming, which is the
-    // point the conversation has something complete to store. A run that
-    // suspended waiting on this client stops streaming too, and
-    // `seedableEvents` withholds it until it ends.
-    const running = mergeRef.current.isRunning();
-    if (wasRunningRef.current && !running) save();
-    wasRunningRef.current = running;
   });
 
   useEffect(() => {
@@ -170,9 +128,6 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     let disposed = false;
     hydratedRef.current = false;
     bufferRef.current = [];
-    appliedRef.current = [];
-    wasRunningRef.current = false;
-    savingRef.current = false;
     mergeRef.current = createThreadMerge();
     publish(false);
 
@@ -218,7 +173,9 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
         exhausted = batch.exhausted;
       }
       if (disposed) return;
-      for (const event of seed.events) applyEvent(event);
+      // The store's messages are already merged, so they are adopted rather
+      // than replayed. Everything after the seam is merged on top of them.
+      mergeRef.current.seed({ messages: seed.messages ?? [], runs: seed.runs ?? [] });
       for (const event of gap) applyEvent(event);
       // The live buffer starts at this client's attach point, which is EARLIER
       // than the endpoint read's own attach — the two connects race. Anything
@@ -230,12 +187,6 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       bufferRef.current = [];
       hydratedRef.current = true;
       publish(true);
-      // The gap walk and the live buffer can both have recovered completed runs
-      // the store never saw — a turn another participant sent, or one that
-      // ended while this page was closed. Saving here is what folds them in.
-      savingRef.current = true;
-      wasRunningRef.current = mergeRef.current.isRunning();
-      save();
     })().catch((error: unknown) => {
       if (disposed) return;
       const report = onMergeErrorRef.current;
@@ -251,7 +202,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     return () => {
       disposed = true;
     };
-  }, [transport, publish, applyEvent, save, channelName]);
+  }, [transport, publish, applyEvent, channelName]);
 
   return state;
 }

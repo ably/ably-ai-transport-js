@@ -1,33 +1,31 @@
 /**
  * The demo's conversation store — an in-memory stand-in for the database an
- * app would persist conversations to, keyed by channel name.
+ * app would keep conversations in, keyed by channel name.
  *
  * It is module-scoped, so it survives across requests inside one Node process
  * (enough for a dev server) and is lost on restart. A real app swaps the Map
  * for a durable store; nothing else here changes.
  *
- * What it holds is this demo's own currency: the **decoded transport events**,
- * oldest first, plus the channel serial they run up to. The frontend's
- * conversation state comes from `createThreadMerge`, which consumes events
- * rather than finished messages, so the events are what a client rehydrates
- * from. The serial is the watermark: hydration hands it back to the client,
- * which then pages the channel only for what was published after it.
+ * **What it holds is finished messages, not wire events.** The channel's
+ * currency is events, and merging them is the agent's job, done once with
+ * OpenAI's own stream accumulator — so the store keeps the merged result (see
+ * `merge-thread.ts`) plus the run summaries that go with it. A client seeds a
+ * merge from that and only merges what happened since.
  *
- * Writes come from the client, on each completed run — see
- * `hooks/use-responses-thread.ts`. Reads come from `GET /api/messages`, which
- * needs no Ably connection at all: the store is the whole answer.
+ * **The server owns it.** The chat route writes it from the history page it
+ * already does for the model context, so a client cannot put anything here the
+ * agent did not produce. Clients read it once, on hydration, through
+ * `GET /api/messages`, which touches no Ably connection.
  */
 
-import type { ThreadEvent } from './get-existing-messages';
+import type { ThreadSnapshot } from './merge-thread';
 
 /** One conversation as the store holds it. */
-export interface StoredConversation {
-  /** The decoded transport events, oldest first. */
-  events: ThreadEvent[];
+export interface StoredConversation extends ThreadSnapshot {
   /**
-   * The channel serial the events run up to, or `undefined` when nothing has
-   * been stored yet. Every channel message at or before it is accounted for in
-   * `events`.
+   * The channel serial the stored messages are complete up to, or `undefined`
+   * when nothing has been stored yet. A hydrating client walks the channel
+   * only for what came after it.
    */
   latestSerial?: string;
 }
@@ -35,49 +33,35 @@ export interface StoredConversation {
 const store = new Map<string, StoredConversation>();
 
 /**
- * Save a conversation, replacing what is stored for the channel.
+ * Replace a conversation's stored state.
  *
- * A writer sends the whole conversation it holds, not the newest run alone,
- * because the watermark's contract is that everything at or before it is in
- * the store — a run-sized write cannot honour that for a run this client never
- * saw. Wholesale replacement is also what keeps a stored event sequence
- * coherent: a client that joined a run mid-stream decoded a synthesised prefix
- * for it, so two clients' sequences are each self-consistent but are not
- * interleavable event by event. A client seeds from the store before it writes,
- * so what it sends is a superset of what it replaces.
- *
- * A write whose watermark is older than the stored one is ignored, which is
- * what makes a slow or retried write harmless.
+ * The writer holds the whole merged thread, so a write is a replacement and
+ * needs no merge or upsert of its own. A write whose watermark is older than
+ * the stored one is ignored, which is what makes a slow or retried write
+ * harmless.
  *
  * Modelled as async — it resolves once the write is durable, as a real store
  * would.
  * @param channelName - The conversation key (the channel name).
- * @param events - The conversation's decoded events, oldest first.
- * @param latestSerial - The channel serial the events run up to.
+ * @param conversation - The merged thread and the serial it is complete up to.
  * @returns A promise that resolves once the conversation is stored.
  */
-export async function saveConversation(
-  channelName: string,
-  events: ThreadEvent[],
-  latestSerial?: string,
-): Promise<void> {
+export async function saveConversation(channelName: string, conversation: StoredConversation): Promise<void> {
   const current = store.get(channelName);
   // Ably serials order lexicographically.
   const stale =
-    current?.latestSerial !== undefined && (latestSerial === undefined || latestSerial < current.latestSerial);
+    current?.latestSerial !== undefined &&
+    (conversation.latestSerial === undefined || conversation.latestSerial < current.latestSerial);
   if (stale) return;
-  store.set(channelName, {
-    events,
-    ...(latestSerial === undefined ? {} : { latestSerial }),
-  });
+  store.set(channelName, conversation);
 }
 
 /**
  * Load the stored conversation for a channel, or an empty one when none is
  * stored.
  * @param channelName - The conversation key (the channel name).
- * @returns The stored events (oldest first) and the serial they run up to.
+ * @returns The merged thread, its runs, and the serial it is complete up to.
  */
 export function loadConversation(channelName: string): StoredConversation {
-  return store.get(channelName) ?? { events: [] };
+  return store.get(channelName) ?? { messages: [], runs: [] };
 }

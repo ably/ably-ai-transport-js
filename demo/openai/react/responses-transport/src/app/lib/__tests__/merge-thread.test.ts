@@ -496,3 +496,86 @@ describe('createThreadMerge', () => {
     expect(merge.messages()).toEqual([]);
   });
 });
+
+describe('createThreadMerge().seed', () => {
+  it('adopts stored messages so they need no replay', () => {
+    const merge = createThreadMerge();
+
+    merge.seed({
+      messages: [
+        { transportMessageId: 'cm-u1', role: 'user', items: [{ type: 'message', role: 'user', content: [] }] },
+        { transportMessageId: 'cm-a1', role: 'assistant', items: [messageItem('i-a1')], runId: 'r1' },
+      ],
+      runs: [['r1', { status: 'complete' }]],
+    });
+
+    expect(merge.messages().map((m) => m.transportMessageId)).toEqual(['cm-u1', 'cm-a1']);
+    expect(merge.messages()[1]?.items).toEqual([messageItem('i-a1')]);
+    expect([...merge.runs()]).toEqual([['r1', { status: 'complete' }]]);
+    // The seeded run has ended, so the thread is idle.
+    expect(merge.activeRunId()).toBe('r1');
+    expect(merge.isRunning()).toBe(false);
+  });
+
+  it('leaves a seeded output item addressable, so a later delta lands on it', () => {
+    const merge = createThreadMerge();
+    // The store holds an assistant message whose text part is already open.
+    merge.seed({
+      messages: [
+        {
+          transportMessageId: 'cm-a1',
+          role: 'assistant',
+          items: [{ ...messageItem('i-a1'), content: [{ type: 'output_text', text: 'Hello', annotations: [] }] }],
+        },
+      ],
+      runs: [],
+    });
+
+    merge.apply(outputEvent('cm-a1', [textDelta('i-a1', 0, ' there')]));
+
+    expect(turnText(merge.messages()[0])).toBe('Hello there');
+  });
+
+  it('continues a seeded message rather than starting a second one for the same id', () => {
+    const merge = createThreadMerge();
+    merge.seed({
+      messages: [{ transportMessageId: 'cm-a1', role: 'assistant', items: [messageItem('i-a1')] }],
+      runs: [],
+    });
+
+    merge.apply(outputEvent('cm-a1', [itemAdded(reasoningItem('i-r1'), 1)]));
+
+    expect(merge.messages()).toHaveLength(1);
+    expect(merge.messages()[0]?.items.map((item) => item.type)).toEqual(['message', 'reasoning']);
+  });
+
+  it('keeps a stored tool output, which is not an accumulator item', () => {
+    const merge = createThreadMerge();
+    const output = { type: 'function_call_output' as const, call_id: 'c1', output: '{"ok":true}' };
+
+    merge.seed({
+      messages: [{ transportMessageId: 'cm-t1', role: 'assistant', items: [output] }],
+      runs: [],
+    });
+
+    expect(merge.messages()[0]?.items).toEqual([output]);
+  });
+
+  it('carries stored tool-call state through', () => {
+    const merge = createThreadMerge();
+
+    merge.seed({
+      messages: [
+        {
+          transportMessageId: 'cm-a1',
+          role: 'assistant',
+          items: [fnCallItem('i-f1', 'c1', 'getWeather', '{}')],
+          toolCallStates: { c1: { approval: 'approved' } },
+        },
+      ],
+      runs: [],
+    });
+
+    expect(merge.messages()[0]?.toolCallStates).toEqual({ c1: { approval: 'approved' } });
+  });
+});

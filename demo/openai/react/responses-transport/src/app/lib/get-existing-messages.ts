@@ -16,7 +16,7 @@
 import type { AgentTransport, TransportEvent } from '@ably/ai-transport';
 import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
-import { createThreadMerge, type ThreadMessage } from './merge-thread';
+import { createThreadMerge, type ThreadMessage, type ThreadSnapshot } from './merge-thread';
 import type { OpenAIInput } from './openai-thread';
 
 /** One decoded transport event at the demo's codec instantiation. */
@@ -80,6 +80,30 @@ export const seedableEvents = (events: ThreadEvent[]): { events: ThreadEvent[]; 
     if (event) latestSerial = serialOf(event);
   }
   return { events: seedable, latestSerial };
+};
+
+/**
+ * The merged thread that can safely be stored, and the watermark that goes
+ * with it: {@link seedableEvents} filtered down to the runs that have ended,
+ * merged the same way the whole conversation is.
+ *
+ * Merging twice rather than trimming the finished thread is deliberate. A
+ * message the open run contributed to has to be absent from the store
+ * entirely, not present in a half-merged state — the next client decodes that
+ * run off the channel from its start, and a stored prefix would be counted
+ * twice.
+ * @param existing - The whole conversation, as {@link getExistingMessages} read it.
+ * @returns The storable thread, its runs, and the serial it is complete up to.
+ */
+export const storableConversation = (existing: ExistingMessages): ThreadSnapshot & { latestSerial?: string } => {
+  const storable = seedableEvents(existing.events);
+  const merge = createThreadMerge();
+  for (const event of storable.events) merge.apply(event);
+  return {
+    messages: merge.messages(),
+    runs: [...merge.runs()],
+    ...(storable.latestSerial === undefined ? {} : { latestSerial: storable.latestSerial }),
+  };
 };
 
 /**

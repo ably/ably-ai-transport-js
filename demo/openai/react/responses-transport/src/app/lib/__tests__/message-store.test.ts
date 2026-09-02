@@ -1,75 +1,90 @@
 /**
- * Tests for the demo's in-memory conversation store: it saves a channel's
- * decoded events with the serial they run up to, replaces a conversation
- * wholesale on the next save, and ignores a save whose watermark has gone
- * backwards.
+ * Tests for the demo's server-owned conversation store: it holds the merged
+ * thread (not wire events), replaces it wholesale on the next write, and
+ * ignores a write whose watermark has gone backwards.
  *
  * The store is module-scoped, so each test uses its own channel name.
  */
 
 import { describe, expect, it } from 'vitest';
-import type { TransportEvent } from '@ably/ai-transport';
-import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
-import type { OpenAIInput } from '../openai-thread';
-import { loadConversation, saveConversation } from '../message-store';
+import { loadConversation, saveConversation, type StoredConversation } from '../message-store';
+import type { ThreadMessage } from '../merge-thread';
 
-type Event = TransportEvent<OpenAIInput, OpenAIOutput>;
+const message = (transportMessageId: string, text: string): ThreadMessage => ({
+  transportMessageId,
+  role: 'user',
+  items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
+});
 
-const runStart = (runId: string, serial: string): Event => ({
-  kind: 'run-lifecycle',
-  event: { type: 'start', runId, clientId: 'agent', invocationId: 'inv-1', serial },
+const conversation = (messages: ThreadMessage[], latestSerial?: string): StoredConversation => ({
+  messages,
+  runs: [],
+  ...(latestSerial === undefined ? {} : { latestSerial }),
 });
 
 describe('message store', () => {
   it('reports an empty conversation for a channel it has never seen', () => {
     const stored = loadConversation('ai:unknown');
 
-    expect(stored.events).toEqual([]);
+    expect(stored.messages).toEqual([]);
+    expect(stored.runs).toEqual([]);
     expect(stored.latestSerial).toBeUndefined();
   });
 
-  it('saves the events and the serial they run up to', async () => {
-    const events = [runStart('run-1', 's-1')];
+  it('holds the merged messages and the serial they are complete up to', async () => {
+    const stored = conversation([message('cm-1', 'hello')], 's-1');
 
-    await saveConversation('ai:saved', events, 's-1');
+    await saveConversation('ai:saved', stored);
 
-    expect(loadConversation('ai:saved')).toEqual({ events, latestSerial: 's-1' });
+    expect(loadConversation('ai:saved')).toEqual(stored);
   });
 
-  it('replaces the conversation wholesale on the next save', async () => {
-    await saveConversation('ai:replaced', [runStart('run-1', 's-1')], 's-1');
-    const later = [runStart('run-1', 's-1'), runStart('run-2', 's-2')];
+  it('holds the run summaries alongside the messages', async () => {
+    const stored: StoredConversation = {
+      messages: [message('cm-1', 'hello')],
+      runs: [['run-1', { status: 'complete' }]],
+      latestSerial: 's-1',
+    };
 
-    await saveConversation('ai:replaced', later, 's-2');
+    await saveConversation('ai:runs', stored);
 
-    expect(loadConversation('ai:replaced')).toEqual({ events: later, latestSerial: 's-2' });
+    expect(loadConversation('ai:runs').runs).toEqual([['run-1', { status: 'complete' }]]);
   });
 
-  it('ignores a save whose watermark is older than the stored one', async () => {
-    const held = [runStart('run-1', 's-1'), runStart('run-2', 's-2')];
-    await saveConversation('ai:stale', held, 's-2');
+  it('replaces the conversation wholesale on the next write', async () => {
+    await saveConversation('ai:replaced', conversation([message('cm-1', 'hello')], 's-1'));
+    const later = conversation([message('cm-1', 'hello'), message('cm-2', 'again')], 's-2');
 
-    await saveConversation('ai:stale', [runStart('run-1', 's-1')], 's-1');
+    await saveConversation('ai:replaced', later);
 
-    expect(loadConversation('ai:stale')).toEqual({ events: held, latestSerial: 's-2' });
+    expect(loadConversation('ai:replaced')).toEqual(later);
   });
 
-  it('ignores a save carrying no watermark once one is stored', async () => {
-    const held = [runStart('run-1', 's-1')];
-    await saveConversation('ai:no-watermark', held, 's-1');
+  it('ignores a write whose watermark is older than the stored one', async () => {
+    const held = conversation([message('cm-1', 'hello'), message('cm-2', 'again')], 's-2');
+    await saveConversation('ai:stale', held);
 
-    await saveConversation('ai:no-watermark', []);
+    await saveConversation('ai:stale', conversation([message('cm-1', 'hello')], 's-1'));
 
-    expect(loadConversation('ai:no-watermark')).toEqual({ events: held, latestSerial: 's-1' });
+    expect(loadConversation('ai:stale')).toEqual(held);
   });
 
-  it('accepts a save at the same watermark, which is how a re-save lands', async () => {
-    await saveConversation('ai:resave', [runStart('run-1', 's-1')], 's-1');
-    const again = [runStart('run-1', 's-1')];
+  it('ignores a write carrying no watermark once one is stored', async () => {
+    const held = conversation([message('cm-1', 'hello')], 's-1');
+    await saveConversation('ai:no-watermark', held);
 
-    await saveConversation('ai:resave', again, 's-1');
+    await saveConversation('ai:no-watermark', conversation([]));
 
-    expect(loadConversation('ai:resave').events).toBe(again);
+    expect(loadConversation('ai:no-watermark')).toEqual(held);
+  });
+
+  it('accepts a write at the same watermark, which is how a re-write lands', async () => {
+    await saveConversation('ai:rewrite', conversation([message('cm-1', 'hello')], 's-1'));
+    const again = conversation([message('cm-1', 'edited')], 's-1');
+
+    await saveConversation('ai:rewrite', again);
+
+    expect(loadConversation('ai:rewrite')).toEqual(again);
   });
 });

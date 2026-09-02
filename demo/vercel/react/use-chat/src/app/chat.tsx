@@ -49,10 +49,15 @@ const SCENARIOS: readonly Scenario[] = [
  *
  * The store is the whole record: the agent route writes it as each run opens
  * and again when the run's stream ends, so one `GET /api/messages` is the
- * conversation. Nothing pages channel history. The store also names a run
- * still streaming, which the chat resumes below — that is what makes
- * `resume: true` work on a page that just loaded and never watched the run
- * start.
+ * conversation. Nothing pages channel history.
+ *
+ * The store also names a run streaming right now, and the chat resumes it with
+ * an explicit `resumeStream({ body: { runId } })` rather than useChat's
+ * `resume: true`. The two are not interchangeable here. `resume: true` fires
+ * on mount with no body, so the adapter has to discover a run for itself —
+ * from a history walk that retained one, or from a run it watched start live.
+ * A page that hydrates from a store does neither, so naming the run is the
+ * only thing that works.
  */
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   const state = useStoredHydration({ channelName: chatId });

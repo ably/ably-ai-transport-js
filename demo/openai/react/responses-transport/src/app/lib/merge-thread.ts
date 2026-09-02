@@ -76,11 +76,34 @@ export interface RunSummary {
 }
 
 /**
+ * A merged thread as a store holds it — what {@link ThreadMerge.seed} takes
+ * and what {@link ThreadMerge.messages} and {@link ThreadMerge.runs} produce.
+ */
+export interface ThreadSnapshot {
+  /** The merged messages, oldest first. */
+  messages: ThreadMessage[];
+  /** Every run's merged state, in first-seen order, as `[runId, summary]` pairs. */
+  runs: [string, RunSummary][];
+}
+
+/**
  * A stateful merge over {@link TransportEvent}s. `apply` events in chronological
  * order (hydrated history first, then live); read the derived thread and run
  * state between applications.
  */
 export interface ThreadMerge {
+  /**
+   * Adopt an already-merged thread as this merge's starting state, so events
+   * applied afterwards continue it rather than rebuild it. This is how a
+   * client hydrates from a store of finished messages: the store holds the
+   * merged result, and only what happened since needs merging.
+   *
+   * Call it once, before any {@link apply}. Every stored message becomes an
+   * addressable bucket again — its output items keep their ids, so a later
+   * delta or a tool resolution lands on the message it belongs to.
+   * @param state - The stored thread: its messages (oldest first) and its runs (in first-seen order).
+   */
+  seed(state: ThreadSnapshot): void;
   /** Merge one classified transport event into the thread. Decoded inputs are passthrough JSON and narrow to the demo's union at this boundary (an unrecognised body is skipped). Throws when an event addresses an item the merge has never seen — a decode-sequence bug worth surfacing, not hiding. */
   apply(event: TransportEvent<OpenAIInput, OpenAIOutput>): void;
   /** The thread's messages, in first-seen transport-message-id order. */
@@ -98,6 +121,21 @@ type ModelledItem = Extract<Responses.ResponseOutputItem, { type: 'message' | 'r
 
 const isModelledItem = (item: Responses.ResponseOutputItem): item is ModelledItem =>
   item.type === 'message' || item.type === 'reasoning' || item.type === 'function_call';
+
+/**
+ * Whether a stored item belongs in the accumulator's snapshot rather than the
+ * out-of-band `appended` list. Only an assistant output item with an id does:
+ * the id is how a later delta addresses it, and `messages()` reads the
+ * snapshot through {@link isModelledItem}, which a user turn's input message
+ * and a `function_call_output` both fail.
+ * @param item - The stored item.
+ * @returns Whether it is an addressable output item, narrowing its id to present.
+ */
+const isSeedableOutputItem = (item: OpenAIItem): item is ModelledItem & { id: string } => {
+  if (item.type === 'reasoning' || item.type === 'function_call') return 'id' in item && item.id !== undefined;
+  if (item.type !== 'message') return false;
+  return 'id' in item && item.id !== undefined && item.role === 'assistant';
+};
 
 /**
  * The minimal synthetic snapshot the accumulator's mutations need: it only
@@ -422,6 +460,38 @@ export const createThreadMerge = (): ThreadMerge => {
   };
 
   return {
+    seed(state) {
+      for (const message of state.messages) {
+        const snapshot = seedSnapshot(message.transportMessageId);
+        const indexByItemId = new Map<string, number>();
+        const appended: OpenAIItem[] = [];
+        for (const item of message.items) {
+          if (isSeedableOutputItem(item)) {
+            indexByItemId.set(item.id, snapshot.output.length);
+            snapshot.output.push(item);
+            continue;
+          }
+          appended.push(item);
+        }
+        const merge: MessageMerge = {
+          transportMessageId: message.transportMessageId,
+          role: message.role,
+          snapshot,
+          indexByItemId,
+          appended,
+          toolCallStates: { ...message.toolCallStates },
+          ...(message.runId !== undefined && { runId: message.runId }),
+          ...(message.clientId !== undefined && { clientId: message.clientId }),
+        };
+        mergeById.set(message.transportMessageId, merge);
+        merges.push(merge);
+      }
+      for (const [runId, summary] of state.runs) {
+        if (!runById.has(runId)) runOrder.push(runId);
+        runById.set(runId, summary);
+        lastRunId = runId;
+      }
+    },
     apply(event) {
       if (event.kind === 'message') applyMessage(event);
       else if (event.kind === 'run-lifecycle') applyRunLifecycle(event.event);

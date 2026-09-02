@@ -150,11 +150,6 @@ const runSuspend = (runId: string): Event => ({
   event: { type: 'suspend', runId, clientId: 'agent', invocationId: 'inv-1', serial: 's-run' },
 });
 
-const runEnd = (runId: string): Event => ({
-  kind: 'run-lifecycle',
-  event: { type: 'end', runId, clientId: 'agent', invocationId: 'inv-1', serial: 's-run-end', reason: 'complete' },
-});
-
 const runEndError = (runId: string, message: string): Event => ({
   kind: 'run-lifecycle',
   event: {
@@ -217,7 +212,7 @@ describe('<Chat>', () => {
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
         String(url).includes('/api/messages')
-          ? Promise.resolve(Response.json({ events: [], latestSerial: undefined }))
+          ? Promise.resolve(Response.json({ messages: [], runs: [] }))
           : Promise.resolve(Response.json({ runId: 'run-1' })),
       ),
     );
@@ -282,19 +277,31 @@ describe('<Chat>', () => {
     expect(screen.queryByText('restored reply')).not.toBeNull();
   });
 
-  it('hydrates from the messages endpoint seed and walks only the gap newer than its seam', async () => {
+  it('hydrates from the stored messages and walks only the gap newer than its seam', async () => {
     const withSerial = (event: Event, serial: string): Event =>
       event.kind === 'message' ? { ...event, meta: { ...event.meta, serial } } : event;
-    // The endpoint's read covered the stored prompt (seam s-2); the gap walk
-    // must merge only the newer assistant turn, even though the first history
-    // batch replays the stored prompt too, and must stop at the seam without
-    // paging the older batch.
-    const seedEvents = [withSerial(userMessageEvent('cm-u1', 'stored prompt'), 's-2')];
+    // The store holds the prompt as a merged message, complete up to s-2. The
+    // gap walk must merge only the newer assistant turn, even though the first
+    // history batch replays the stored prompt too, and must stop at the seam
+    // without paging the older batch.
+    const storedMessages = [
+      {
+        transportMessageId: 'cm-u1',
+        role: 'user' as const,
+        items: [
+          {
+            type: 'message' as const,
+            role: 'user' as const,
+            content: [{ type: 'input_text' as const, text: 'stored prompt' }],
+          },
+        ],
+      },
+    ];
     vi.stubGlobal(
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
         String(url).includes('/api/messages')
-          ? Promise.resolve(Response.json({ events: seedEvents, latestSerial: 's-2' }))
+          ? Promise.resolve(Response.json({ messages: storedMessages, runs: [], latestSerial: 's-2' }))
           : Promise.resolve(Response.json({ runId: 'run-1' })),
       ),
     );
@@ -316,68 +323,6 @@ describe('<Chat>', () => {
     // The walk stopped at the seam: the older batch was never paged.
     expect(screen.queryByText('beyond the seam')).toBeNull();
     expect(mockState.historyBatches).toHaveLength(1);
-  });
-
-  it('saves the conversation to the messages endpoint once a run ends', async () => {
-    await renderChat();
-    emit(runStart('run-1', 'cm-u1'), assistantTurnEvent('cm-a1', 'run-1', 'Hi there'));
-
-    // Nothing is saved while the run is still streaming.
-    const fetchMock = vi.mocked(fetch);
-    const savePosts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST' && init.body);
-    expect(savePosts().filter(([target]) => String(target) === '/api/messages')).toHaveLength(0);
-
-    emit(runEnd('run-1'));
-
-    const saveCall = await waitFor(() => {
-      const call = fetchMock.mock.calls.find(
-        ([target, init]) => String(target) === '/api/messages' && init?.method === 'POST',
-      );
-      if (!call) throw new Error('save POST not observed yet');
-      return call;
-    });
-    // CAST: the demo's own save body, read back in the shape the route parses.
-    const body = JSON.parse(String(saveCall[1]?.body)) as {
-      channelName: string;
-      events: Event[];
-      latestSerial?: string;
-    };
-    expect(body.channelName).toBe('ai:test');
-    expect(body.latestSerial).toBe('s-run-end');
-    // The whole conversation goes: the run's start, its turn, and its end.
-    expect(body.events).toHaveLength(3);
-  });
-
-  it('withholds a run that has not ended from the save', async () => {
-    await renderChat();
-    // Two runs overlap — another participant's is still streaming when this
-    // one ends. The save fires on the ended run, and the streaming run's start
-    // and output must be left out of it for the next client's own history walk
-    // to deliver.
-    emit(
-      runStart('run-1'),
-      assistantTurnEvent('cm-a1', 'run-1', 'first'),
-      runStart('run-2'),
-      assistantTurnEvent('cm-a2', 'run-2', 'second'),
-      runEnd('run-1'),
-    );
-
-    const fetchMock = vi.mocked(fetch);
-    const saveCall = await waitFor(() => {
-      const call = fetchMock.mock.calls.find(
-        ([target, init]) => String(target) === '/api/messages' && init?.method === 'POST',
-      );
-      if (!call) throw new Error('save POST not observed yet');
-      return call;
-    });
-    // CAST: the demo's own save body, read back in the shape the route parses.
-    const body = JSON.parse(String(saveCall[1]?.body)) as { events: Event[]; latestSerial?: string };
-    // run-1's start, turn and end — not run-2's start or turn.
-    expect(body.events).toHaveLength(3);
-    expect(
-      body.events.map((event) => (event.kind === 'message' ? event.meta.transportMessageId : event.event.runId)),
-    ).toEqual(['run-1', 'cm-a1', 'run-1']);
-    expect(body.latestSerial).toBe('s-run-end');
   });
 
   it('shows Send (not Stop) when the latest run is suspended', async () => {

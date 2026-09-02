@@ -11,6 +11,17 @@ export type {
 } from './codec/index.js';
 export { createUIMessageCodec } from './codec/index.js';
 
+// Vercel AI SDK transport wrappers (pre-bound to the Vercel codec)
+export type {
+  ChatTransport,
+  ChatTransportOptions,
+  ReadSinceResult,
+  ReconnectHint,
+  VercelAgentTransportOptions,
+  VercelClientTransportOptions,
+} from './transport/index.js';
+export { createAgentTransport, createChatTransport, createClientTransport } from './transport/index.js';
+
 // Vercel-shaped helpers
 export type { VercelRunOutcome } from './run-end-reason.js';
 export { vercelRunOutcome } from './run-end-reason.js';

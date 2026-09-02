@@ -607,7 +607,7 @@ describe('Vercel encoder', () => {
       await encoder.publishInput({ kind: 'message', payload: userMsg });
       await encoder.publishInput({
         kind: 'approval',
-        payload: { toolCallId: 'tc-1', approved: true },
+        payload: { messageId: 'asst-1', toolCallId: 'tc-1', approved: true },
       });
       await encoder.publishInput({
         kind: 'chunk',

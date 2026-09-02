@@ -5,7 +5,7 @@
  * real Ably channel, reads both back with the wire codec's decoder, and
  * reconstructs the assistant message by feeding the chunks — outputs and the
  * chunk-shaped input body alike — through the provider's own reducer
- * (`readUIMessageStream` from `ai`). The SDK folds nothing: the only
+ * (`readUIMessageStream` from `ai`). The SDK merges nothing: the only
  * application work is bucketing the interleaved wire by transport-message-id,
  * which is the demultiplexing a provider reducer cannot do itself.
  */
@@ -19,12 +19,11 @@ import { getTransportHeaders } from '../../../src/utils.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
 
 const codec = createUIMessageCodec();
 
 /**
- * Stamp run and transport-message-id transport headers on every outgoing message,
+ * Stamp the run-id and transport-message-id headers on every outgoing message,
  * as the transport layer would.
  * @param runId - The run ID to stamp.
  * @param messageId - The transport-message-id to stamp.
@@ -39,12 +38,32 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
   }
 };
 
+/**
+ * Merge one bucket of chunks through the provider's own reducer and return the
+ * final message state.
+ * @param chunks - The bucket's chunks, in wire order.
+ * @returns The last message state `readUIMessageStream` yields.
+ */
+const mergeWithProviderReducer = async (chunks: AI.UIMessageChunk[]): Promise<AI.UIMessage | undefined> => {
+  const stream = new ReadableStream<AI.UIMessageChunk>({
+    start: (controller) => {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  let last: AI.UIMessage | undefined;
+  for await (const message of AI.readUIMessageStream({ stream })) {
+    last = message;
+  }
+  return last;
+};
+
 describe('Vercel wire-codec provider-reducer roundtrip', () => {
   afterEach(() => {
     closeAllClients();
   });
 
-  it('reconstructs an assistant message from output chunks plus a tool-output body, with the SDK folding nothing', async () => {
+  it('reconstructs an assistant message from output chunks plus a tool-output body, with the SDK merging nothing', async () => {
     const channelName = uniqueChannelName('wire-provider-roundtrip');
     const pubClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
@@ -57,7 +76,7 @@ describe('Vercel wire-codec provider-reducer roundtrip', () => {
 
     // The application's demultiplexing: bucket chunks by transport-message-id, in
     // wire order. Inputs whose bodies are provider chunks land in the same
-    // bucket as the outputs, so one fold covers both directions.
+    // bucket as the outputs, so one merge covers both directions.
     const buckets = new Map<string, AI.UIMessageChunk[]>();
     let resolveToolOutput: () => void;
     const toolOutputSeen = new Promise<void>((r) => {
@@ -109,10 +128,10 @@ describe('Vercel wire-codec provider-reducer roundtrip', () => {
 
     await toolOutputSeen;
 
-    // The provider's reducer folds the bucket — the SDK contributed decode only.
+    // The provider's reducer merges the bucket — the SDK contributed decode only.
     const bucket = buckets.get(messageId);
     expect(bucket).toBeDefined();
-    const message = await foldWithProviderReducer(bucket ?? []);
+    const message = await mergeWithProviderReducer(bucket ?? []);
 
     expect(message).toBeDefined();
     const textPart = message?.parts.find((p): p is AI.TextUIPart => p.type === 'text');

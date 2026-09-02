@@ -20,7 +20,7 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause, mergeHeaders } from '../../utils.js';
+import { errorCause, errorMessage, mergeHeaders } from '../../utils.js';
 import type { ChannelWriter, EncoderOptions, Extras, MessagePayload, StreamPayload, WriteOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -407,7 +407,7 @@ class DefaultEncoderCore implements EncoderCore {
     try {
       this._onAblyMessageHook(msg);
     } catch (error) {
-      this._logger?.error('DefaultEncoderCore._invokeOnAblyMessage(); hook threw', { error });
+      this._logger?.error('DefaultEncoderCore._invokeOnAblyMessage(); hook threw', { error: errorMessage(error) });
     }
   }
 

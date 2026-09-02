@@ -229,7 +229,7 @@ describe('standalone transport integration', () => {
 
     const lifecycle = lifecycleOf(events).map((e) => e.type);
     expect(lifecycle).toEqual(['start', 'end']);
-  }, 45_000);
+  });
 
   it('tool call through the transport: the client resolution merges onto the assistant', async () => {
     const { client, agent, events, waitFor } = await setup('t-tool', { connectAgent: false });
@@ -293,7 +293,7 @@ describe('standalone transport integration', () => {
     if (toolPart?.state === 'output-available') {
       expect(toolPart.output).toEqual({ city: 'Berlin' });
     }
-  }, 45_000);
+  });
 
   it('cancel chain: a client cancel aborts the agent stream and the run ends cancelled', async () => {
     const { client, agent, events, waitFor } = await setup('t-cancel');
@@ -320,7 +320,7 @@ describe('standalone transport integration', () => {
     await waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end'));
     const end = lifecycleOf(events).find((e) => e.type === 'end');
     expect(end).toMatchObject({ type: 'end', reason: 'cancelled' });
-  }, 45_000);
+  });
 
   it('steering settles for a client that never receives its own publishes', async () => {
     // Why `published` resolves from the publish acknowledgement rather than
@@ -363,7 +363,7 @@ describe('standalone transport integration', () => {
     // agent publishes — so the client does receive that one.
     await run.end({ reason: 'complete' });
     await expect(steer.outcome).resolves.toBeDefined();
-  }, 45_000);
+  });
 
   it('multi-run sequential: two turns land as two runs with disjoint events', async () => {
     const { client, agent, events, channelName, waitFor } = await setup('t-multi', { connectAgent: false });
@@ -400,7 +400,7 @@ describe('standalone transport integration', () => {
         expect(event.meta.runId).toBe(runB);
       }
     }
-  }, 45_000);
+  });
 
   it('concurrent runs: interleaved streams demultiplex by transport-message-id', async () => {
     const { agent, events, waitFor } = await setup('t-concurrent');
@@ -420,7 +420,7 @@ describe('standalone transport integration', () => {
     expect(texts).toContain('from run A');
     expect(texts).toContain('from run B');
     expect(runA.runId).not.toBe(runB.runId);
-  }, 45_000);
+  });
 
   it('history paging: a fresh client pages backwards to chronological batches', async () => {
     const { client, agent, channelName, waitFor } = await setup('t-history', { connectAgent: false });
@@ -448,7 +448,7 @@ describe('standalone transport integration', () => {
     expect(messages.map((message) => textOf(message))).toEqual(['history please', 'remembered']);
     const lifecycle = lifecycleOf(all).map((e) => e.type);
     expect(lifecycle).toEqual(['start', 'end']);
-  }, 45_000);
+  });
 
   it('a run streaming across the attach boundary merges to one message, not a duplicated prefix', async () => {
     const channelName = uniqueChannelName('t-boundary');
@@ -516,7 +516,7 @@ describe('standalone transport integration', () => {
     const messages = await mergeMessages([...history, ...liveRecorder.events]);
     expect(messages).toHaveLength(1);
     expect(textOf(messages[0])).toBe('first half second half');
-  }, 45_000);
+  });
 
   it('error propagation: a run ending in error reaches the client with the error detail', async () => {
     const { agent, events, waitFor } = await setup('t-error');
@@ -541,7 +541,7 @@ describe('standalone transport integration', () => {
     expect(end).toMatchObject({ type: 'end', reason: 'error' });
     const message = end?.type === 'end' && end.reason === 'error' ? end.error.message : undefined;
     expect(message).toContain('model exploded');
-  }, 45_000);
+  });
 
   it('multi-client sync: two clients on one channel both merge the streamed response', async () => {
     const { client, agent, channelName, events, waitFor } = await setup('t-sync', { connectAgent: false });
@@ -569,7 +569,7 @@ describe('standalone transport integration', () => {
     const otherMerged = await mergeMessages(otherRecorder.events);
     expect(textOf(merged.at(-1))).toBe('synced');
     expect(textOf(otherMerged.at(-1))).toBe('synced');
-  }, 45_000);
+  });
 
   it('durable cross-process re-entry: a second transport ends the run via adoptRun', async () => {
     const { agent, events, channelName, waitFor } = await setup('t-durable');
@@ -597,5 +597,5 @@ describe('standalone transport integration', () => {
     const lifecycle = lifecycleOf(events).map((e) => e.type);
     // Exactly one open and one terminal: the re-entry published nothing extra.
     expect(lifecycle).toEqual(['start', 'end']);
-  }, 45_000);
+  });
 });

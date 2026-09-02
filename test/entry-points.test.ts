@@ -22,6 +22,7 @@
  * is `pnpm run build`'s job, which fails if a declared subpath has no bundle.
  */
 
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
@@ -35,7 +36,13 @@ import {
 } from '../src/index.js';
 import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../src/openai/index.js';
 import { ResponsesCodec } from '../src/openai/index.js';
-import type { ClientTransportHandle, UseClientTransportOptions } from '../src/react/index.js';
+import type {
+  ClientTransportHandle,
+  ClientTransportProviderProps,
+  UseAblyMessagesOptions,
+  UseClientTransportOptions,
+  UseTransportEventsOptions,
+} from '../src/react/index.js';
 import {
   ClientTransportProvider,
   useAblyMessages,
@@ -141,10 +148,26 @@ describe('@ably/ai-transport/react', () => {
     // Spelled on locals: dropping a type export fails the typecheck here
     // rather than in a consumer's build.
     const options: UseClientTransportOptions = {};
+    const eventOptions: UseTransportEventsOptions = {};
+    const messageOptions: UseAblyMessagesOptions = {};
     const handle: ClientTransportHandle = { transport: undefined, error: undefined };
+    const providerProps: ClientTransportProviderProps<unknown, unknown> = {
+      channelName: 'ai:test',
+      codec: {} as never,
+    };
 
-    expect(options).toEqual({});
+    expect([options, eventOptions, messageOptions]).toEqual([{}, {}, {}]);
     expect(handle.transport).toBeUndefined();
+    expect(providerProps.channelName).toBe('ai:test');
+  });
+
+  it('re-publishes the error vocabulary a consumer of this entry point switches on', async () => {
+    // The entry point produces ErrorInfo values, so a consumer of it needs the
+    // codes without reaching into a second import path.
+    const react = await import('../src/react/index.js');
+
+    expect(react.errorInfoIs(new Ably.ErrorInfo('x', react.ErrorCode.InvalidArgument, 400), 40003)).toBe(true);
+    expect(react.OBJECT_MODES).toEqual(['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']);
   });
 });
 

@@ -939,6 +939,27 @@ describe('createAgentTransport', () => {
       expect(headerOf(channel, 'ai-run-start', HEADER_INPUT_CLIENT_ID)).toBeUndefined();
     });
 
+    it('refuses a second handle for a run-id already open on the transport', async () => {
+      const { transport } = await setup();
+
+      transport.openRun({ runId: 'run-1' });
+
+      // One registry entry per run-id: a second handle would overwrite the
+      // first, so a cancel would reach only the newer run and the first
+      // `end()` would deregister both.
+      expect(() => transport.adoptRun('run-1')).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+      expect(() => transport.openRun({ runId: 'run-1' })).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('allows the run-id again once the first run has ended', async () => {
+      const { transport } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      await run.end({ reason: 'complete' });
+
+      expect(() => transport.adoptRun('run-1')).not.toThrow();
+    });
+
     it('re-stamps the input attribution on ai-run-end', async () => {
       const { transport, channel } = await setup();
 

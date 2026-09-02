@@ -31,7 +31,11 @@ export const useTransportEvents = <TInput = unknown, TOutput = unknown>(
 ): void => {
   const { transport } = useClientTransport<TInput, TOutput>(options);
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  // Latched in an effect, not during render: a handler from a render React
+  // discards must not become the one the subscription calls.
+  useEffect(() => {
+    handlerRef.current = handler;
+  });
 
   useEffect(() => {
     if (!transport) return;

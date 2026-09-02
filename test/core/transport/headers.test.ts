@@ -256,6 +256,21 @@ describe('buildRunEndError', () => {
     expect(err.code).toBe(ErrorCode.RunResponseStreamFailed);
     expect(err.statusCode).toBe(500);
   });
+
+  it.each([
+    ['empty', ''],
+    ['zero', '0'],
+    ['negative', '-1'],
+    ['fractional', '1.5'],
+  ])('falls back for a present but implausible code (%s)', (_label, raw) => {
+    // `Number('')` is 0, which is finite — so a finiteness check let an empty
+    // header through as `code: 0`, a value in no registry and matching no
+    // `errorInfoIs` test. Headers are wire data, so this is a trust boundary.
+    const err = buildRunEndError({ [HEADER_ERROR_CODE]: raw, [HEADER_ERROR_MESSAGE]: 'x' });
+
+    expect(err.code).toBe(ErrorCode.RunResponseStreamFailed);
+    expect(err.statusCode).toBe(500);
+  });
 });
 
 describe('parseRunLifecycle', () => {

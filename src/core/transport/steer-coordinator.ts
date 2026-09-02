@@ -105,7 +105,7 @@ export class SteerCoordinator<TInput> {
    * and a steer whose publish was in flight when the terminal landed
    * resolves not-consumed with this reason.
    */
-  private readonly _deadRunIds = new Map<string, RunEndReason | undefined>();
+  private readonly _deadRunIds = new Map<string, RunEndReason>();
 
   /**
    * Bumped by each drain, with the drain's error retained. A steer whose
@@ -251,9 +251,10 @@ export class SteerCoordinator<TInput> {
       // outcome from the recorded terminal instead.
       if (this._deadRunIds.has(resolvedRunId)) {
         const terminalReason = this._deadRunIds.get(resolvedRunId);
-        resolveOutcome(
-          terminalReason === undefined ? { consumed: false } : { consumed: false, runTerminalReason: terminalReason },
-        );
+        resolveOutcome({
+          consumed: false,
+          ...(terminalReason === undefined ? {} : { runTerminalReason: terminalReason }),
+        });
         return;
       }
 
@@ -322,12 +323,17 @@ export class SteerCoordinator<TInput> {
     if (msg.name === EVENT_RUN_SUSPEND || msg.name === EVENT_RUN_END) {
       const lifecycleRunId = headers[HEADER_RUN_ID];
       if (lifecycleRunId !== undefined) {
-        const isEnd = msg.name === EVENT_RUN_END;
-        const terminalReason = isEnd
-          ? // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
-            ((headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason)
-          : undefined;
-        this._resolveOutcomes(lifecycleRunId, isEnd, terminalReason);
+        this._resolveOutcomes(
+          lifecycleRunId,
+          msg.name === EVENT_RUN_END
+            ? {
+                type: 'end',
+                // CAST: the agent always writes a valid RunEndReason; default
+                // to 'complete' for robustness against a malformed wire.
+                reason: (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason,
+              }
+            : { type: 'suspend' },
+        );
       }
     }
   }
@@ -374,10 +380,11 @@ export class SteerCoordinator<TInput> {
    * the run-id is recorded as dead and the consumed accumulator for this
    * run is cleared.
    * @param runId - The Run whose lifecycle event just landed.
-   * @param isEnd - True for `run-end`; false for `run-suspend`.
-   * @param terminalReason - The run-end's reason; present iff `isEnd`.
+   * @param terminal - Which lifecycle event landed, carrying the run-end's
+   *   reason on the `end` arm. One parameter rather than a flag plus a value
+   *   that has to agree with it.
    */
-  private _resolveOutcomes(runId: string, isEnd: boolean, terminalReason: RunEndReason | undefined): void {
+  private _resolveOutcomes(runId: string, terminal: { type: 'suspend' } | { type: 'end'; reason: RunEndReason }): void {
     const consumedSet = this._consumedByRunId.get(runId);
     const bucket = this._inflightSteers.get(runId);
     if (bucket !== undefined && bucket.length > 0) {
@@ -386,12 +393,10 @@ export class SteerCoordinator<TInput> {
         const consumed = consumedSet?.has(entry.steerTransportMessageId) ?? false;
         if (consumed) {
           entry.resolve(
-            terminalReason === undefined ? { consumed: true } : { consumed: true, runTerminalReason: terminalReason },
+            terminal.type === 'end' ? { consumed: true, runTerminalReason: terminal.reason } : { consumed: true },
           );
-        } else if (isEnd) {
-          entry.resolve(
-            terminalReason === undefined ? { consumed: false } : { consumed: false, runTerminalReason: terminalReason },
-          );
+        } else if (terminal.type === 'end') {
+          entry.resolve({ consumed: false, runTerminalReason: terminal.reason });
         } else {
           // Suspend leaves the outcome pending — a later resume may consume
           // the steer; only run-end can definitively report not-consumed.
@@ -401,11 +406,11 @@ export class SteerCoordinator<TInput> {
       if (remaining.length === 0) this._inflightSteers.delete(runId);
       else this._inflightSteers.set(runId, remaining);
     }
-    if (isEnd) {
+    if (terminal.type === 'end') {
       // Record the terminal (with its reason) so a steer whose publish is
       // still in flight resolves not-consumed instead of registering an
       // in-flight entry nothing will ever settle.
-      this._deadRunIds.set(runId, terminalReason);
+      this._deadRunIds.set(runId, terminal.reason);
       this._consumedByRunId.delete(runId);
     }
   }

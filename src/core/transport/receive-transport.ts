@@ -215,8 +215,9 @@ export const createReceiveTransport = <TInput, TOutput>(
 ): ReceiveTransport<TInput, TOutput> => new DefaultReceiveTransport(decoder, logger);
 
 /**
- * Build a `TransportReceiver.on` that forwards to `receiver` — the one place
- * the overload-dispatch switch lives, shared by both transports' public `on`.
+ * Build a `TransportReceiver.on` that forwards to `receiver`, so both
+ * transports expose the receiver's own overloads from one place rather than
+ * re-declaring them.
  * @param receiver - The receiver to forward subscriptions to.
  * @returns The forwarding `on`, carrying the receiver's own overloads.
  */

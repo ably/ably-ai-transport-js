@@ -817,7 +817,7 @@ export interface AgentRunTransport<TOutput> {
   readonly abortSignal: AbortSignal;
   /**
    * The agent's loop driver: whether the run has input awaiting a response
-   * pass. Returns `true` until the run's first step attempt opens (the
+   * pass. Returns `true` until the run's first output pass pipes or sends (the
    * initial pass answers the triggering input), then `true` iff a steering
    * message has been tracked since the previous call. Reading DRAINS pending
    * steering messages into the set the next step attempt stamps as

@@ -460,10 +460,20 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         if (trackSteer(transportMessageId)) notifySteer();
       },
     };
+    if (this._registeredRuns.has(runId)) {
+      // One registry entry per run-id: a second handle would overwrite the
+      // first, orphaning its abort controller so a cancel reaches only the
+      // newer run, and the first `end()` would deregister both.
+      throw new Ably.ErrorInfo(
+        `unable to open run; run ${runId} is already open on this transport`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
     this._registeredRuns.set(runId, registration);
-    // Remember the id for as long as the deferred buffer holds entries, so a
-    // cancel arriving after this run ends is dropped rather than held for the
-    // next adoption of the same id.
+    // Remember the id, bounded by the same limit as the deferred-cancel
+    // buffer, so a cancel arriving after this run ends is dropped rather than
+    // held for the next adoption of the same id.
     evictOldestIfFull(this._seenRunIds, runId, DEFERRED_CANCEL_LIMIT);
     this._seenRunIds.set(runId, true);
 
@@ -741,11 +751,13 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
             400,
           );
         }
-        state = 'suspended';
         await publishLifecycleEvent(
           { phase: 'run-suspend', component: 'AgentRunTransport', method: 'suspend', runId, logger: this._logger },
           async () => this._runManager.suspendRun(runId, terminalAttribution()),
         );
+        // Only after the publish lands, matching `resume()`: a failed suspend
+        // leaves the run open, so the local gate must not close ahead of it.
+        state = 'suspended';
       },
       resume: async (): Promise<void> => {
         this._logger.trace('AgentRunTransport.resume();', { runId });

@@ -55,9 +55,9 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
 
   // --- approval decision: the codec-defined body -------------------------------
 
-  event('approval', { fields: [fToolCallId, fApproved, fReason] }),
+  event('approval', { fields: [fTargetMessageId, fToolCallId, fApproved, fReason] }),
 
-  // --- regeneration signal --------------------------------------------------------
+  // --- regeneration signal ------------------------------------------------------
 
   // `regenerate` names the message useChat is regenerating from. The id is
   // domain data for the agent to act on; it describes no conversation

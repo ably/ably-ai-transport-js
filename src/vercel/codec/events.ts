@@ -9,14 +9,15 @@
  * - **`VercelInput`** = the bodies a client publishes on `ai-input`. Each
  *   body is the provider's own vocabulary where one exists — a `UIMessage`
  *   for a new turn, a `tool-output-*` chunk for a tool resolution — so the
- *   provider's own reducer (`readUIMessageStream`) folds inputs and outputs
+ *   provider's own reducer (`readUIMessageStream`) merges inputs and outputs
  *   through one code path. The approval decision is the one action with no
  *   provider-typed body, so the codec defines a small body of its own.
  *
- * Addressing never rides an input: the transport's publish options carry the
- * `transportMessageId`, and `WireMeta` reports it on the way back. Domain data —
- * `regenerate` carries the id it redoes — but the transport does not
- * interpret it.
+ * Transport addressing never rides an input body: the publish options carry
+ * the `transportMessageId` (and a continuation's `runId`), and `WireMeta`
+ * reports them on the way back. A body may still name a message as domain
+ * data — `regenerate` carries the id it redoes — but the transport does not
+ * read it, and it addresses nothing.
  */
 
 import type * as AI from 'ai';
@@ -37,10 +38,19 @@ export type VercelToolOutputChunk = Extract<AI.UIMessageChunk, { type: `tool-out
  * The approval decision for a tool the agent gated behind a
  * `tool-approval-request`. The AI SDK has no chunk for this client-side
  * action (a response is `chat.addToolApprovalResponse`, not a stream part),
- * so the codec defines the body: it captures "approved, not yet executed",
- * which a consumer reads to avoid publishing the same resolution twice.
+ * so the codec defines the body: it captures "approved, not yet executed" —
+ * the intermediate state the `useChat` adapter reads to avoid publishing the
+ * same resolution twice.
  */
 export interface VercelApprovalDecision {
+  /**
+   * The `UIMessage.id` of the assistant message holding the gated tool call.
+   * The application's merge routes the decision onto that message by this id,
+   * the same way it routes a `tool-output-*` chunk. Domain data in the same
+   * class as {@link toolCallId}, deliberately carried in the body rather than
+   * as wire addressing.
+   */
+  messageId: string;
   /** The tool call the decision concerns. */
   toolCallId: string;
   /** Whether the user approved the tool execution. */
@@ -51,7 +61,7 @@ export interface VercelApprovalDecision {
 
 /**
  * A new conversation turn: the message body is the AI SDK's own `UIMessage`,
- * so an application folds it with the same provider machinery that folds the
+ * so an application merges it with the same provider machinery that merges the
  * output chunks.
  * @template TMetadata - Per-message metadata type.
  * @template TDataParts - Custom data-part types.

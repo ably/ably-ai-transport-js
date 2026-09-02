@@ -193,8 +193,8 @@ describe('pendingToolCalls', () => {
   });
 
   it('finds the pending call on the last assistant when a steer message trails it', () => {
-    // A client steering message folds into the run while a tool-call pass is
-    // streaming; in raw conversation order it sorts after the assistant
+    // A client steering message merges into the run while a tool-call pass is
+    // streaming; in raw run.messages order it sorts after the assistant
     // tool-call message. The pending server tool still owes an output, so it
     // must be found and dispatched before the steer can be processed.
     const messages = [

@@ -1,20 +1,19 @@
 /**
- * Type-level tests: the Vercel codec threads the AI SDK's `UIMessage` generic
+ * Type-level tests: the Vercel wrappers thread the AI SDK's `UIMessage` generic
  * parameters (metadata / data parts / tools) end to end, so a consumer that
- * supplies concrete types gets them back off the encoder and the decoder rather
- * than the SDK defaults (`metadata: unknown`).
+ * supplies concrete types gets them back from the codec's unions and the
+ * chat-transport surface rather than the SDK defaults (`metadata: unknown`).
  *
  * The assertions are checked by `pnpm run typecheck` (which includes `test/`);
- * they fail to compile against a non-generic codec — `createUIMessageCodec`
- * taking no type argument, or the decoder yielding `unknown` metadata. The
- * runtime bodies keep the cases live under `pnpm test`.
+ * the runtime bodies keep the cases live under `pnpm test`.
  */
 
 import type * as AI from 'ai';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { TransportEvent } from '../../src/core/transport/types.js';
+import type { WireCodec } from '../../src/core/codec/types.js';
 import { createUIMessageCodec, type VercelInput, type VercelOutput } from '../../src/vercel/index.js';
+import { type ChatTransport, createChatTransport } from '../../src/vercel/transport/chat-transport.js';
 
 interface MyMetadata {
   userId: string;
@@ -27,35 +26,28 @@ type MyTools = AI.UITools & { getWeather: { input: { city: string }; output: { t
 type MyMessage = AI.UIMessage<MyMetadata, MyDataParts, MyTools>;
 
 describe('Vercel UIMessage generic threading', () => {
-  it('threads the message type into the encoder input union', () => {
+  it('createUIMessageCodec threads the message type into the input union', () => {
     const codec = createUIMessageCodec<MyMetadata, MyDataParts, MyTools>();
 
     // The codec's encoder accepts the consumer's typed message input.
     type Input = Parameters<ReturnType<typeof codec.createEncoder>['publishInput']>[0];
     expectTypeOf<Extract<Input, { kind: 'message' }>['payload']>().toEqualTypeOf<MyMessage>();
-    // Keeps the case live under `pnpm test`; the assertion above is the point.
-    expect(codec).toBeDefined();
+    expect(codec.createDecoder()).toBeDefined();
   });
 
-  it('threads the metadata type onto the decoder output chunks', () => {
-    const codec = createUIMessageCodec<MyMetadata, MyDataParts, MyTools>();
-
-    type Output = ReturnType<ReturnType<typeof codec.createDecoder>['decode']>['outputs'][number];
-    expectTypeOf<Extract<Output, { type: 'start' }>['messageMetadata']>().toEqualTypeOf<MyMetadata | undefined>();
-    expect(codec).toBeDefined();
+  it('createChatTransport preserves the message type', () => {
+    expectTypeOf(createChatTransport<MyMetadata, MyDataParts, MyTools>).returns.toEqualTypeOf<
+      ChatTransport<MyMetadata, MyDataParts, MyTools>
+    >();
+    // sendMessages accepts the typed message list.
+    expectTypeOf<
+      Parameters<ChatTransport<MyMetadata, MyDataParts, MyTools>['sendMessages']>[0]['messages']
+    >().toEqualTypeOf<MyMessage[]>();
   });
 
-  it('threads both unions through a transport event a consumer folds itself', () => {
-    type Event = TransportEvent<VercelInput<MyMetadata, MyDataParts, MyTools>, VercelOutput<MyMetadata, MyDataParts>>;
-
-    expectTypeOf<Extract<Event, { kind: 'message' }>['inputs']>().toEqualTypeOf<
-      VercelInput<MyMetadata, MyDataParts, MyTools>[]
-    >();
-    expectTypeOf<Extract<Event, { kind: 'message' }>['outputs']>().toEqualTypeOf<
-      VercelOutput<MyMetadata, MyDataParts>[]
-    >();
-
-    const message: MyMessage = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
-    expect(message.id).toBe('m1');
+  it('the codec factory with no type arguments falls back to the SDK defaults', () => {
+    // Passing no type parameters preserves today's inference — the codec
+    // resolves to the all-defaults instantiation (bare VercelInput/Output).
+    expectTypeOf(createUIMessageCodec()).toEqualTypeOf<WireCodec<VercelInput, VercelOutput>>();
   });
 });

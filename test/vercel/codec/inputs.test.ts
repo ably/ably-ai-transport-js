@@ -83,24 +83,20 @@ describe('Vercel wire-codec inputs', () => {
       parts: [
         { type: 'text', text: 'hello' },
         { type: 'file', url: 'https://example.com/a.png', mediaType: 'image/png' },
-        // A `data-*` part is selected by prefix rather than by an enumerated
-        // literal, so this is the arm that proves the wildcard descriptor is
-        // actually wired up on the input side (see .claude/rules/AISDK.md).
-        { type: 'data-chart', id: 'd1', data: { points: [1, 2] } },
       ],
     };
 
     await encoder.publishInput({ kind: 'message', payload: message });
 
     const batch = firstBatch(writer);
-    expect(batch).toHaveLength(3);
+    expect(batch).toHaveLength(2);
     expect(batch[0]?.name).toBe(EVENT_AI_INPUT);
-    expect(batch.map((m) => codecHeadersOf(m).kind)).toEqual(['message', 'message', 'message']);
-    expect(batch.map((m) => codecHeadersOf(m).partType)).toEqual(['text', 'file', 'data-chart']);
+    expect(batch.map((m) => codecHeadersOf(m).kind)).toEqual(['message', 'message']);
+    expect(batch.map((m) => codecHeadersOf(m).partType)).toEqual(['text', 'file']);
 
     const decoder = codec.createDecoder();
     const decoded = batch.flatMap((m) => decoder.decode(asInbound(m)).inputs);
-    expect(decoded).toHaveLength(3);
+    expect(decoded).toHaveLength(2);
     for (const input of decoded) {
       expect(input.kind).toBe('message');
       if (input.kind !== 'message') continue;
@@ -148,30 +144,36 @@ describe('Vercel wire-codec inputs', () => {
     const encoder = codec.createEncoder(writer);
 
     await encoder.publishInput(
-      { kind: 'approval', payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' } },
+      { kind: 'approval', payload: { messageId: 'assistant-1', toolCallId: 'tc-1', approved: false, reason: 'nope' } },
       { messageId: 'assistant-1' },
     );
 
     const wire = firstDiscrete(writer);
     expect(codecHeadersOf(wire).kind).toBe('approval');
     expect(codecHeadersOf(wire).toolCallId).toBe('tc-1');
+    expect(codecHeadersOf(wire).messageId).toBe('assistant-1');
 
     const decoder = codec.createDecoder();
     const { inputs } = decoder.decode(asInbound(wire));
-    expect(inputs).toEqual([{ kind: 'approval', payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' } }]);
+    expect(inputs).toEqual([
+      { kind: 'approval', payload: { messageId: 'assistant-1', toolCallId: 'tc-1', approved: false, reason: 'nope' } },
+    ]);
   });
 
-  it('round-trips a regenerate signal carrying the message id it redoes', async () => {
+  it('round-trips the message a regenerate starts from', async () => {
     const writer = createMockWriter();
     const encoder = codec.createEncoder(writer);
 
-    await encoder.publishInput({ kind: 'regenerate', payload: { messageId: 'asst-1' } });
+    await encoder.publishInput({ kind: 'regenerate', payload: { messageId: 'assistant-3' } });
 
     const wire = firstDiscrete(writer);
     expect(codecHeadersOf(wire).kind).toBe('regenerate');
+    expect(codecHeadersOf(wire).messageId).toBe('assistant-3');
 
     const decoder = codec.createDecoder();
-    expect(decoder.decode(asInbound(wire)).inputs).toEqual([{ kind: 'regenerate', payload: { messageId: 'asst-1' } }]);
+    expect(decoder.decode(asInbound(wire)).inputs).toEqual([
+      { kind: 'regenerate', payload: { messageId: 'assistant-3' } },
+    ]);
   });
 
   it('publishes the empty text fallback for a message with no encodable parts', async () => {

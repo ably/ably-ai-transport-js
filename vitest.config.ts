@@ -3,9 +3,9 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
-    // The other tiers need real infrastructure — an Ably sandbox app, or a
-    // Temporal test server — so this one stays mocks-only and fast.
-    exclude: ['**/*.integration.test.ts', '**/*.temporal.test.ts'],
+    // The integration tier needs a real Ably sandbox app, so this one stays
+    // mocks-only and fast.
+    exclude: ['**/*.integration.test.ts'],
     setupFiles: ['test/helper/expectations.ts'],
     coverage: {
       enabled: false,

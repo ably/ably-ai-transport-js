@@ -27,7 +27,7 @@ describe('publishLifecycleEvent', () => {
   it('returns the publish result untouched on success', async () => {
     await expect(
       publishLifecycleEvent(
-        { phase: 'step-start', method: 'openStep', runId: 'run-1', logger: silentLogger },
+        { phase: 'step-start', component: 'RunStepWriter', method: 'openStep', runId: 'run-1', logger: silentLogger },
         publishOk('serial-1'),
       ),
     ).resolves.toBe('serial-1');
@@ -37,13 +37,13 @@ describe('publishLifecycleEvent', () => {
     const cause = new Ably.ErrorInfo('publish refused', 40160, 401);
     await expect(
       publishLifecycleEvent(
-        { phase: 'run-start', method: 'start', runId: 'run-1', logger: silentLogger },
+        { phase: 'step-start', component: 'RunStepWriter', method: 'openStep', runId: 'run-1', logger: silentLogger },
         publishFails(cause),
       ),
     ).rejects.toBeErrorInfo({
       code: ErrorCode.RunLifecycleEventPublishFailed,
       statusCode: 500,
-      message: 'unable to publish run-start for run run-1; publish refused',
+      message: 'unable to publish step-start for run run-1; publish refused',
       cause,
     });
   });
@@ -51,13 +51,13 @@ describe('publishLifecycleEvent', () => {
   it('wraps a non-ErrorInfo failure, leaving no cause to preserve', async () => {
     await expect(
       publishLifecycleEvent(
-        { phase: 'run-end', method: 'end', runId: 'run-2', logger: silentLogger },
+        { phase: 'step-end', component: 'RunStepWriter', method: 'closeStep', runId: 'run-2', logger: silentLogger },
         publishFails(new Error('socket closed')),
       ),
     ).rejects.toBeErrorInfo({
       code: ErrorCode.RunLifecycleEventPublishFailed,
       statusCode: 500,
-      message: 'unable to publish run-end for run run-2; socket closed',
+      message: 'unable to publish step-end for run run-2; socket closed',
     });
   });
 
@@ -67,15 +67,22 @@ describe('publishLifecycleEvent', () => {
 
     await expect(
       publishLifecycleEvent(
-        { phase: 'step-end', method: 'closeStep', runId: 'run-1', logger, logContext: { stepId: 'step-7' } },
+        {
+          phase: 'step-end',
+          component: 'RunStepWriter',
+          method: 'closeStep',
+          runId: 'run-1',
+          logger,
+          logContext: { stepId: 'step-7' },
+        },
         publishFails(new Error('publish failed')),
       ),
     ).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleEventPublishFailed);
 
     expect(handler).toHaveBeenCalledWith(
-      'Run.closeStep(); failed to publish step-end',
+      'RunStepWriter.closeStep(); lifecycle publish failed',
       LogLevel.Error,
-      expect.objectContaining({ runId: 'run-1', stepId: 'step-7' }),
+      expect.objectContaining({ phase: 'step-end', runId: 'run-1', stepId: 'step-7' }),
     );
   });
 
@@ -84,7 +91,7 @@ describe('publishLifecycleEvent', () => {
     const logger = makeLogger({ logLevel: LogLevel.Error, logHandler: handler });
 
     await publishLifecycleEvent(
-      { phase: 'run-suspend', method: 'suspend', runId: 'run-1', logger },
+      { phase: 'step-start', component: 'RunStepWriter', method: 'openStep', runId: 'run-1', logger },
       publishOk('serial-1'),
     );
 

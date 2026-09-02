@@ -22,7 +22,6 @@ import {
 } from '../../../src/constants.js';
 import type { Decoder } from '../../../src/core/codec/types.js';
 import { classifyWireMessage, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
-import type { CodecInputEvent } from '../../../src/core/transport/session-codec.js';
 import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { silentLogger } from '../../helper/logger.js';
 import { foreignWire, inboundMessage } from '../../helper/wire-messages.js';
@@ -31,7 +30,7 @@ import { foreignWire, inboundMessage } from '../../helper/wire-messages.js';
 // Test types + mocks
 // ---------------------------------------------------------------------------
 
-interface TestInput extends CodecInputEvent {
+interface TestInput {
   kind: 'in';
 }
 interface TestOutput {
@@ -173,7 +172,7 @@ describe('createReceiveTransport', () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  // An application's own publish on a channel it shares with a session: it
+  // An application's own publish on a channel it shares with a transport: it
   // carries no SDK wire name and no `extras.ai` envelope, so the codec decoder
   // yields nothing and there is no run-id to make it a wire-only carrier. It
   // must surface as no typed event, while the raw message still flows via

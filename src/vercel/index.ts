@@ -11,41 +11,6 @@ export type {
 } from './codec/index.js';
 export { createUIMessageCodec } from './codec/index.js';
 
-// Vercel AI SDK session codec — the wire codec plus the reducer, the
-// `getMessages` projection read, and the well-known input factories. This is
-// the codec the sessions consume: `createClientSession`, `createAgentSession`,
-// `withAgentSession` and `ClientSessionProvider` all require it, and a caller
-// naming their types needs `VercelSessionInput` and `VercelProjection`.
-//
-// It is NOT wire-compatible with the wire codec above. The two model the same
-// operations with different `kind` headers and different bodies — a session
-// user message is `user-message`, a wire one is `message` — so a peer on one
-// reads nothing a peer on the other publishes. Pick one per channel.
-export type { VercelProjection } from './codec/reducer-state.js';
-export { createUIMessageSessionCodec } from './codec/session-codec.js';
-export type {
-  VercelSessionInput,
-  VercelToolApprovalResponsePayload,
-  VercelToolResultErrorPayload,
-  VercelToolResultPayload,
-} from './codec/session-events.js';
-
-// Vercel AI SDK transport wrappers (pre-bound to the Vercel codec)
-export type {
-  ChatTransport,
-  ChatTransportOptions,
-  SendMessagesRequestContext,
-  VercelAgentSessionContext,
-  VercelAgentSessionOptions,
-  VercelClientSessionOptions,
-  VercelWithAgentSessionOptions,
-} from './transport/index.js';
-export { createAgentSession, createChatTransport, createClientSession, withAgentSession } from './transport/index.js';
-
-// Client tool-result forking (for callers that drive `view.send` directly)
-export type { ToolCallResolution } from './transport/fork-tool-result.js';
-export { createToolResultFork } from './transport/fork-tool-result.js';
-
 // Vercel-shaped helpers
 export type { VercelRunOutcome } from './run-end-reason.js';
 export { vercelRunOutcome } from './run-end-reason.js';

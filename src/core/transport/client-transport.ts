@@ -1,6 +1,7 @@
 /**
  * The self-contained client transport: publish, receive, and history over one
- * channel and codec, without the Tree, View, or React layers.
+ * channel and codec. It keeps no conversation state — a consumer folds the
+ * event stream into state of its own.
  *
  * {@link createClientTransport} owns its whole receive path: it mints a codec
  * decoder, wraps it in a receive transport, and — once {@link
@@ -195,7 +196,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
         }
       },
       clientId: () => this._clientId,
-      isSessionClosed: () => this._closed,
+      isTransportClosed: () => this._closed,
       logger: this._logger,
     });
     this._hasAttachedOnce = this._channel.state === 'attached';

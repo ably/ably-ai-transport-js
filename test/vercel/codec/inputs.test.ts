@@ -83,20 +83,24 @@ describe('Vercel wire-codec inputs', () => {
       parts: [
         { type: 'text', text: 'hello' },
         { type: 'file', url: 'https://example.com/a.png', mediaType: 'image/png' },
+        // A `data-*` part is selected by prefix rather than by an enumerated
+        // literal, so this is the arm that proves the wildcard descriptor is
+        // actually wired up on the input side (see .claude/rules/AISDK.md).
+        { type: 'data-chart', id: 'd1', data: { points: [1, 2] } },
       ],
     };
 
     await encoder.publishInput({ kind: 'message', payload: message });
 
     const batch = firstBatch(writer);
-    expect(batch).toHaveLength(2);
+    expect(batch).toHaveLength(3);
     expect(batch[0]?.name).toBe(EVENT_AI_INPUT);
-    expect(batch.map((m) => codecHeadersOf(m).kind)).toEqual(['message', 'message']);
-    expect(batch.map((m) => codecHeadersOf(m).partType)).toEqual(['text', 'file']);
+    expect(batch.map((m) => codecHeadersOf(m).kind)).toEqual(['message', 'message', 'message']);
+    expect(batch.map((m) => codecHeadersOf(m).partType)).toEqual(['text', 'file', 'data-chart']);
 
     const decoder = codec.createDecoder();
     const decoded = batch.flatMap((m) => decoder.decode(asInbound(m)).inputs);
-    expect(decoded).toHaveLength(2);
+    expect(decoded).toHaveLength(3);
     for (const input of decoded) {
       expect(input.kind).toBe('message');
       if (input.kind !== 'message') continue;

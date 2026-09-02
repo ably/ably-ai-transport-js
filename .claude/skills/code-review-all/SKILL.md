@@ -57,12 +57,12 @@ Project-specific concerns — the local skills in this repo:
 
 | Concern           | Skill                           |
 | ----------------- | ------------------------------- |
-| Demos             | `code-review-demos`             |
 | Rules conformance | `code-review-rules-conformance` |
 | Rules drift       | `code-review-rules-drift`       |
 
-Skip a concern only when it plainly cannot apply to the change (e.g. no demos
-touched). If you skip one, say so in the report rather than dropping it silently.
+Skip a concern only when it plainly cannot apply to the change (e.g. a
+docs-only change and the tests concern). If you skip one, say so in the report
+rather than dropping it silently.
 
 ## Step 3 — synthesise one report
 

@@ -72,7 +72,7 @@ export const walkHistoryBatch = async <TInput, TOutput>(
     if (!chunk) break;
     const pageEvents: TransportEvent<TInput, TOutput>[] = [];
     // Ably returns pages newest-first; classify in chronological order so the
-    // decoder's projections build oldest-to-newest within the page.
+    // decoder's stream trackers build oldest-to-newest within the page.
     for (const wire of chunk.toReversed()) {
       let event: TransportEvent<TInput, TOutput> | undefined;
       try {

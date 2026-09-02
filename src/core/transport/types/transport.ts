@@ -2,18 +2,17 @@
  * Transport-layer types: the send-side client/agent surfaces and the
  * receive-side event stream.
  *
- * These are the public boundary that lets a developer adopt the transport on
- * its own — publish and subscribe to codec events with run/step bracketing —
- * and fold those events into their own application state, without taking the
- * Tree, View, or React layers. The Tree becomes one subscriber over the same
- * event stream rather than a hardcoded target.
+ * These are the public boundary a developer builds on: publish and subscribe to
+ * codec events with run and step bracketing, and fold those events into
+ * application state of their own. Every consumer reads the same event stream on
+ * equal terms, and the transport keeps no conversation state.
  */
 
 import type * as Ably from 'ably';
 
+import type { RunLifecycleEvent, StepLifecycleEvent } from './lifecycle.js';
 import type { CancelRequest, RunEndReason, StepEndReason } from './shared.js';
 import type { SteerResult } from './steer.js';
-import type { RunLifecycleEvent, StepLifecycleEvent } from './tree.js';
 
 // ---------------------------------------------------------------------------
 // Receive side
@@ -26,22 +25,21 @@ import type { RunLifecycleEvent, StepLifecycleEvent } from './tree.js';
  * The transport reads these fields off the `extras.ai.transport` header tier
  * (and the message's own Ably fields) but never interprets the structure
  * fields (`parent` / `forkOf` / `regenerates` / `inputCodecMessageId`) — those
- * are carried verbatim for a consumer (such as the Tree) that reconstructs
- * branching. Every typed field is optional: a given wire message populates only
- * the fields its message name and headers carry.
+ * are carried verbatim for a consumer that reconstructs branching. Every typed
+ * field is optional: a given wire message populates only the fields its message
+ * name and headers carry.
  *
- * The typed fields are a convenience projection of the two raw header buckets.
+ * The typed fields are a convenience reading of the two raw header buckets.
  * {@link transport} and {@link codec} carry the complete `extras.ai.transport`
  * and `extras.ai.codec` tiers verbatim, so a consumer rebuilding conversation
- * state has full fidelity and no consumer needs privileged access to the raw
- * wire — the Tree drives its `applyMessage` off {@link transport} exactly as a
- * third-party subscriber could.
+ * state has full fidelity, and every consumer reads the same wire on the same
+ * terms.
  */
 export interface WireMeta {
   /**
    * The complete `extras.ai.transport` header tier, verbatim. The transport
-   * writes and reads run/step/structure headers here; the Tree folds a message
-   * by reading this bucket. Empty object when the wire carried no transport
+   * writes and reads run/step/structure headers here, and a consumer folding a
+   * message reads this bucket. Empty object when the wire carried no transport
    * tier.
    */
   transport: Record<string, string>;
@@ -58,7 +56,12 @@ export interface WireMeta {
    * none.
    */
   headers: Record<string, string>;
-  /** Ably channel serial of the message, or `undefined` for an optimistic local echo (no serial assigned yet). */
+  /**
+   * Ably channel serial of the message. Stable for the message's whole life: an
+   * append does not advance it, so every delivery of one streamed message
+   * carries the same value here and {@link versionSerial} is what tells them
+   * apart. `undefined` for an optimistic local echo (no serial assigned yet).
+   */
   serial: string | undefined;
   /** The `codec-message-id` header — the logical message this event belongs to, or `undefined` when the wire carried none. */
   codecMessageId: string | undefined;
@@ -77,22 +80,22 @@ export interface WireMeta {
   /** The Ably message name (e.g. `ai-input`, `ai-output`), or `undefined` for an optimistic local echo. */
   messageName: string | undefined;
   /**
-   * The append version serial (`version.serial`) — the per-delivery identity
-   * an appending stream advances. A consumer rebuilding the Tree's whole-wire
-   * replay dedup keys its `decodedThrough` high-water-mark on this; a
-   * transport-only consumer can ignore it. `undefined` for an optimistic local
-   * echo.
+   * The append version serial (`version.serial`) — the per-delivery identity an
+   * appending stream advances, and the only field that distinguishes one
+   * delivery of a streamed message from the next. A consumer deduping wire
+   * deliveries MUST key on this, never on {@link serial}, which every append of
+   * one message shares. `undefined` for an optimistic local echo.
    */
   versionSerial: string | undefined;
   /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for an optimistic local echo. */
   versionTimestamp: number | undefined;
-  /** Structure header `parent` — the codec-message-id of the preceding message in this branch. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `parent` — the codec-message-id of the preceding message in this branch. Carried verbatim; the consumer interprets it. */
   parent: string | undefined;
-  /** Structure header `fork-of` — the codec-message-id this message replaces. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `fork-of` — the codec-message-id this message replaces. Carried verbatim; the consumer interprets it. */
   forkOf: string | undefined;
-  /** Structure header `msg-regenerate` — the codec-message-id this run regenerates. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `msg-regenerate` — the codec-message-id this run regenerates. Carried verbatim; the consumer interprets it. */
   regenerates: string | undefined;
-  /** Structure header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; the consumer interprets it. */
   inputCodecMessageId: string | undefined;
   /**
    * The parsed `input-codec-message-ids` bracket receipt — on an
@@ -152,8 +155,8 @@ export type TransportEvent<TInput, TOutput> =
  * The receive side of the transport: a decoded event stream a consumer
  * subscribes to. Each inbound wire message produces at most one typed
  * {@link TransportEvent} (emitted before the raw `ably-message`), so a consumer
- * can rebuild conversation state itself — keyed by codec-message-id, grouped by
- * run, deduped by step — without the Tree.
+ * rebuilds conversation state itself — keyed by codec-message-id, grouped by
+ * run, deduped by step.
  *
  * Delivery is synchronous and in registration order: each event reaches every
  * subscriber before the next event is processed, and a throwing subscriber is
@@ -198,11 +201,11 @@ export interface TransportReceiver<TInput, TOutput> {
 export interface PublishInputOptions {
   /** The codec-message-id to publish under. Defaults to a fresh id when omitted. */
   codecMessageId?: string;
-  /** Structure: the codec-message-id of the preceding message in this branch. Omit for linear chat. Carried verbatim; only the Tree interprets it. */
+  /** Structure: the codec-message-id of the preceding message in this branch. Omit for linear chat. Carried verbatim; the consumer interprets it. */
   parent?: string;
-  /** Structure: the codec-message-id this input replaces (an edit fork). Omit for linear chat. Carried verbatim; only the Tree interprets it. */
+  /** Structure: the codec-message-id this input replaces (an edit fork). Omit for linear chat. Carried verbatim; the consumer interprets it. */
   forkOf?: string;
-  /** Structure: the codec-message-id this input regenerates. Omit for linear chat. Carried verbatim; only the Tree interprets it. */
+  /** Structure: the codec-message-id this input regenerates. Omit for linear chat. Carried verbatim; the consumer interprets it. */
   regenerates?: string;
   /** Reuse a known run-id (a continuation of an existing run). Omit for a fresh send; the agent mints the run-id at run-start. */
   runId?: string;
@@ -277,15 +280,17 @@ export interface TransportHistoryResult<TInput, TOutput> {
 
 /**
  * The client transport: a self-contained publish + receive surface over one
- * channel and codec, without the Tree, View, or React layers. The factory
+ * channel and codec, holding no conversation state. The factory
  * owns the channel subscription and the receive stream; {@link connect}
  * starts delivery, {@link subscribe} observes classified events, and
  * {@link history} pages older events on demand.
  *
- * Holds no run registry — a cancel's or steer's `runId` is sourced from
- * {@link PublishInputResult.runId} (resolved from the triggering input's
- * `ai-run-start`) or from `run-lifecycle` events off the receive stream, and
- * an optimistic echo is reconciled against its wire echo by `codecMessageId`.
+ * Holds no run registry — a `runId` comes from `run-lifecycle` events off the
+ * receive stream, or from awaiting {@link PublishInputResult.runId} (which
+ * resolves from the triggering input's `ai-run-start`). {@link steer} accepts
+ * that promise directly; {@link cancel} takes a settled id, so a caller
+ * cancelling a send it just made awaits the promise first. An optimistic echo
+ * is reconciled against its wire echo by `codecMessageId`.
  * The only cross-message state is the steer ledger behind {@link steer} and
  * the pending `runId` watches behind {@link publishInput}.
  * @template TInput - The codec's input-event domain type accepted by
@@ -325,10 +330,11 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
   publishInput(event: TInput, opts?: PublishInputOptions): Promise<PublishInputResult>;
   /**
    * Publish an `ai-cancel` envelope targeting the given run. Stateless — the
-   * caller supplies a `runId` captured from a `run-lifecycle` start event. The
-   * envelope carries a per-cancel `event-id` for rewind redelivery; the read
-   * side ignores it, so cancels are idempotent. Requires {@link connect}.
-   * @param runId - The run to cancel.
+   * caller supplies a settled `runId`, from a `run-lifecycle` start event or by
+   * awaiting {@link PublishInputResult.runId}. The envelope carries a
+   * per-cancel `event-id` for rewind redelivery; the read side ignores it, so
+   * cancels are idempotent. Requires {@link connect}.
+   * @param runId - The run to cancel. Unlike {@link steer}, this does not accept a promise.
    */
   cancel(runId: string): Promise<void>;
   /**
@@ -665,8 +671,9 @@ export interface LocatedInput<TInput> {
  * cancel signals route onto the matching run handle, and a steering message
  * under an open run's run-id both surfaces as an ordinary event on the
  * receive stream (for the agent to fold itself) and flips the run handle's
- * {@link AgentRunTransport.hasInput}. Exposes no Tree-read accessors
- * (`view`, `messages`, `status`).
+ * {@link AgentRunTransport.hasInput}. The surface is publish and observe only:
+ * there is no read accessor for assembled messages, because nothing here
+ * assembles them.
  * @template TInput - The codec's input-event domain type, located by {@link locateInput}.
  * @template TOutput - The codec's output-event domain type, published by the run/step handles.
  */
@@ -721,9 +728,9 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * The handle publishes under an invocation id, stamped on its output, step
    * brackets, suspend, and end. Pin it via
    * {@link AdoptRunOptions.invocationId} so a continuing process publishes
-   * under the invocation that owns the run — a Tree consumer discards a
-   * suspend whose invocation-id differs from the run's latest resume,
-   * treating it as a retired invocation's late suspend — and omit it to mint
+   * under the invocation that owns the run — a consumer discards a suspend
+   * whose invocation-id differs from the run's latest resume, treating it as a
+   * retired invocation's late suspend — and omit it to mint
    * a fresh one. The structure options stay on {@link openRun}: an adopted
    * run publishes no opening event, so nothing would stamp them. A
    * continuation is an `openRun` naming the run, not an adopt.
@@ -736,10 +743,9 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
   adoptRun(runId: string, opts?: AdoptRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput>;
   /**
    * Scan channel history for the input event whose `event-id` header matches
-   * `eventId`, returning its {@link WireMeta} and decoded inputs — so a
-   * transport-only agent can resume durably without the Tree. Runs on a
-   * throwaway decoder so it never perturbs the live receive stream's dedup
-   * state. Resolves `undefined` when no matching input is found in history —
+   * `eventId`, returning its {@link WireMeta} and decoded inputs, which is how
+   * an agent in a fresh process resumes durably. Runs on a throwaway decoder so
+   * it never perturbs the live receive stream's dedup state. Resolves `undefined` when no matching input is found in history —
    * including when `opts.limit` bounded the scan before the whole channel was
    * walked, so a bounded caller decides what a miss means for its own retry
    * semantics.
@@ -875,7 +881,7 @@ export interface RunStepTransport<TOutput> {
   /**
    * Publish `ai-step-end`, closing the step. Idempotent.
    * @param params - Optional {@link StepEndParams}; the reason is derived from
-   *   piped output when omitted.
+   *   piped output when omitted (`failed` if any pipe errored, else `complete`).
    */
-  end(params: StepEndParams): Promise<void>;
+  end(params?: StepEndParams): Promise<void>;
 }

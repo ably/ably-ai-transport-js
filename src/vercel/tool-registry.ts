@@ -78,7 +78,7 @@ export interface PendingToolCall {
  *
  * Typical use — after `streamText` returns, decide what to do next:
  * ```ts
- * const pending = pendingToolCalls(run.messages);
+ * const pending = pendingToolCalls(conversation);
  * for (const call of pending) {
  *   if (tools[call.toolName]?.execute) {
  *     // dispatch a server tool activity
@@ -87,7 +87,7 @@ export interface PendingToolCall {
  *   }
  * }
  * ```
- * @param messages - The run's `messages` (assistant-terminated turn history).
+ * @param messages - The conversation the caller assembled, assistant-terminated.
  * @returns The pending tool calls on the last assistant message, or `[]`.
  */
 export const pendingToolCalls = (messages: readonly AI.UIMessage[]): PendingToolCall[] =>
@@ -107,7 +107,7 @@ export const pendingToolCalls = (messages: readonly AI.UIMessage[]): PendingTool
  * {@link pendingToolCalls}, which is for fresh model-emitted calls: mixing
  * the two into one check makes the post-`streamText` classification race
  * with the follow-up workflow that a `tool-approval-response` also spawns.
- * @param messages - The run's `messages` (assistant-terminated turn history).
+ * @param messages - The conversation the caller assembled, assistant-terminated.
  * @returns The just-approved, not-yet-executed tool calls on the last
  *   assistant message, or `[]`.
  */
@@ -120,7 +120,7 @@ const _toolCallsInState = (
 ): PendingToolCall[] => {
   // Scan back to the last assistant message rather than requiring the trailing
   // message to be one. A client steering message can fold into the run while a
-  // tool-call pass is streaming; in raw run.messages order it sorts after the
+  // tool-call pass is streaming; in raw conversation order it sorts after the
   // assistant tool-call message, pushing it off the tail. An open tool_use must
   // still be resolved (its tool_result produced) before that steer can be
   // processed, so the pending calls we owe live on the last assistant, whatever

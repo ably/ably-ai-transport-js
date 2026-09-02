@@ -3,7 +3,7 @@
  *
  * A codec encodes and decodes: it describes the wire as a flat stream of
  * TInput / TOutput values and does nothing else. Folding events into messages
- * is the application's job, so no reducer or projection contract lives here.
+ * is the application's job; this tier defines encode and decode only.
  *
  * All types are framework-agnostic. Domain codecs (e.g. the Vercel codec)
  * choose concrete shapes for TInput / TOutput.
@@ -53,7 +53,7 @@ export interface Extras {
 export interface WriteOptions {
   /** Override the default extras for this write. */
   extras?: Extras;
-  /** Message identity for projection routing. Stamped as `codec-message-id`. */
+  /** Message identity for consumer-side routing. Stamped as `codec-message-id`. */
   messageId?: string;
 }
 
@@ -218,13 +218,15 @@ export interface DecodedMessage<TInput, TOutput> {
  * Stateful decoder for a single channel subscription. Maintains internal
  * stream-tracker state across messages so that mid-stream join (history
  * compaction, partial-history page boundary, rewind miss) synthesizes any
- * missing start events before deltas reach the SDK — the reducer always
- * sees a clean `(start, delta*, end)` sequence.
+ * missing start events before deltas leave the decoder — a consumer's fold
+ * (the provider's own strict reducer included) always sees a clean
+ * `(start, delta*, end)` sequence. That repair is a contract, not a
+ * convenience: the provider reducers throw on a delta with no opener.
  *
  * Trackers are version-guarded: a delivery whose `Message.version.serial`
  * is at or below the version already incorporated decodes to nothing. One
  * decoder instance can therefore be shared by the live subscription and
- * history hydration — whichever route delivers a message's content first
+ * a backwards history walk — whichever route delivers a message's content first
  * wins, and the other route's covered deliveries are no-ops.
  */
 export interface Decoder<TInput, TOutput> {
@@ -238,9 +240,8 @@ export interface Decoder<TInput, TOutput> {
 
 /**
  * A codec: encode and decode, nothing else. This is the whole contract the
- * transports require — they publish inputs and classify inbound messages
- * without ever folding a projection, so they stay parameterized by `TInput` /
- * `TOutput` alone. The transport carries both as opaque values and never
+ * transports require — they publish inputs and classify inbound messages, so
+ * they stay parameterized by `TInput` / `TOutput` alone. The transport carries both as opaque values and never
  * inspects them; a codec's `TInput` is simply its own body union.
  * @template TInput - The union of input bodies the client publishes on the
  *   `ai-input` wire.
@@ -248,12 +249,6 @@ export interface Decoder<TInput, TOutput> {
  *   `ai-output` wire.
  */
 export interface WireCodec<TInput, TOutput> {
-  /**
-   * Optional Ably-Agent identifier. When present, the agent-registration path
-   * registers it on the channel (so traffic is attributed to this codec); when
-   * absent, the codec opts out of registration. Read directly by `registerAgent`.
-   */
-  readonly adapterTag?: string;
   /** Create a stateful encoder bound to the given channel. */
   createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
   /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */

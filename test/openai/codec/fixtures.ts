@@ -1,8 +1,8 @@
 /**
  * Shared test fixtures for the OpenAI Responses codec: minimal Response/item
- * builders, Responses stream-event builders, the encoder header-stamp hook, the
- * reducer-meta reader, and an offline encode→wire→decode bridge. Imported by the
- * reducer, roundtrip, and integration tests so the event shapes live in one place.
+ * builders, Responses stream-event builders, the encoder header-stamp hook, a
+ * decoded-event filter, and an offline encode→wire→decode bridge. Imported by
+ * the codec tests so the event shapes live in one place.
  */
 
 import type * as Ably from 'ably';
@@ -11,13 +11,12 @@ import type { Responses } from 'openai/resources/responses/responses';
 import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/index.js';
 import type { OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { getTransportHeaders } from '../../../src/utils.js';
 
 // --- minimal domain objects --------------------------------------------------
 
 // CAST: tests read only `status` (and `error.message` on failure); the rest of
 // Response is irrelevant, so a minimal stub stands in for the full shape.
-export const minimalResponse = (
+const minimalResponse = (
   status: Responses.ResponseStatus,
   error?: { code: string; message: string },
 ): Responses.Response =>
@@ -50,7 +49,7 @@ export const functionCallItem = (
 });
 
 // An output item type the codec does not model, used to exercise the
-// encode-boundary reject and the reducer skip. computer_call_output is a
+// encode-boundary reject. computer_call_output is a
 // ResponseOutputItem member whose output shape is not assignable to
 // ResponseInputItem: the `status: 'failed'` here is a value the input variant
 // rejects, so this is a genuine output-only item — not merely one the codec
@@ -117,7 +116,8 @@ export const failed = (message = 'boom'): Responses.ResponseStreamEvent => ({
   sequence_number: 0,
 });
 
-// CAST: the reducer reads only `message`; code/param are omitted from this stub.
+// CAST: a minimal error-event stub — code/param are omitted; the codec drops
+// the event at encode, so only `type` is ever read.
 export const streamError = (message = 'rate limited'): Responses.ResponseStreamEvent =>
   ({ type: 'error', message, sequence_number: 0 }) as unknown as Responses.ResponseStreamEvent;
 
@@ -266,7 +266,7 @@ export const reasoningItem = (
   ...(encryptedContent === undefined ? {} : { encrypted_content: encryptedContent }),
 });
 
-export const reasoningSummaryPartAdded = (
+const reasoningSummaryPartAdded = (
   itemId: string,
   summaryIndex = 0,
   text = '',
@@ -292,7 +292,7 @@ export const reasoningSummaryPartDone = (
   part: { type: 'summary_text', text },
   sequence_number: 0,
 });
-export const reasoningSummaryTextDelta = (
+const reasoningSummaryTextDelta = (
   itemId: string,
   delta: string,
   summaryIndex = 0,
@@ -305,7 +305,7 @@ export const reasoningSummaryTextDelta = (
   delta,
   sequence_number: 0,
 });
-export const reasoningSummaryTextDone = (
+const reasoningSummaryTextDone = (
   itemId: string,
   text: string,
   summaryIndex = 0,
@@ -319,19 +319,14 @@ export const reasoningSummaryTextDone = (
   sequence_number: 0,
 });
 
-export const fnArgsDelta = (itemId: string, delta: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
+const fnArgsDelta = (itemId: string, delta: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
   type: 'response.function_call_arguments.delta',
   item_id: itemId,
   output_index: outputIndex,
   delta,
   sequence_number: 0,
 });
-export const fnArgsDone = (
-  itemId: string,
-  args: string,
-  name: string,
-  outputIndex = 0,
-): Responses.ResponseStreamEvent => ({
+const fnArgsDone = (itemId: string, args: string, name: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
   type: 'response.function_call_arguments.done',
   item_id: itemId,
   output_index: outputIndex,
@@ -436,15 +431,19 @@ export const stampHeaders =
     }
   };
 
+// --- decoded-event helpers -----------------------------------------------------
+
 /**
- * Build the reducer meta for an inbound message.
- * @param msg - The inbound message.
- * @returns The serial and optional codec-message-id.
+ * The decoded output events of one `type`, narrowed to that union member.
+ * @param outputs - The decoded output events, in delivery order.
+ * @param type - The event `type` literal to keep.
+ * @returns The matching events, in order.
  */
-export const metaOf = (msg: Ably.InboundMessage): { serial: string; messageId?: string } => {
-  const messageId = getTransportHeaders(msg)[HEADER_CODEC_MESSAGE_ID];
-  return messageId === undefined ? { serial: msg.serial ?? '' } : { serial: msg.serial ?? '', messageId };
-};
+export const eventsOfType = <T extends OpenAIOutput['type']>(
+  outputs: OpenAIOutput[],
+  type: T,
+): Extract<OpenAIOutput, { type: T }>[] =>
+  outputs.filter((o): o is Extract<OpenAIOutput, { type: T }> => o.type === type);
 
 // --- offline wire bridge -----------------------------------------------------
 

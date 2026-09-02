@@ -49,7 +49,7 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
 
 /**
  * Build a foreign wire — an application's own publish on a channel it shares
- * with a session. It carries no `extras.ai` envelope; anything under
+ * with a transport. It carries no `extras.ai` envelope; anything under
  * `extras.headers` belongs to the application.
  * @param msg - Fields overriding the foreign message defaults.
  * @returns The foreign InboundMessage.
@@ -383,7 +383,7 @@ describe('createDecoderCore', () => {
   // -- message.update (replacement) ----------------------------------------
 
   describe('message.update (replacement)', () => {
-    it('calls onStreamUpdate for non-prefix replacement', () => {
+    it('delivers a non-prefix replacement whole, and reports it to onStreamUpdate', () => {
       const onUpdate = vi.fn();
       const decoder = createDecoderCore(hooks, { onStreamUpdate: onUpdate });
 
@@ -402,8 +402,56 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      expect(outputs).toHaveLength(0);
+      // No delta describes a payload that diverged from the accumulation, so
+      // the replacement arrives as a fresh opener plus the whole new content.
+      expect(outputs).toEqual([
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'completely different' },
+      ]);
       expect(onUpdate).toHaveBeenCalledOnce();
+    });
+
+    it('closes the stream when the replacement is also terminal', () => {
+      const decoder = createDecoderCore(hooks);
+
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'text' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'streaming', [HEADER_STREAM_ID]: 'id-1' },
+        ),
+      );
+      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'hello' }, {}));
+
+      const outputs = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'replaced' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'complete' },
+        ),
+      );
+
+      expect(outputs).toEqual([
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'replaced' },
+        { type: 'end', streamId: 'id-1' },
+      ]);
+    });
+
+    it('emits only an opener when the replacement payload is empty', () => {
+      const decoder = createDecoderCore(hooks);
+
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'text' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'streaming', [HEADER_STREAM_ID]: 'id-1' },
+        ),
+      );
+      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'hello' }, {}));
+
+      const outputs = decoder.decode(
+        withHeaders({ action: 'message.update', serial: 's1', name: 'text', data: '' }, { [HEADER_STREAM]: 'true' }),
+      );
+
+      expect(outputs).toEqual([{ type: 'start', streamId: 'id-1' }]);
     });
   });
 

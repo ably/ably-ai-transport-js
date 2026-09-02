@@ -10,7 +10,7 @@ import { errorCause, errorMessage } from '../../utils.js';
  * the step lifecycle nested within it — because a failed step publish is the
  * same class of failure as a failed run publish and surfaces identically.
  */
-export type LifecyclePhase = 'run-start' | 'run-suspend' | 'run-end' | 'step-start' | 'step-end';
+export type LifecyclePhase = 'step-start' | 'step-end';
 
 /**
  * Options identifying the lifecycle publish being bracketed.
@@ -18,7 +18,9 @@ export type LifecyclePhase = 'run-start' | 'run-suspend' | 'run-end' | 'step-sta
 export interface PublishLifecycleOptions {
   /** The lifecycle wire phase, named in the error message. */
   phase: LifecyclePhase;
-  /** The method name to prefix the error log with (e.g. `start`, `openStep`). */
+  /** The owning component, prefixing the error log (see LOGGING.md's `ClassName.methodName();` format). */
+  component: string;
+  /** The method name to prefix the error log with (e.g. `openStep`, `closeStep`). */
   method: string;
   /** The run the event belongs to, named in the error message. */
   runId: string;
@@ -42,7 +44,7 @@ export const publishLifecycleEvent = async <T>(
   options: PublishLifecycleOptions,
   publish: () => Promise<T>,
 ): Promise<T> => {
-  const { phase, method, runId, logger, logContext } = options;
+  const { phase, component, method, runId, logger, logContext } = options;
   try {
     return await publish();
   } catch (error) {
@@ -52,7 +54,7 @@ export const publishLifecycleEvent = async <T>(
       500,
       errorCause(error),
     );
-    logger?.error(`Run.${method}(); failed to publish ${phase}`, { runId, ...logContext });
+    logger?.error(`${component}.${method}(); lifecycle publish failed`, { phase, runId, ...logContext });
     throw errInfo;
   }
 };

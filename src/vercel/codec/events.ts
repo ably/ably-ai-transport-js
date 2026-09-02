@@ -36,9 +36,8 @@ export type VercelToolOutputChunk = Extract<AI.UIMessageChunk, { type: `tool-out
  * The approval decision for a tool the agent gated behind a
  * `tool-approval-request`. The AI SDK has no chunk for this client-side
  * action (a response is `chat.addToolApprovalResponse`, not a stream part),
- * so the codec defines the body: it captures "approved, not yet executed" —
- * the intermediate state the `useChat` adapter reads to avoid publishing the
- * same resolution twice.
+ * so the codec defines the body: it captures "approved, not yet executed",
+ * which a consumer reads to avoid publishing the same resolution twice.
  */
 export interface VercelApprovalDecision {
   /** The tool call the decision concerns. */

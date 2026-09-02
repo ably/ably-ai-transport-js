@@ -4,7 +4,6 @@ import type * as Ably from 'ably';
 import { vi } from 'vitest';
 
 import type { Encoder, EncoderOptions } from '../../src/core/codec/types.js';
-import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/transport/session-codec.js';
 
 /**
  * Build an encoder whose `publishOutput` mirrors the encoder core: it builds
@@ -14,9 +13,7 @@ import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/transport
  * @param opts - The encoder options the codec factory received.
  * @returns The mock encoder.
  */
-export const createMockEncoder = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
-  opts?: EncoderOptions,
-): Encoder<TInput, TOutput> => ({
+export const createMockEncoder = <TInput, TOutput>(opts?: EncoderOptions): Encoder<TInput, TOutput> => ({
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   publishInput: vi.fn(() => Promise.resolve()),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock

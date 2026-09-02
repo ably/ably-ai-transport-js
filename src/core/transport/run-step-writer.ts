@@ -1,11 +1,11 @@
 /**
  * The per-run step write path — the output-producing surface of an agent run
- * (`run.pipe` and `run.createStep`). Extracted from the session's run object so the
- * agent session COMPOSES it rather than embedding it, keeping `agent-session.ts`
- * focused on the run lifecycle (open / resolve / suspend / end) and channel
- * plumbing. Owns the per-run step bookkeeping (the default `stepId` index, the
- * previous step's id/reason for in-process retry coalescing, and the sticky
- * `stepClientId` cursor) and the shared pipe-to-channel path.
+ * (`run.pipe` and `run.createStep`). The agent transport COMPOSES it rather
+ * than embedding it, keeping the transport focused on the run lifecycle
+ * (open / resolve / suspend / end) and channel plumbing. Owns the per-run step
+ * bookkeeping (the default `stepId` index, the previous step's id/reason for
+ * in-process retry coalescing, and the sticky `stepClientId` cursor) and the
+ * shared pipe-to-channel path.
  *
  * The run object delegates `pipe`/`createStep` to the writer and supplies its
  * dependencies through {@link RunStepWriterContext}. The callback seams —
@@ -13,7 +13,7 @@
  * late-resolved structural anchors) — let the run object own how a run opens and
  * resolves, so the writer stays agnostic of those policies. The writer never
  * ends the run: a cancelled pipe closes only its own step bracket, and the run
- * terminal is the run object's (`run.end()` / `session.end()`).
+ * terminal is the run object's (`run.end()`).
  */
 
 import * as Ably from 'ably';
@@ -31,7 +31,7 @@ import type {
   OpenRunHooks,
   PipeSource,
   RunEndReason,
-  RunStep,
+  RunStepTransport,
   StepEndParams,
   StepEndReason,
   StepLifecycleEvent,
@@ -84,7 +84,7 @@ interface SteerIdsRef {
  * them at construction.
  */
 export interface StepWriterAnchors {
-  /** The reply run's structural-parent fallback (its triggering input node), or undefined before the run resolves. */
+  /** The reply run's structural-parent fallback (the codec-message-id of the input that triggered it), or undefined before the run resolves. */
   parentFallback: string | undefined;
   /** The run's `forkOf` anchor (an edit run's source), stamped on every output. */
   forkOf: string | undefined;
@@ -115,9 +115,9 @@ export interface RunStepWriterContext<TInput, TOutput> {
   runManager: RunManager;
   /**
    * Seed an optimistic step-lifecycle event locally, so a subscriber sees the
-   * step-start / step-end bracket before the wire echo arrives. The Tree-backed
-   * agent session folds it into its Tree; a standalone consumer re-emits it on
-   * its receive stream. Called once at each step open and close.
+   * step-start / step-end bracket before the wire echo arrives. The agent
+   * transport re-emits it on its receive stream. Called once at each step
+   * open and close.
    * @param event - The optimistic step-start / step-end event (its `serial` is `undefined`).
    */
   emitStepLifecycle(event: StepLifecycleEvent): void;
@@ -137,7 +137,7 @@ export interface RunStepWriterContext<TInput, TOutput> {
   signal: AbortSignal;
   /** The run's logger, if any. */
   logger: Logger | undefined;
-  /** Await the channel being connected before a publish; rejects if the session is unusable. */
+  /** Await the channel being connected before a publish; rejects if the transport is unusable. */
   requireConnected(method: string): Promise<void>;
   /**
    * Throw if the run is not open for publishing — and, for `step`, if it has
@@ -166,15 +166,40 @@ export interface RunStepWriterContext<TInput, TOutput> {
   consumeSteerStampIds?(): string[];
 }
 
+/**
+ * The writer's step handle: one step attempt's write surface, including the
+ * explicit `start()` the transport's lazy-starting wrapper drives. Output
+ * published through it is stamped with the step's `step-id` and its attempt's
+ * `step-start-serial`, so a retry supersedes the prior attempt's output.
+ * @template TOutput - The codec output type carried by the step's streams.
+ */
+export interface WriterStep<TOutput> extends RunStepTransport<TOutput> {
+  /**
+   * The run's AbortSignal; there is no per-step abort. Fires when a cancel
+   * arrives for this run.
+   */
+  readonly abortSignal: AbortSignal;
+  /**
+   * Publish `ai-step-start`, opening the step for output. Idempotent — a
+   * second call is a no-op. Rejects if another step is already active on the
+   * run (only one step may be open at a time), or if the run has ended.
+   *
+   * The transport surface has no `start()`: it wraps this handle and starts the
+   * step lazily on the first `pipe` / `send`, so an unused step never puts an
+   * empty bracket on the wire.
+   */
+  start(): Promise<void>;
+}
+
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
 export interface RunStepWriter<TOutput> {
-  /** Pipe an output source to the channel as the run's output (stepless). See {@link AgentRun.pipe}. */
+  /** Pipe an output source to the channel as the run's output (stepless). See {@link AgentRunTransport.pipe}. */
   pipe: (source: PipeSource<TOutput>) => Promise<StreamResult>;
-  /** Create an explicit step handle that brackets its output with `ai-step-start` / `ai-step-end`. See {@link AgentRun.createStep}. */
-  createStep: (options?: StepOptions) => RunStep<TOutput>;
-  /** True while a step is open (started, not ended) — for {@link AgentRun.suspend}'s reject-while-active guard. */
+  /** Create an explicit step handle that brackets its output with `ai-step-start` / `ai-step-end`. See {@link AgentRunTransport.createStep}. */
+  createStep: (options?: StepOptions) => WriterStep<TOutput>;
+  /** True while a step is open (started, not ended) — for {@link AgentRunTransport.suspend}'s reject-while-active guard. */
   hasActiveStep: () => boolean;
-  /** Best-effort close the open step (if any) with `reason` — for {@link AgentRun.end}'s auto-close. Idempotent. */
+  /** Best-effort close the open step (if any) with `reason` — for {@link AgentRunTransport.end}'s auto-close. Idempotent. */
   closeActiveStep: (reason: StepEndReason) => Promise<void>;
 }
 
@@ -203,7 +228,7 @@ export const createRunStepWriter = <TInput, TOutput>(
   let lastStepClientId: string | undefined;
 
   // At most one step may be open on a run at a time. The handle has no lexical
-  // bracket like the prior closure, so the writer tracks the open step
+  // bracket, so the writer tracks the open step
   // explicitly: run.end auto-closes it (closeActiveStep) and run.suspend rejects
   // while it is open (hasActiveStep). Holds the active step's settle fn, or
   // undefined when no step is open.
@@ -296,7 +321,7 @@ export const createRunStepWriter = <TInput, TOutput>(
     // The steers to stamp are likewise drained per-pipe, not here.
     const scopes = stepScopes(stepClientId);
     const stepStartSerial = await publishLifecycleEvent(
-      { phase: 'step-start', method: 'openStep', runId, logger, logContext: { stepId } },
+      { phase: 'step-start', component: 'RunStepWriter', method: 'openStep', runId, logger, logContext: { stepId } },
       async () => runManager.startStep(runId, stepId, scopes),
     );
     ctx.emitStepLifecycle({
@@ -340,12 +365,12 @@ export const createRunStepWriter = <TInput, TOutput>(
     lastStepId = stepId;
     lastStepReason = reason;
     if (stepStartSerial === undefined) {
-      logger?.warn('Run.closeStep(); no step-start-serial for step, skipping step-end', { runId, stepId });
+      logger?.warn('RunStepWriter.closeStep(); no step-start-serial for step, skipping step-end', { runId, stepId });
       return;
     }
     const scopes = stepScopes(stepClientId);
     await publishLifecycleEvent(
-      { phase: 'step-end', method: 'closeStep', runId, logger, logContext: { stepId } },
+      { phase: 'step-end', component: 'RunStepWriter', method: 'closeStep', runId, logger, logContext: { stepId } },
       async () => runManager.endStep(runId, stepId, stepStartSerial, reason, scopes),
     );
     ctx.emitStepLifecycle({
@@ -401,16 +426,16 @@ export const createRunStepWriter = <TInput, TOutput>(
       codecMessageId,
       runClientId: runOwnerClientId,
       // Resolved from the triggering input once at run-start. Owning it here
-      // means agent routes don't have to thread the parent to keep tree
-      // threading correct.
+      // means agent routes don't have to thread the parent to keep
+      // conversation threading correct.
       parent: anchors.parentFallback,
       forkOf: anchors.forkOf,
       invocationId,
       inputClientId: anchors.inputClientId,
       inputCodecMessageId: anchors.inputCodecMessageId,
       // Echo `msg-regenerate` on the assistant message so a client receiving
-      // the assistant chunk before `ai-run-start` can still populate
-      // `RunNode.regeneratesCodecMessageId` from headers.
+      // the assistant chunk before `ai-run-start` can still resolve the
+      // regenerate link from headers.
       regenerates: anchors.regenerates,
       stepId: step.stepId,
       stepClientId: step.stepClientId,
@@ -444,12 +469,11 @@ export const createRunStepWriter = <TInput, TOutput>(
   /**
    * Pipe a stream through a fresh encoder to the channel, always within a step
    * bracket. Shared by {@link RunStepWriter.pipe} (an implicit step opened
-   * LAZILY at first output via `step.onFirstOutput`) and {@link RunStep.pipe}
+   * LAZILY at first output via `step.onFirstOutput`) and {@link WriterStep.pipe}
    * (an explicit step the caller already opened eagerly, so it omits
    * `onFirstOutput`). It does NOT end the run on cancel — the run terminal is
-   * the outer layer's responsibility (`run.end()`, or `session.end()` for an
-   * open run at teardown); a cancelled pipe closes only its own step bracket
-   * (the caller's close-iff-opened / `step.end()`).
+   * the outer layer's responsibility (`run.end()`); a cancelled pipe closes
+   * only its own step bracket (the caller's close-iff-opened / `step.end()`).
    * @param source - The output source to pipe.
    * @param step - The step to stamp output under.
    * @param step.stepId - The step's id, stamped on every output.
@@ -498,11 +522,11 @@ export const createRunStepWriter = <TInput, TOutput>(
         500,
         errorCause(result.error),
       );
-      logger?.error('Run.pipe(); stream error', { runId });
+      logger?.error('RunStepWriter.pipe(); stream error', { runId });
       runOnError?.(errInfo);
     }
 
-    logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
+    logger?.debug('RunStepWriter.pipe(); stream finished', { runId, reason: result.reason });
     return result;
   };
 
@@ -537,13 +561,13 @@ export const createRunStepWriter = <TInput, TOutput>(
       await encoder.close();
     }
 
-    logger?.debug('RunStep.send(); output sent', { runId: ctx.getRunId(), stepId: step.stepId });
+    logger?.debug('WriterStep.send(); output sent', { runId: ctx.getRunId(), stepId: step.stepId });
   };
 
   // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
   const pipe = async (source: PipeSource<TOutput>): Promise<StreamResult> => {
     const runId = ctx.getRunId();
-    logger?.trace('Run.pipe();', { runId });
+    logger?.trace('RunStepWriter.pipe();', { runId });
 
     // run.pipe respects the one-active-step latch: an explicit step open on this
     // run must be ended first.
@@ -587,7 +611,7 @@ export const createRunStepWriter = <TInput, TOutput>(
       const stepState = { opened: false, settled: false };
 
       // Idempotent close that clears the latch if this step holds it, so
-      // run.end's auto-close (run.end -> closeActiveStep, e.g. from session.end)
+      // run.end's auto-close (run.end -> closeActiveStep)
       // and the close-iff-opened below never double-publish `ai-step-end`.
       const settle = async (reason: StepEndReason): Promise<void> => {
         if (stepState.settled) return;
@@ -610,7 +634,7 @@ export const createRunStepWriter = <TInput, TOutput>(
 
       // Close the implicit step iff it opened: a cancel closes it `cancelled`, a
       // stream error `failed`, anything else `complete`. Idempotent, so if
-      // run.end (or session.end) already auto-closed this step via
+      // run.end already auto-closed this step via
       // closeActiveStep (the same reason mapping) this is a no-op.
       if (stepState.opened) {
         // Best-effort, like the explicit step's close: a fire-and-forget run.pipe
@@ -620,7 +644,7 @@ export const createRunStepWriter = <TInput, TOutput>(
         try {
           await settle(stepEndReasonFor(result.reason));
         } catch {
-          logger?.error('Run.pipe(); failed to close implicit step', { runId, stepId });
+          logger?.error('RunStepWriter.pipe(); failed to close implicit step', { runId, stepId });
         }
       }
       return result;
@@ -629,12 +653,12 @@ export const createRunStepWriter = <TInput, TOutput>(
     }
   };
 
-  const createStep = (options?: StepOptions): RunStep<TOutput> => {
+  const createStep = (options?: StepOptions): WriterStep<TOutput> => {
     const runId = ctx.getRunId();
-    logger?.trace('Run.createStep();', { runId });
+    logger?.trace('RunStepWriter.createStep();', { runId });
 
     // Resolve the step id SYNCHRONOUSLY (createStep does no I/O — only start()
-    // publishes; see StepOptions.stepId / the Run.createStep contract): an
+    // publishes; see StepOptions.stepId / the AgentRunTransport.createStep contract): an
     // explicit id wins; else reuse the previous step's id if it failed
     // (in-process retry coalescing); else mint the next index. The default is
     // scoped to THIS invocation's id so steps from different invocations of the
@@ -676,7 +700,7 @@ export const createRunStepWriter = <TInput, TOutput>(
       state = 'settled';
       if (activeStep?.settle === settle) activeStep = undefined;
       await closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
-      logger?.debug('RunStep.end(); step closed', { runId, stepId, reason });
+      logger?.debug('WriterStep.end(); step closed', { runId, stepId, reason });
     };
 
     return {
@@ -687,7 +711,7 @@ export const createRunStepWriter = <TInput, TOutput>(
         return signal;
       },
       start: async (): Promise<void> => {
-        logger?.trace('RunStep.start();', { runId, stepId });
+        logger?.trace('WriterStep.start();', { runId, stepId });
         if (state !== 'initialized') return; // idempotent: already started or settled
         if (activeStep !== undefined || opening) {
           throw new Ably.ErrorInfo(

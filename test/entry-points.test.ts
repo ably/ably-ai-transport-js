@@ -1,101 +1,123 @@
 /**
- * Guards which codec tier each public entry point publishes.
+ * Guards what each public entry point publishes.
  *
- * Every entry point ships two codecs per provider: a wire codec that encodes
- * and decodes, and a session codec that adds the reducer, the `getMessages`
- * projection read, and the well-known input factories. The sessions require the
- * session tier. A consumer handed the wrong one fails at whichever call site
- * first reaches for a missing method, so the mistake surfaces far from its
- * cause — the codec suites cannot catch it because they import the internal
- * modules directly and never exercise the entry points.
+ * The package ships three entry points and each one's `index.ts` is the
+ * authoritative list of its public API. The codec suites cannot catch a
+ * mis-wired barrel because they import the internal modules directly and never
+ * exercise the entry points, so an export that goes missing surfaces only in a
+ * consumer's build.
  *
- * The type-level half matters as much as the runtime half: a caller has to be
- * able to *name* `VercelProjection` / `OpenAIProjection` and the session input
- * unions to use `createSessionHooks` or to annotate a session. Each test below
- * spells those types on a local, so dropping the type export breaks the build
- * here rather than in a consumer's.
+ * The type-level assertions here are checked by `pnpm run typecheck` (which
+ * includes `test/`), not by `pnpm test`: each one names a public type on a
+ * local, so dropping a type export fails the typecheck rather than a consumer's
+ * build. The runtime assertions keep the cases live under `pnpm test`.
+ *
+ * The codec assertion is deliberately an exact key set rather than a deny-list.
+ * A wire codec exposes encode and decode and nothing else; anything more means
+ * message assembly moved back inside the SDK, which is the boundary this design
+ * exists to hold. A deny-list would only catch the names we thought of.
+ *
+ * These import the source barrels, not the package specifier, so they run
+ * without a build. They therefore do not guard the `exports` map itself — that
+ * is `pnpm run build`'s job, which fails if a declared subpath has no bundle.
  */
 
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import type { CodecMessage } from '../src/index.js';
-import type { OpenAIMessage, OpenAIProjection, OpenAISessionInput } from '../src/openai/index.js';
-import { ResponsesCodec, ResponsesSessionCodec } from '../src/openai/index.js';
-import type { VercelProjection, VercelSessionInput } from '../src/vercel/index.js';
-import { createUIMessageCodec, createUIMessageSessionCodec } from '../src/vercel/index.js';
+import type { TransportEvent, WireMeta } from '../src/index.js';
+import { AIT_BASE_MODES, createAgentTransport, createClientTransport, OBJECT_MODES } from '../src/index.js';
+import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../src/openai/index.js';
+import { ResponsesCodec } from '../src/openai/index.js';
+import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
+import { createUIMessageCodec } from '../src/vercel/index.js';
 
-/** The surface the sessions and the Tree call, and a wire codec does not carry. */
-const SESSION_SURFACE = [
-  'init',
-  'fold',
-  'getMessages',
-  'createUserMessage',
-  'createRegenerate',
-  'createToolResult',
-  'createToolResultError',
-  'createToolApprovalResponse',
-];
+/** The complete surface of a wire codec. Anything else is message assembly. */
+const WIRE_CODEC_KEYS = ['createDecoder', 'createEncoder'];
+
+describe('@ably/ai-transport', () => {
+  it('publishes the two transport factories', () => {
+    expect(createClientTransport).toBeTypeOf('function');
+    expect(createAgentTransport).toBeTypeOf('function');
+  });
+
+  it('publishes both halves of the channel-mode recipe a caller needs', () => {
+    // A caller resolves its own channel, and setting any mode replaces the
+    // server default rather than adding to it — so requesting object access
+    // means naming the base set too. Both constants have to be reachable.
+    expect([...AIT_BASE_MODES, ...OBJECT_MODES]).toEqual([
+      'PUBLISH',
+      'SUBSCRIBE',
+      'PRESENCE',
+      'PRESENCE_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
+      'OBJECT_SUBSCRIBE',
+      'OBJECT_PUBLISH',
+    ]);
+  });
+
+  it('publishes the types a consumer needs to fold the event stream itself', () => {
+    // Spelled in full, with no cast: a new required field on WireMeta should
+    // fail the typecheck here rather than pass silently.
+    const meta: WireMeta = {
+      transport: {},
+      codec: {},
+      headers: {},
+      serial: 's-1',
+      codecMessageId: 'cmid-1',
+      runId: 'run-1',
+      stepId: undefined,
+      stepStartSerial: undefined,
+      timestamp: 1,
+      role: 'assistant',
+      clientId: 'agent-1',
+      messageName: 'ai-output',
+      versionSerial: 'v-1',
+      versionTimestamp: 1,
+      parent: undefined,
+      forkOf: undefined,
+      regenerates: undefined,
+      inputCodecMessageId: undefined,
+      inputCodecMessageIds: undefined,
+      steerCodecMessageIds: undefined,
+    };
+    const event: TransportEvent<VercelInput, VercelOutput> = { kind: 'message', meta, inputs: [], outputs: [] };
+
+    expect(event.meta.versionSerial).toBe('v-1');
+  });
+});
+
+describe.each([
+  ['@ably/ai-transport/vercel', () => createUIMessageCodec()],
+  ['@ably/ai-transport/openai', () => ResponsesCodec],
+])('%s', (_name, build) => {
+  it('publishes a wire codec that encodes and decodes, and nothing more', () => {
+    const codec = build();
+
+    expect(Object.keys(codec).toSorted()).toEqual(WIRE_CODEC_KEYS);
+    expect(codec.createDecoder()).toBeDefined();
+    expect(typeof codec.createEncoder).toBe('function');
+  });
+});
 
 describe('@ably/ai-transport/vercel', () => {
-  it('publishes a session codec carrying the reducer and the input factories', () => {
-    const codec = createUIMessageSessionCodec();
+  it('publishes the input and output unions a caller names', () => {
+    const message: AI.UIMessage = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
+    const input: VercelInput = { kind: 'message', payload: message };
+    const output: VercelOutput = { type: 'start', messageId: 'a1' };
 
-    for (const method of SESSION_SURFACE) {
-      expect(codec, `session codec is missing ${method}`).toHaveProperty(method, expect.any(Function));
-    }
-  });
-
-  it('publishes a wire codec that encodes and decodes and carries none of the session surface', () => {
-    const codec = createUIMessageCodec();
-
-    expect(codec).toHaveProperty('createEncoder', expect.any(Function));
-    expect(codec).toHaveProperty('createDecoder', expect.any(Function));
-    for (const method of SESSION_SURFACE) {
-      expect(codec, `wire codec unexpectedly carries ${method}`).not.toHaveProperty(method);
-    }
-  });
-
-  it('publishes the types a caller needs to name a session', () => {
-    const codec = createUIMessageSessionCodec();
-
-    const projection: VercelProjection = codec.init();
-    const input: VercelSessionInput = codec.createUserMessage({
-      id: 'm1',
-      role: 'user',
-      parts: [{ type: 'text', text: 'hi' }],
-    });
-    const messages: CodecMessage<AI.UIMessage>[] = codec.getMessages(projection);
-
-    expect(input.kind).toBe('user-message');
-    expect(messages).toEqual([]);
+    expect(input.kind).toBe('message');
+    expect(output.type).toBe('start');
   });
 });
 
 describe('@ably/ai-transport/openai', () => {
-  it('publishes a session codec carrying the reducer and the input factories', () => {
-    for (const method of SESSION_SURFACE) {
-      expect(ResponsesSessionCodec, `session codec is missing ${method}`).toHaveProperty(method, expect.any(Function));
-    }
-  });
+  it('publishes the input and output unions a caller names', () => {
+    const message: OpenAIMessage = { role: 'user', items: [] };
+    const input: OpenAIInput = { kind: 'message', payload: message };
+    const output: OpenAIOutput = { type: 'tool-approval-request', call_id: 'c1', name: 'getWeather', arguments: '{}' };
 
-  it('publishes a wire codec that encodes and decodes and carries none of the session surface', () => {
-    expect(ResponsesCodec).toHaveProperty('createEncoder', expect.any(Function));
-    expect(ResponsesCodec).toHaveProperty('createDecoder', expect.any(Function));
-    for (const method of SESSION_SURFACE) {
-      expect(ResponsesCodec, `wire codec unexpectedly carries ${method}`).not.toHaveProperty(method);
-    }
-  });
-
-  it('publishes the types a caller needs to name a session', () => {
-    const projection: OpenAIProjection = ResponsesSessionCodec.init();
-    const input: OpenAISessionInput = ResponsesSessionCodec.createUserMessage({
-      role: 'user',
-      items: [],
-    });
-    const messages: CodecMessage<OpenAIMessage>[] = ResponsesSessionCodec.getMessages(projection);
-
-    expect(input.kind).toBe('user-message');
-    expect(messages).toEqual([]);
+    expect(input.kind).toBe('message');
+    expect(output.type).toBe('tool-approval-request');
   });
 });

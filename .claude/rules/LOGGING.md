@@ -23,7 +23,7 @@ type LogContext = Record<string, any>;
 | -------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `Trace`  | Routine operations — entry point of every key method. The most verbose level.                                          |
 | `Debug`  | Useful for debugging but superfluous in normal operation — successful completions, state transitions, decision points. |
-| `Info`   | Operationally significant but expected — session open/close, lifecycle events.                                         |
+| `Info`   | Operationally significant but expected — transport connect/close, lifecycle events.                                    |
 | `Warn`   | Not an error yet, but could cause problems — unexpected but recoverable states.                                        |
 | `Error`  | An operation has failed and cannot be automatically recovered.                                                         |
 | `Silent` | No logging.                                                                                                            |
@@ -32,22 +32,26 @@ Levels are hierarchical. Setting the level to `Debug` suppresses `Trace` but sho
 
 ## Logger Initialization and Propagation
 
-Create the logger once at the top-level session, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
+Create the logger once at the top-level transport, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
 
 ```ts
-// Top level — ClientSession
+// Top level — a transport always resolves a logger, defaulting to Silent
 this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
-  component: 'ClientSession',
+  component: 'ClientTransport',
 });
 
-// Passed to child components
-this._runManager = new DefaultRunManager(channel, this._logger);
+// Passed to child components — always the resolved logger, so context
+// accumulates and an omitted logger still resolves to the Silent default.
+this._runManager = createRunManager(channel, this._logger);
 
 // Child adds its own context
 this._logger = logger?.withContext({ component: 'RunManager' });
 
-// Agent session — optional logger
-this._logger = options.logger?.withContext({ component: 'AgentSession' });
+// The agent transport does the same — a top-level transport never takes an
+// optional logger. Only sub-components take `logger?` and pass it down.
+const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
+  component: 'AgentTransport',
+});
 ```
 
 Context accumulates — a log call from RunManager will include the parent's context plus `component: 'RunManager'` automatically. Context provided in individual log calls overrides matching keys from the parent.
@@ -59,6 +63,11 @@ The logger delegates to a `LogHandler` function. A default `consoleLogger` is pr
 ```ts
 type LogHandler = (message: string, level: LogLevel, context?: LogContext) => void;
 ```
+
+`src/core/transport/run-manager.ts` is the reference implementation to copy
+from. The examples below are deliberately generic (`DefaultFoo.bar()`) so they
+cannot drift against a rename — read the real strings off the code, not from
+here.
 
 The default console logger formats as:
 
@@ -72,25 +81,25 @@ Log messages follow the pattern `ClassName.methodName(); <description>`:
 
 ```ts
 // Method entry (trace)
-this._logger.trace('ClientSession.send();');
+this._logger.trace('DefaultFoo.bar();');
 
 // Successful completion (debug)
 this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
 
 // With context object
-this._logger.debug('Tree.applyMessage(); promoting serial', { msgId, serial });
+this._logger.debug('DefaultFoo.bar(); promoting serial', { msgId, serial });
 
 // Decision/branch (debug)
-this._logger.debug('Tree.applyMessage(); inserting new node', { msgId, parentId, forkOf });
+this._logger.debug('DefaultFoo.bar(); taking the resume path', { runId, reason });
 
 // Warning
-this._logger.warn('DefaultDecoderCore.decode(); unexpected message action', {
+this._logger.warn('DefaultFoo.bar(); unexpected message action', {
   action,
   serial: message.serial,
 });
 
 // Error
-this._logger.error('DefaultAgentSession(); subscribe failed');
+this._logger.error('DefaultFoo(); subscribe failed');
 ```
 
 ## When to Log at Each Level
@@ -100,7 +109,7 @@ this._logger.error('DefaultAgentSession(); subscribe failed');
 - **Debug** — after an operation completes, when taking a branch, or when state
   changes.
 - **Info** — operationally significant but expected lifecycle events
-  (session open/close).
+  (transport connect/close).
 - **Warn** — not yet an error, but something that could cascade.
 - **Error** — immediately before throwing or rejecting, and when a
   developer-provided callback throws (e.g. `callback threw`, with the error in

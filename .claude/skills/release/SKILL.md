@@ -1,15 +1,15 @@
 ---
 name: release
-description: Cut a new release - create the release branch, bump the version in package.json and src/version.ts, regenerate the CHANGELOG entry, commit, and open the release PR. Usage: /release patch|minor|major or /release <exact-version>.
+description: Cut a new release - create the release branch, bump the version in package.json, regenerate the CHANGELOG entry, commit, and open the release PR. Usage: /release patch|minor|major or /release <exact-version>.
 allowed-tools: Bash(git checkout *), Bash(git branch *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git log *), Bash(git rev-parse *), Bash(git commit *), Bash(git push *), Bash(gh pr create *), Bash(gh pr list *), Bash(gh pr view *), Bash(pnpm run *), Read, Edit, Glob, Grep, Skill, AskUserQuestion
 ---
 
 # Release: Cut a New Release Branch
 
-A release PR is an **ordinary PR**. It changes exactly three files —
-`package.json`, `src/version.ts`, `CHANGELOG.md` — and nothing else. Treat it
-as the small, boring change it is: no extra validation ceremony, no CI
-babysitting, no narrative.
+A release PR is an **ordinary PR**. It changes exactly two files —
+`package.json` and `CHANGELOG.md` — and nothing else. Treat it as the small,
+boring change it is: no extra validation ceremony, no CI babysitting, no
+narrative.
 
 ## Step 1: Pre-flight checks
 
@@ -60,13 +60,9 @@ Use **Edit** on:
 
 1. `package.json` — the `version` field. Do NOT use `pnpm version`; it creates
    a tag and a commit, and the human controls both.
-2. `src/version.ts` — the `VERSION` constant, same string. It is the
-   `ai-transport-js` agent identifier sent to Ably for SDK usage tracking and
-   must stay in lockstep with `package.json`.
 
 **No lockfile work.** `pnpm-lock.yaml` does not record the package's own
-version, and every demo app depends on the SDK through a `link:` specifier
-rather than a version range, so no root or demo lockfile changes. Do not run
+version, so no lockfile changes. Do not run
 `pnpm install`, do not delete `node_modules`, and do not stage any lockfile.
 
 ## Step 6: Regenerate the CHANGELOG entry
@@ -85,13 +81,13 @@ bullets in before committing.
 
 Run `pnpm run format` (prettier over the repo — it is EOL-safe on this
 checkout even though `format:check` is noisy locally), then stage **only** the
-three release files:
+two release files:
 
 ```
-git add package.json src/version.ts CHANGELOG.md
+git add package.json CHANGELOG.md
 ```
 
-Verify with `git diff --cached --stat` that exactly those three appear, then
+Verify with `git diff --cached --stat` that exactly those two appear, then
 commit.
 
 **The commit message is one line:**
@@ -118,15 +114,15 @@ silently; the draft state is the signal, no explanatory note in the body.
 
 The body is short. Four paragraphs, in this order:
 
-1. What the PR changes: the version bump in `package.json` / `src/version.ts`
-   and the new `CHANGELOG.md` entry. One or two sentences.
+1. What the PR changes: the version bump in `package.json` and the new
+   `CHANGELOG.md` entry. One or two sentences.
 2. The headline change in this release. One or two sentences.
 3. `PRs included since OLD_VERSION`, split into two labelled lists:
    - **User-facing (in changelog)** — every PR that produced a `CHANGELOG.md`
      bullet. One `#number` per line; add a two-or-three-word parenthetical
      only for the headline and for breaking changes.
    - **Not user-facing (not in changelog)** — every other PR in the window,
-     each with a one-word reason (`CI`, `demo`, `docs`, `test-only`,
+     each with a one-word reason (`CI`, `docs`, `test-only`,
      `internal tooling`, `internal refactor`). This is the changelog skill's
      "Skipped PRs" output.
 

@@ -24,10 +24,11 @@
  * batch of classified events, so the agent can assemble prior conversation
  * context for an inference call.
  *
- * It holds no Tree, so the sticky `step-client-id` inheritance relies solely on
- * the writer's in-process cursor (`getPriorStepClientId` returns `undefined`),
- * and the optimistic step-lifecycle seed a run's output verbs produce is
- * emitted on the transport's own receive stream.
+ * Sticky `step-client-id` inheritance is carried by the writer's in-process
+ * cursor alone (`getPriorStepClientId` returns `undefined`), because the
+ * transport keeps no conversation state to re-derive it from. The optimistic
+ * step-lifecycle seed a run's output verbs produce is emitted on the
+ * transport's own receive stream.
  */
 
 import * as Ably from 'ably';
@@ -148,10 +149,10 @@ export interface AgentTransportOptions<TInput, TOutput> {
 }
 
 /**
- * Create a standalone {@link AgentTransport} over a channel and codec. Reuses
- * the run-manager lifecycle publisher and the run-step-writer output path with
- * no Tree, so a developer can drive agent runs without adopting the Tree, View,
- * or session layers. Construction is synchronous and passive;
+ * Create an {@link AgentTransport} over a channel and codec, composing the
+ * run-manager lifecycle publisher with the run-step-writer output path. A
+ * developer drives agent runs and folds the events into state of their own.
+ * Construction is synchronous and passive;
  * {@link AgentTransport.connect} subscribes the transport's listener and
  * attaches the channel, after which live events flow, cancels route onto run
  * handles, and the run/history surface opens.
@@ -166,7 +167,9 @@ export const createAgentTransport = <TInput, TOutput>(
   const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
     component: 'AgentTransport',
   });
-  const runManager = createRunManager(channel, options.logger);
+  // Children get the resolved logger, not `options.logger`: context has to
+  // accumulate, and an omitted logger must still resolve to the Silent default.
+  const runManager = createRunManager(channel, logger);
 
   // The one decoder shared by the live fold and the history scan, so a stream
   // spanning the attach boundary is never double-decoded (locateInput's
@@ -247,8 +250,11 @@ export const createAgentTransport = <TInput, TOutput>(
       if (reg.onError) {
         try {
           reg.onError(errInfo);
-        } catch {
-          logger.error('AgentTransport.cancelRegistration(); onError callback threw', { runId });
+        } catch (error) {
+          logger.error('AgentTransport.cancelRegistration(); onError callback threw', {
+            runId,
+            error: errorMessage(error),
+          });
         }
       } else {
         receiver.emitError(errInfo);
@@ -664,6 +670,10 @@ export const createAgentTransport = <TInput, TOutput>(
         forkOf: params.forkOf,
         regenerates: params.regenerates,
         invocationId,
+        // Anchor the opening event to its trigger. This header is the only
+        // thing that lets the client which published the input resolve the
+        // run's id off the channel (see `PublishInputResult.runId`).
+        inputCodecMessageId: params.inputCodecMessageId,
         continuation: params.open === 'resume',
       });
     })();
@@ -694,10 +704,10 @@ export const createAgentTransport = <TInput, TOutput>(
       emitStepLifecycle: (event) => {
         receiver.emitEvent({ kind: 'step-lifecycle', event });
       },
-      // No Tree to re-derive a run's prior step client from: sticky inheritance
-      // rests entirely on the writer's in-process `lastStepClientId` cursor.
       getPriorStepClientId: () => {
-        /* no Tree, no prior step client */
+        // Sticky step-client inheritance rests entirely on the writer's
+        // in-process `lastStepClientId` cursor: the transport keeps no
+        // conversation state a prior step's client could be re-derived from.
       },
       // The caller's per-run hooks, `onError` included: the writer fires it
       // with a wrapped pipe stream failure alongside the `StreamResult.error`
@@ -716,7 +726,7 @@ export const createAgentTransport = <TInput, TOutput>(
         consideredSteerIds.push(...ids);
         return ids;
       },
-      logger: options.logger,
+      logger,
       requireConnected,
       assertPublishable: (verb) => {
         if (state === 'open') return;
@@ -742,7 +752,7 @@ export const createAgentTransport = <TInput, TOutput>(
     });
 
     /**
-     * Wrap the writer's {@link RunStep} as a {@link RunStepTransport}: the
+     * Wrap the writer's {@link WriterStep} as a {@link RunStepTransport}: the
      * transport surface has no `start()`, so the step is started lazily on its
      * first `pipe` / `send`, avoiding an empty `ai-step-start` / `ai-step-end`
      * bracket for a step that publishes nothing.
@@ -839,8 +849,13 @@ export const createAgentTransport = <TInput, TOutput>(
         // step-close failure must not block the run terminal.
         try {
           await stepWriter.closeActiveStep(stepEndReasonFor(params.reason));
-        } catch {
-          logger.error('AgentRunTransport.end(); failed to auto-close active step', { runId });
+        } catch (error) {
+          // Swallowed so the run terminal still publishes, which makes this log
+          // the only record of why the step never closed.
+          logger.error('AgentRunTransport.end(); failed to auto-close active step', {
+            runId,
+            error: errorMessage(error),
+          });
         }
         const error = params.reason === 'error' ? params.error : undefined;
         await runManager.endRun(runId, params.reason, invocationId, undefined, undefined, error, consideredInputIds());

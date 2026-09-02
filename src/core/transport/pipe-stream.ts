@@ -3,7 +3,7 @@
  *
  * Reads outputs from a ReadableStream, writes them to an encoder via
  * `publishOutput`, and handles cancel/error. No dependencies on run
- * state or session internals.
+ * state or transport internals.
  */
 
 import type { Logger } from '../../logger.js';
@@ -131,7 +131,7 @@ export const pipeStream = async <TInput, TOutput>(
         }
         // Transport mechanics only — close in-flight streamed messages as
         // cancelled. Run termination is the transport ai-run-end event,
-        // guaranteed by Run.pipe on a cancelled result.
+        // guaranteed by AgentRunTransport.pipe on a cancelled result.
         await encoder.cancelStreams();
         break;
       }

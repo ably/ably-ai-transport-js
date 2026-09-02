@@ -77,8 +77,9 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 
 ### What the tier covers today
 
-**Codec level**, in `test/vercel/codec/wire-codec.integration.test.ts`: a text
-and tool-call roundtrip over a real channel, proving the wire format and Ably's
+**Codec level**, one suite per codec (`test/vercel/codec/` and
+`test/openai/codec/`, both named `wire-codec.integration.test.ts`): a text and
+tool-call roundtrip over a real channel, proving the wire format and Ably's
 message serialization.
 
 **Transport level**, in `test/integration/transport.integration.test.ts`:

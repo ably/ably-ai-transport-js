@@ -528,6 +528,23 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(decodeInputs([foreign])).toEqual([]);
   });
 
+  it('decodes a non-create action on the ai-input name to nothing', () => {
+    // The channel is shared, so an application can delete or update a message
+    // that happens to carry our input name. Only a create carries a body:
+    // reading `data` off a delete would throw, and the receive path would turn
+    // that into an error event over a message that is not ours to interpret.
+    // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    const deleted = {
+      action: 'message.delete',
+      serial: 's1',
+      version: { serial: 's2' },
+      name: EVENT_AI_INPUT,
+      extras: { ai: { transport: {} } },
+    } as unknown as Ably.InboundMessage;
+
+    expect(decodeInputs([deleted])).toEqual([]);
+  });
+
   it('throws on malformed input wire data — the receive path drops the one message', () => {
     // CAST: minimal InboundMessage stub — only the fields the decoder reads.
     const malformed = {

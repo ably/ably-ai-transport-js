@@ -10,9 +10,10 @@
  * newer than `latestSerial` — the seam between what the store covered and
  * where its live subscription attached.
  *
- * There is no write side. The chat route owns every write, from the history
- * page it already does for the model context (see `api/chat/route.ts`), so a
- * client cannot put anything in the store the agent did not produce.
+ * There is no write side. The chat route owns every write, building the thread
+ * from what the run itself published plus the input that woke it (see
+ * `api/chat/route.ts`), so a client cannot put anything in the store the agent
+ * did not produce.
  */
 
 import { loadConversation } from '../../lib/message-store';

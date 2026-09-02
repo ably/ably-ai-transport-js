@@ -11,17 +11,17 @@
 import type * as Ably from 'ably';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_ROLE,
   HEADER_RUN_ID,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { getCodecHeaders, getTransportHeaders, getUserHeaders } from '../../utils.js';
-import { parseCodecMessageIdsHeader } from './headers.js';
+import { parseTransportMessageIdsHeader } from './headers.js';
 import type { WireMeta } from './types/transport.js';
 
 /**
@@ -39,7 +39,7 @@ export const wireMetaFromMessage = (rawMsg: Ably.InboundMessage): WireMeta => {
     codec,
     headers: getUserHeaders(rawMsg),
     serial: rawMsg.serial,
-    codecMessageId: transport[HEADER_CODEC_MESSAGE_ID],
+    transportMessageId: transport[HEADER_TRANSPORT_MESSAGE_ID],
     runId: transport[HEADER_RUN_ID],
     stepId: transport[HEADER_STEP_ID],
     stepStartSerial: transport[HEADER_STEP_START_SERIAL],
@@ -49,9 +49,9 @@ export const wireMetaFromMessage = (rawMsg: Ably.InboundMessage): WireMeta => {
     messageName: rawMsg.name,
     versionSerial: rawMsg.version.serial,
     versionTimestamp: rawMsg.version.timestamp,
-    inputCodecMessageId: transport[HEADER_INPUT_CODEC_MESSAGE_ID],
-    inputCodecMessageIds: parseCodecMessageIdsHeader(transport[HEADER_INPUT_CODEC_MESSAGE_IDS]),
-    steerCodecMessageIds: parseCodecMessageIdsHeader(transport[HEADER_STEER_CODEC_MESSAGE_IDS]),
+    inputTransportMessageId: transport[HEADER_INPUT_TRANSPORT_MESSAGE_ID],
+    inputTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]),
+    steerTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS]),
   };
 };
 
@@ -60,7 +60,7 @@ export const wireMetaFromMessage = (rawMsg: Ably.InboundMessage): WireMeta => {
  * emits for its own input before the wire round-trips. There is no inbound Ably
  * message yet, so the wire-assigned fields (`serial`, `timestamp`,
  * `versionSerial`, `versionTimestamp`, `messageName`) are all `undefined`; the
- * real echo later carries the same `codecMessageId` for a consumer to reconcile
+ * real echo later carries the same `transportMessageId` for a consumer to reconcile
  * on. The typed fields project off the transport headers the client stamped, so
  * a local echo and its wire counterpart surface identical identity fields.
  * @param transport - The transport-tier headers the client stamped on the input.
@@ -79,7 +79,7 @@ export const wireMetaFromLocalEcho = (
   codec: {},
   headers,
   serial: undefined,
-  codecMessageId: transport[HEADER_CODEC_MESSAGE_ID],
+  transportMessageId: transport[HEADER_TRANSPORT_MESSAGE_ID],
   runId: transport[HEADER_RUN_ID],
   stepId: transport[HEADER_STEP_ID],
   stepStartSerial: transport[HEADER_STEP_START_SERIAL],
@@ -89,7 +89,7 @@ export const wireMetaFromLocalEcho = (
   messageName: undefined,
   versionSerial: undefined,
   versionTimestamp: undefined,
-  inputCodecMessageId: transport[HEADER_INPUT_CODEC_MESSAGE_ID],
-  inputCodecMessageIds: parseCodecMessageIdsHeader(transport[HEADER_INPUT_CODEC_MESSAGE_IDS]),
-  steerCodecMessageIds: parseCodecMessageIdsHeader(transport[HEADER_STEER_CODEC_MESSAGE_IDS]),
+  inputTransportMessageId: transport[HEADER_INPUT_TRANSPORT_MESSAGE_ID],
+  inputTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]),
+  steerTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS]),
 });

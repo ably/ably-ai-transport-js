@@ -64,7 +64,7 @@ describe('@ably/ai-transport', () => {
       codec: {},
       headers: {},
       serial: 's-1',
-      codecMessageId: 'cmid-1',
+      transportMessageId: 'cmid-1',
       runId: 'run-1',
       stepId: undefined,
       stepStartSerial: undefined,
@@ -74,9 +74,9 @@ describe('@ably/ai-transport', () => {
       messageName: 'ai-output',
       versionSerial: 'v-1',
       versionTimestamp: 1,
-      inputCodecMessageId: undefined,
-      inputCodecMessageIds: undefined,
-      steerCodecMessageIds: undefined,
+      inputTransportMessageId: undefined,
+      inputTransportMessageIds: undefined,
+      steerTransportMessageIds: undefined,
     };
     const event: TransportEvent<VercelInput, VercelOutput> = { kind: 'message', meta, inputs: [], outputs: [] };
 

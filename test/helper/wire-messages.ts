@@ -2,7 +2,7 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_ROLE, HEADER_RUN_ID } from '../../src/constants.js';
+import { HEADER_ROLE, HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../src/constants.js';
 
 /** The fields {@link inboundMessage} projects onto its wire stub. */
 export interface InboundMessageOptions {
@@ -67,7 +67,11 @@ export const outputMsg = (serial: string, text: string, runId = 'R1'): Ably.Inbo
     data: text,
     extras: {
       ai: {
-        transport: { [HEADER_RUN_ID]: runId, [HEADER_ROLE]: 'assistant', [HEADER_CODEC_MESSAGE_ID]: `cmid-${text}` },
+        transport: {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_TRANSPORT_MESSAGE_ID]: `cmid-${text}`,
+        },
       },
     },
     serial,

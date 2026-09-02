@@ -9,7 +9,7 @@
  * publishes through the codec encoder, and emits an optimistic local echo
  * (serial / versionSerial `undefined`) for fresh content; a wire-only input
  * gets no echo. Its result carries a `runId` promise, resolved from the first
- * `ai-run-start` whose `input-codec-message-id` matches the publish and
+ * `ai-run-start` whose `input-transport-message-id` matches the publish and
  * rejected on close or continuity loss. `history()` returns older events as chronological batches
  * without emitting them — the batch walk itself is pinned in
  * history-walk.test.ts, so the history tests here cover only the transport's
@@ -17,7 +17,7 @@
  * routed onto `error`. `cancel` publishes a stateless `ai-cancel` envelope.
  * `steer` publishes a steering user input into an open run: `published`
  * resolves on the steer's own channel echo, `outcome` by membership of the
- * steer's codec-message-id in the `steer-codec-message-ids` stamps at the
+ * steer's transport-message-id in the `steer-transport-message-ids` stamps at the
  * run's next lifecycle bracket; close and continuity loss drain in-flight
  * steers. The steer state machine itself is pinned in
  * steer-coordinator.test.ts — the steer tests here cover only the
@@ -32,14 +32,14 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter, Encoder, WireCodec, WriteOptions } from '../../../src/core/codec/types.js';
 import { createClientTransport } from '../../../src/core/transport/client-transport.js';
@@ -54,7 +54,7 @@ interface TestInput {
   content?: string;
   parent?: string;
   target?: string;
-  codecMessageId?: string;
+  transportMessageId?: string;
 }
 interface TestOutput {
   type: string;
@@ -140,7 +140,7 @@ const flush = async (n = 8): Promise<void> => {
 
 /**
  * Build the channel echo of a steer's own publish.
- * @param steerId - The codec-message-id the steer publish minted.
+ * @param steerId - The transport-message-id the steer publish minted.
  * @param runId - The run the steer targets.
  * @param serial - The Ably-assigned channel serial.
  * @returns The wire message.
@@ -148,21 +148,21 @@ const flush = async (n = 8): Promise<void> => {
 const steerEcho = (steerId: string, runId: string, serial: string): Ably.InboundMessage =>
   inboundMessage({
     name: 'ai-input',
-    transport: { [HEADER_CODEC_MESSAGE_ID]: steerId, [HEADER_RUN_ID]: runId, [HEADER_ROLE]: 'user' },
+    transport: { [HEADER_TRANSPORT_MESSAGE_ID]: steerId, [HEADER_RUN_ID]: runId, [HEADER_ROLE]: 'user' },
     serial,
   });
 
 /**
  * Build a run output stamped with the steers its producing step consumed.
  * @param runId - The producing run.
- * @param steerIds - The consumed steers' codec-message-ids.
+ * @param steerIds - The consumed steers' transport-message-ids.
  * @param serial - The channel serial.
  * @returns The wire message.
  */
 const stampedOutput = (runId: string, steerIds: string[], serial: string): Ably.InboundMessage =>
   inboundMessage({
     name: 'ai-output',
-    transport: { [HEADER_RUN_ID]: runId, [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify(steerIds) },
+    transport: { [HEADER_RUN_ID]: runId, [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: JSON.stringify(steerIds) },
     serial,
   });
 
@@ -183,16 +183,18 @@ const runBracket = (name: string, runId: string, reason?: string): Ably.InboundM
 /**
  * Build a run-start, optionally attributing the run to its triggering input.
  * @param runId - The started run.
- * @param inputCodecMessageId - The triggering input's codec-message-id header,
+ * @param inputTransportMessageId - The triggering input's transport-message-id header,
  *   when the agent stamped one.
  * @returns The wire message.
  */
-const runStart = (runId: string, inputCodecMessageId?: string): Ably.InboundMessage =>
+const runStart = (runId: string, inputTransportMessageId?: string): Ably.InboundMessage =>
   inboundMessage({
     name: EVENT_RUN_START,
     transport: {
       [HEADER_RUN_ID]: runId,
-      ...(inputCodecMessageId === undefined ? {} : { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId }),
+      ...(inputTransportMessageId === undefined
+        ? {}
+        : { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputTransportMessageId }),
     },
     serial: `s-start-${runId}`,
   });
@@ -203,7 +205,7 @@ const runStart = (runId: string, inputCodecMessageId?: string): Ably.InboundMess
  * @param fixture - The connected setup fixture.
  * @param fixture.transport - The transport under test.
  * @param fixture.encoderCalls - The encoder's recorded publishes.
- * @returns The steer result pair and its minted codec-message-id.
+ * @returns The steer result pair and its minted transport-message-id.
  */
 const startSteer = async (fixture: {
   transport: ReturnType<typeof createClientTransport<TestInput, TestOutput>>;
@@ -342,31 +344,31 @@ describe('createClientTransport', () => {
 
       const result = await transport.publishInput({ kind: 'user-message', content: 'hi' });
 
-      expect(result.codecMessageId).toBeTruthy();
+      expect(result.transportMessageId).toBeTruthy();
       expect(result.eventId).toBeTruthy();
-      expect(result.codecMessageId).not.toBe(result.eventId);
+      expect(result.transportMessageId).not.toBe(result.eventId);
 
       expect(events).toHaveLength(1);
       const echo = events[0];
       if (echo?.kind !== 'message') throw new Error('expected message echo');
       expect(echo).toMatchObject({ kind: 'message', inputs: [{ kind: 'user-message', content: 'hi' }], outputs: [] });
-      // The echo carries no wire-assigned identity, and the same codecMessageId
+      // The echo carries no wire-assigned identity, and the same transportMessageId
       // the publish used, so a consumer reconciles it against the wire echo.
       expect(echo.meta.serial).toBeUndefined();
       expect(echo.meta.versionSerial).toBeUndefined();
       expect(echo.meta.messageName).toBeUndefined();
-      expect(echo.meta.codecMessageId).toBe(result.codecMessageId);
+      expect(echo.meta.transportMessageId).toBe(result.transportMessageId);
       expect(echo.meta.role).toBe('user');
       expect(echo.meta.clientId).toBe('client-a');
       expect(echo.meta.headers).toEqual({});
 
-      // The publish stamped role + codec-message-id + event-id transport headers.
+      // The publish stamped role + transport-message-id + event-id transport headers.
       expect(encoderCalls).toHaveLength(1);
       const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('user');
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe(result.codecMessageId);
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe(result.transportMessageId);
       expect(headers[HEADER_EVENT_ID]).toBe(result.eventId);
-      expect(encoderCalls[0]?.options?.messageId).toBe(result.codecMessageId);
+      expect(encoderCalls[0]?.options?.messageId).toBe(result.transportMessageId);
     });
 
     it.each([
@@ -388,21 +390,21 @@ describe('createClientTransport', () => {
       expect(echo.meta.clientId).toBe(clientId);
     });
 
-    it('honours an explicit codecMessageId, with no echo for the amend', async () => {
+    it('honours an explicit transportMessageId, with no echo for the amend', async () => {
       const { transport, events, encoderCalls } = await setup();
 
-      await transport.publishInput({ kind: 'user-message', content: 'hi' }, { codecMessageId: 'cmid-1' });
+      await transport.publishInput({ kind: 'user-message', content: 'hi' }, { transportMessageId: 'cmid-1' });
 
-      // An input naming an existing codecMessageId amends it, so no echo.
+      // An input naming an existing transportMessageId amends it, so no echo.
       expect(events).toHaveLength(0);
       const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('cmid-1');
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('cmid-1');
     });
 
-    it('emits no echo for an input published against an existing codecMessageId', async () => {
+    it('emits no echo for an input published against an existing transportMessageId', async () => {
       const { transport, events } = await setup();
 
-      await transport.publishInput({ kind: 'tool-result' }, { codecMessageId: 'assistant-1' });
+      await transport.publishInput({ kind: 'tool-result' }, { transportMessageId: 'assistant-1' });
 
       expect(events).toHaveLength(0);
     });
@@ -446,12 +448,12 @@ describe('createClientTransport', () => {
   });
 
   describe('publishInput runId', () => {
-    it('resolves from the first run-start carrying the publish codec-message-id', async () => {
+    it('resolves from the first run-start carrying the publish transport-message-id', async () => {
       const fixture = await setup();
       const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });
       await expect(Promise.race([sent.runId, Promise.resolve(pending)])).resolves.toBe(pending);
 
-      fixture.channel.listener?.(runStart('run-9', sent.codecMessageId));
+      fixture.channel.listener?.(runStart('run-9', sent.transportMessageId));
 
       await expect(sent.runId).resolves.toBe('run-9');
     });
@@ -467,15 +469,15 @@ describe('createClientTransport', () => {
       await expect(Promise.race([sent.runId, Promise.resolve(pending)])).resolves.toBe(pending);
     });
 
-    it('resolves every publish pinned to one codec-message-id from the same run-start', async () => {
+    it('resolves every publish pinned to one transport-message-id from the same run-start', async () => {
       const fixture = await setup();
       const first = await fixture.transport.publishInput(
         { kind: 'user-message', content: 'a' },
-        { codecMessageId: 'm-1' },
+        { transportMessageId: 'm-1' },
       );
       const second = await fixture.transport.publishInput(
         { kind: 'user-message', content: 'b' },
-        { codecMessageId: 'm-1' },
+        { transportMessageId: 'm-1' },
       );
 
       fixture.channel.listener?.(runStart('run-9', 'm-1'));
@@ -526,7 +528,7 @@ describe('createClientTransport', () => {
       const headers = fixture.encoderCalls[0]?.options?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('user');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe(steerId);
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe(steerId);
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('client-a');
 
       fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
@@ -592,7 +594,7 @@ describe('createClientTransport', () => {
       // the runId promise.
       expect(fixture.encoderCalls).toHaveLength(1);
 
-      fixture.channel.listener?.(runStart('run-9', sent.codecMessageId));
+      fixture.channel.listener?.(runStart('run-9', sent.transportMessageId));
       await flush();
 
       const headers = fixture.encoderCalls[1]?.options?.extras?.headers ?? {};

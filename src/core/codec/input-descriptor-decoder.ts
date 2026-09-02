@@ -7,7 +7,7 @@
  * it into the `{ kind, payload }` envelope; `wireOnly` events decode to `[]`.
  * A `batch` reads the `partType` sub-discriminator, rebuilds the part via its
  * sub-table, `assemble`s it into a one-part input, and the driver stamps the
- * `kind`. Addressing (the codec-message-id, parent, and regenerate headers)
+ * `kind`. Addressing (the transport-message-id, parent, and regenerate headers)
  * never rides the decoded input — the transport surfaces it on `WireMeta`.
  *
  * Returns bare `TInput[]` — the events carry no direction tag; the wire name

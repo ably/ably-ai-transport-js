@@ -53,17 +53,17 @@ export type RunLifecycleEvent =
        */
       serial: string | undefined;
       /**
-       * The codec-message-id of the input event that triggered this run — the
-       * `input-codec-message-id` wire header the agent stamps on run-start. It
+       * The transport-message-id of the input event that triggered this run — the
+       * `input-transport-message-id` wire header the agent stamps on run-start. It
        * is the handle the client owns at send time (before the agent mints the
        * `runId`): the client transport resolves `PublishInputResult.runId`
        * from it, and a consumer reconstructing conversation structure can
-       * reconcile optimistic state keyed by this same codec-message-id onto
+       * reconcile optimistic state keyed by this same transport-message-id onto
        * the agent-minted `runId`. Absent when the run was opened with neither
-       * a located input nor an explicit `inputCodecMessageId` (an `adoptRun`,
+       * a located input nor an explicit `inputTransportMessageId` (an `adoptRun`,
        * or a bare `openRun`).
        */
-      inputCodecMessageId?: string;
+      inputTransportMessageId?: string;
     })
   | (RunLifecycleBase & {
       /** The run paused without ending; a resume may re-open it. */

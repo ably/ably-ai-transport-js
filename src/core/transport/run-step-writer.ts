@@ -18,7 +18,7 @@
 
 import * as Ably from 'ably';
 
-import { HEADER_STEER_CODEC_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../constants.js';
+import { HEADER_STEER_TRANSPORT_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
@@ -65,15 +65,15 @@ interface StepStartSerialRef {
 }
 
 /**
- * A mutable holder for the steer codec-message-ids a pass stamps under
- * `steer-codec-message-ids`. Set per-pipe (in `doPipe` / `doSend`, which drain
+ * A mutable holder for the steer transport-message-ids a pass stamps under
+ * `steer-transport-message-ids`. Set per-pipe (in `doPipe` / `doSend`, which drain
  * {@link RunStepWriterContext.consumeSteerStampIds}) rather than once at step
  * open, so a step carrying more than one pipe stamps each steering message on
  * the pass that answers it. Read live by the composed encoder `onAblyMessage`,
  * so it is threaded through this ref rather than baked into the encoder up front.
  */
 interface SteerIdsRef {
-  /** The steer codec-message-ids to stamp; empty until a pipe drains them (or when no steer was drained). */
+  /** The steer transport-message-ids to stamp; empty until a pipe drains them (or when no steer was drained). */
   value: string[];
 }
 
@@ -86,8 +86,8 @@ interface SteerIdsRef {
 export interface StepWriterAnchors {
   /** The triggering input's publisher clientId, re-stamped as `input-client-id` on the agent's own publishes. */
   inputClientId: string | undefined;
-  /** The triggering input's codec-message-id, stamped as `input-codec-message-id`. */
-  inputCodecMessageId: string | undefined;
+  /** The triggering input's transport-message-id, stamped as `input-transport-message-id`. */
+  inputTransportMessageId: string | undefined;
 }
 
 /**
@@ -141,8 +141,8 @@ export interface RunStepWriterContext<TInput, TOutput> {
    */
   markOutputProduced?(): void;
   /**
-   * Return the codec-message-ids of steers drained since the previous step
-   * attempt opened, to stamp under `steer-codec-message-ids` on this attempt's
+   * Return the transport-message-ids of steers drained since the previous step
+   * attempt opened, to stamp under `steer-transport-message-ids` on this attempt's
    * assistant outputs (the header is omitted when the array is empty). Called
    * once per attempt at open, draining the run's per-attempt delta. Optional;
    * omitted when the run has no steer loop.
@@ -368,19 +368,19 @@ export const createRunStepWriter = <TInput, TOutput>(
 
   /**
    * Build the per-message encoder for one assistant-message publish under a
-   * step. Each publish is its own message (a fresh `codecMessageId`), so
+   * step. Each publish is its own message (a fresh `transportMessageId`), so
    * `pipe` and `send` both call this per invocation — the encoder itself is
    * short-lived, not a per-step long-lived object. Extracted so `doPipe` and
    * `doSend` share one path for header composition and the composed
    * `onAblyMessage` that stamps the step attempt's `step-start-serial` (live via
-   * {@link StepStartSerialRef}) and its drained `steer-codec-message-ids` (live via
+   * {@link StepStartSerialRef}) and its drained `steer-transport-message-ids` (live via
    * {@link SteerIdsRef}) — both known only after `ai-step-start` publishes,
    * which for `run.pipe`'s lazy implicit step is AFTER this encoder is created.
    * @param step - The step to stamp the message under.
    * @param step.stepId - The step's id, stamped on the message.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on the message once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
-   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
+   * @param step.steerIdsRef - Holds the steer transport-message-ids this attempt stamps under `steer-transport-message-ids`.
    * @returns The encoder (single message; caller must publish then `close()`).
    */
   const createMessageEncoder = (step: {
@@ -393,20 +393,20 @@ export const createRunStepWriter = <TInput, TOutput>(
     const anchors = ctx.getAnchors();
     const runOwnerClientId = runManager.getClientId(runId);
 
-    const codecMessageId = crypto.randomUUID();
+    const transportMessageId = crypto.randomUUID();
     // The default headers carry no attempt identity: `step-start-serial` and the
-    // drained `steer-codec-message-ids` are both known only after the step-start
+    // drained `steer-transport-message-ids` are both known only after the step-start
     // publishes (for the lazy implicit step, inside `onFirstOutput` — after this
     // encoder is created), so they are injected per-message by the composed
     // `onAblyMessage` rather than baked in here.
     const defaultHeaders = buildTransportHeaders({
       role: 'assistant',
       runId,
-      codecMessageId,
+      transportMessageId,
       runClientId: runOwnerClientId,
       invocationId,
       inputClientId: anchors.inputClientId,
-      inputCodecMessageId: anchors.inputCodecMessageId,
+      inputTransportMessageId: anchors.inputTransportMessageId,
       stepId: step.stepId,
       stepClientId: step.stepClientId,
     });
@@ -424,7 +424,7 @@ export const createRunStepWriter = <TInput, TOutput>(
       if (stepStartSerial !== undefined) transport[HEADER_STEP_START_SERIAL] = stepStartSerial;
       // Stamp the steers this attempt drained (steering client outcome
       // resolution is set-membership on this array), omitted when empty.
-      if (steerIds.length > 0) transport[HEADER_STEER_CODEC_MESSAGE_IDS] = JSON.stringify(steerIds);
+      if (steerIds.length > 0) transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS] = JSON.stringify(steerIds);
     };
     return codec.createEncoder(channel, {
       extras: { headers: defaultHeaders },
@@ -432,7 +432,7 @@ export const createRunStepWriter = <TInput, TOutput>(
         stampAttempt(message);
         runOnAblyMessage?.(message);
       },
-      messageId: codecMessageId,
+      messageId: transportMessageId,
     });
   };
 
@@ -449,7 +449,7 @@ export const createRunStepWriter = <TInput, TOutput>(
    * @param step.stepId - The step's id, stamped on every output.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on every output once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id` on every output.
-   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
+   * @param step.steerIdsRef - Holds the steer transport-message-ids this attempt stamps under `steer-transport-message-ids`.
    * @param step.onFirstOutput - Optional hook fired once before the first output (the lazy implicit-step open); omitted when the step is already open.
    * @returns The {@link StreamResult}.
    */
@@ -509,7 +509,7 @@ export const createRunStepWriter = <TInput, TOutput>(
    * @param step.stepId - The step's id, stamped on the output.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on the output.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
-   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
+   * @param step.steerIdsRef - Holds the steer transport-message-ids this attempt stamps under `steer-transport-message-ids`.
    */
   const doSend = async (
     output: TOutput,

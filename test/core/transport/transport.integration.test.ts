@@ -50,18 +50,18 @@ describe('transport send → stream → receive', () => {
     const sent = await client.transport.publishInput({ kind: 'message', payload: userMessage });
 
     // The agent's own read of the wire is what tells it a turn arrived.
-    const inbound = await agentEvents.next(isInputFor(sent.codecMessageId));
+    const inbound = await agentEvents.next(isInputFor(sent.transportMessageId));
 
     // No runId pin: with no located input, pinning one means "continue this
     // run" and publishes ai-run-resume, which carries no input correlation.
-    const run = agent.transport.openRun({ inputCodecMessageId: sent.codecMessageId });
+    const run = agent.transport.openRun({ inputTransportMessageId: sent.transportMessageId });
     const piped = await run.pipe(textResponseChunks('asst-1', 'text-1', 'Sunny with a light breeze'));
     await run.end({ reason: 'complete' });
 
     const observed = await clientEvents.until(isRunLifecycle('end', run.runId));
 
     // The pipe completed, and the client learned the agent-minted run-id off
-    // the channel via the input-codec-message-id header on ai-run-start.
+    // the channel via the input-transport-message-id header on ai-run-start.
     expect(piped.reason).toBe('complete');
     await expect(sent.runId).resolves.toBe(run.runId);
 
@@ -74,7 +74,7 @@ describe('transport send → stream → receive', () => {
     // Both input echoes, distinguished by serial: the optimistic local echo
     // (before the publish resolves) then the wire echo.
     const echoes = observed.filter(
-      (event) => event.kind === 'message' && event.meta.codecMessageId === sent.codecMessageId,
+      (event) => event.kind === 'message' && event.meta.transportMessageId === sent.transportMessageId,
     );
     expect(echoes).toHaveLength(2);
     const [optimistic, wire] = echoes;
@@ -95,7 +95,7 @@ describe('transport send → stream → receive', () => {
     ]);
     const start = lifecycle[0];
     if (start?.kind !== 'run-lifecycle' || start.event.type !== 'start') throw new Error('expected run-start');
-    expect(start.event.inputCodecMessageId).toBe(sent.codecMessageId);
+    expect(start.event.inputTransportMessageId).toBe(sent.transportMessageId);
     expect(start.event.clientId).toBe(agent.clientId);
     const end = lifecycle[3];
     if (end?.kind !== 'run-lifecycle' || end.event.type !== 'end') throw new Error('expected run-end');

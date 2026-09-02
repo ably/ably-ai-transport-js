@@ -28,7 +28,7 @@ export interface EventRecorder<TInput, TOutput> {
    * Resolve with the first event matching `predicate` — from the buffer when
    * one already arrived, else from the live stream. Because the whole buffer
    * is searched, a predicate reused across turns must be scoped to an id the
-   * test owns (`codecMessageId`, `runId`), never a bare `kind` check — a
+   * test owns (`transportMessageId`, `runId`), never a bare `kind` check — a
    * loose predicate can match an older turn's event.
    * @param predicate - The match.
    * @returns The first matching event.
@@ -120,16 +120,16 @@ export const isStepLifecycle =
 
 /**
  * Predicate: a message event carrying at least one decoded input for the
- * given codec-message-id (a wire echo, not the optimistic local echo — the
+ * given transport-message-id (a wire echo, not the optimistic local echo — the
  * wire echo carries a serial).
- * @param codecMessageId - The published input's codec-message-id.
+ * @param transportMessageId - The published input's transport-message-id.
  * @returns The predicate.
  */
 export const isInputFor =
-  <TInput, TOutput>(codecMessageId: string) =>
+  <TInput, TOutput>(transportMessageId: string) =>
   (event: TransportEvent<TInput, TOutput>): boolean =>
     event.kind === 'message' &&
-    event.meta.codecMessageId === codecMessageId &&
+    event.meta.transportMessageId === transportMessageId &&
     event.inputs.length > 0 &&
     event.meta.serial !== undefined;
 

@@ -30,8 +30,8 @@ interface StartRunMetadata {
   invocationId?: string;
   /** ClientId of the triggering input's publisher, re-stamped as `input-client-id`. */
   inputClientId?: string;
-  /** Codec-message-id of the triggering input event. */
-  inputCodecMessageId?: string;
+  /** Transport-message-id of the triggering input event. */
+  inputTransportMessageId?: string;
   /** When true, publish `ai-run-resume` (re-entry) instead of `ai-run-start`. */
   continuation?: boolean;
 }
@@ -92,7 +92,7 @@ export interface RunManager {
    * (`invocationId`, `inputClientId`), since a suspend is the terminal event
    * of the suspending invocation just as run-end is of an ending one. When
    * `consideredInputIds` is supplied and non-empty, it is stamped as the
-   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output has considered so far.
    */
   suspendRun(
@@ -111,7 +111,7 @@ export interface RunManager {
    * `error-code` / `error-message` headers — a codec-agnostic baseline failure
    * detail for consumers; omitting `error` publishes a bare `reason: 'error'`.
    * When `consideredInputIds` is supplied and non-empty, it is stamped as the
-   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output considered.
    */
   endRun(
@@ -205,7 +205,7 @@ class DefaultRunManager implements RunManager {
       runClientId: resolvedClientId,
       invocationId: metadata?.invocationId,
       inputClientId: metadata?.inputClientId,
-      inputCodecMessageId: metadata?.inputCodecMessageId,
+      inputTransportMessageId: metadata?.inputTransportMessageId,
     });
 
     await this._channel.publish({
@@ -266,8 +266,8 @@ class DefaultRunManager implements RunManager {
    * @param attribution.reason - Terminal reason; set for run-end, omitted for run-suspend.
    * @param attribution.invocationId - The invocation's id.
    * @param attribution.inputClientId - ClientId of the triggering input's publisher.
-   * @param attribution.consideredInputIds - Codec-message-ids of every input the
-   *   run's output considered, stamped as the `input-codec-message-ids` bracket
+   * @param attribution.consideredInputIds - Transport-message-ids of every input the
+   *   run's output considered, stamped as the `input-transport-message-ids` bracket
    *   receipt. Omitted when absent or empty.
    * @param attribution.errorCode - Numeric error code; set for run-end only when a terminal error is surfaced.
    * @param attribution.errorMessage - Error message; paired with errorCode.

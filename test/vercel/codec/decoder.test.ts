@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -19,6 +18,7 @@ import {
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
@@ -44,7 +44,7 @@ const TRANSPORT_HEADER_KEYS = new Set<string>([
   HEADER_RUN_ID,
   HEADER_INVOCATION_ID,
   HEADER_EVENT_ID,
-  HEADER_CODEC_MESSAGE_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
   HEADER_RUN_CLIENT_ID,
   HEADER_INPUT_CLIENT_ID,
   HEADER_ROLE,

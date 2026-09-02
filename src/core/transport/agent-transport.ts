@@ -96,8 +96,8 @@ interface CreateRunParams {
   invocationId: string;
   /** The opening action: publish `ai-run-start`, publish `ai-run-resume`, or adopt without publishing. */
   open: 'start' | 'resume' | 'adopt';
-  /** The triggering input's codec-message-id, when known. */
-  inputCodecMessageId?: string;
+  /** The triggering input's transport-message-id, when known. */
+  inputTransportMessageId?: string;
   /** The triggering input's publisher clientId, when known. */
   inputClientId?: string;
 }
@@ -116,14 +116,14 @@ interface RegisteredRun {
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   /** The run's error hook, from {@link OpenRunHooks.onError}; a cancel-hook failure delivers here instead of the transport's `error` stream. */
   onError?: (error: Ably.ErrorInfo) => void;
-  /** The triggering input's codec-message-id, from {@link OpenRunOptions.inputCodecMessageId}. */
-  inputCodecMessageId?: string;
+  /** The triggering input's transport-message-id, from {@link OpenRunOptions.inputTransportMessageId}. */
+  inputTransportMessageId?: string;
   /**
-   * Called with a live steering message's codec-message-id — a client input
+   * Called with a live steering message's transport-message-id — a client input
    * observed under this run's run-id. The run's closure tracks it (skipping
    * the trigger and already-answered steers) and fires its `onSteer` hint.
    */
-  onSteerMessage: (codecMessageId: string) => void;
+  onSteerMessage: (transportMessageId: string) => void;
 }
 
 /**
@@ -181,20 +181,20 @@ export const createAgentTransport = <TInput, TOutput>(
 
   /** Open runs by run-id — the cancel-routing registry. */
   const registeredRuns = new Map<string, RegisteredRun>();
-  /** Reverse index: triggering input codec-message-id → run-id, for fresh-send cancels keyed by input. */
-  const runIdByInputCodecMessageId = new Map<string, string>();
-  /** Cancels that arrived before their target run was opened, keyed by input codec-message-id. */
+  /** Reverse index: triggering input transport-message-id → run-id, for fresh-send cancels keyed by input. */
+  const runIdByInputTransportMessageId = new Map<string, string>();
+  /** Cancels that arrived before their target run was opened, keyed by input transport-message-id. */
   const deferredCancels = new Map<string, Ably.InboundMessage>();
-  /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
+  /** Steering-message transport-message-ids observed before their run was opened, keyed by run-id. */
   const preOpenSteersByRunId = new Map<string, Set<string>>();
 
   /**
-   * Union a steer's codec-message-id into the bounded pre-open buffer,
+   * Union a steer's transport-message-id into the bounded pre-open buffer,
    * FIFO-evicting the oldest run's buffer at {@link PRE_OPEN_STEER_LIMIT}.
    * @param runId - The run the steer belongs to.
-   * @param codecMessageId - The steer's codec-message-id.
+   * @param transportMessageId - The steer's transport-message-id.
    */
-  const bufferPreOpenSteerId = (runId: string, codecMessageId: string): void => {
+  const bufferPreOpenSteerId = (runId: string, transportMessageId: string): void => {
     const evicted = evictOldestIfFull(preOpenSteersByRunId, runId, PRE_OPEN_STEER_LIMIT);
     if (evicted !== undefined) {
       logger.warn('AgentTransport.bufferPreOpenSteerId(); pre-open steer buffer full, dropping oldest run', {
@@ -203,8 +203,8 @@ export const createAgentTransport = <TInput, TOutput>(
       });
     }
     const set = preOpenSteersByRunId.get(runId);
-    if (set) set.add(codecMessageId);
-    else preOpenSteersByRunId.set(runId, new Set([codecMessageId]));
+    if (set) set.add(transportMessageId);
+    else preOpenSteersByRunId.set(runId, new Set([transportMessageId]));
   };
 
   /**
@@ -277,57 +277,57 @@ export const createAgentTransport = <TInput, TOutput>(
 
   /**
    * Buffer a cancel that arrived before its target run was opened, keyed by the
-   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
+   * triggering input's transport-message-id. FIFO-evicts the oldest entry at
    * {@link DEFERRED_CANCEL_LIMIT}. A later cancel for the same input replaces
    * the earlier one — the intent is identical.
-   * @param inputCodecMessageId - The triggering input's codec-message-id.
+   * @param inputTransportMessageId - The triggering input's transport-message-id.
    * @param msg - The raw cancel message (passed to `onCancel`).
    */
-  const bufferDeferredCancel = (inputCodecMessageId: string, msg: Ably.InboundMessage): void => {
-    const evicted = evictOldestIfFull(deferredCancels, inputCodecMessageId, DEFERRED_CANCEL_LIMIT);
+  const bufferDeferredCancel = (inputTransportMessageId: string, msg: Ably.InboundMessage): void => {
+    const evicted = evictOldestIfFull(deferredCancels, inputTransportMessageId, DEFERRED_CANCEL_LIMIT);
     if (evicted !== undefined) {
       logger.warn('AgentTransport.bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
-        evictedInputCodecMessageId: evicted,
+        evictedInputTransportMessageId: evicted,
         limit: DEFERRED_CANCEL_LIMIT,
       });
     }
-    deferredCancels.set(inputCodecMessageId, msg);
+    deferredCancels.set(inputTransportMessageId, msg);
     logger.debug('AgentTransport.bufferDeferredCancel(); buffered early cancel', {
-      inputCodecMessageId,
+      inputTransportMessageId,
       serial: msg.serial,
     });
   };
 
   const handleCancelMessage = async (msg: Ably.InboundMessage): Promise<void> => {
-    const { runId, inputCodecMessageId } = readCancelTarget(msg);
+    const { runId, inputTransportMessageId } = readCancelTarget(msg);
 
     // Malformed cancel: drop with warn. A cancel must identify its target by
     // `run-id` (a continuation, whose run-id the client knows) and/or by
-    // `input-codec-message-id` (a fresh send, before the agent minted the
+    // `input-transport-message-id` (a fresh send, before the agent minted the
     // run-id). Neither present means there is nothing to route to.
-    if (!runId && !inputCodecMessageId) {
-      logger.warn('AgentTransport.handleCancelMessage(); missing run-id and input-codec-message-id', {
+    if (!runId && !inputTransportMessageId) {
+      logger.warn('AgentTransport.handleCancelMessage(); missing run-id and input-transport-message-id', {
         serial: msg.serial,
       });
       return;
     }
 
     // Primary path — match by run-id (continuations, whose run-id the client
-    // already knows). Resolve the input-codec-message-id to a run-id when the
+    // already knows). Resolve the input-transport-message-id to a run-id when the
     // run-id wasn't supplied (a fresh-send cancel whose target run has already
     // opened with that input, so the linkage exists).
     const resolvedRunId =
-      runId ?? (inputCodecMessageId ? runIdByInputCodecMessageId.get(inputCodecMessageId) : undefined);
+      runId ?? (inputTransportMessageId ? runIdByInputTransportMessageId.get(inputTransportMessageId) : undefined);
     const reg = resolvedRunId ? registeredRuns.get(resolvedRunId) : undefined;
 
     if (!reg) {
       // The run isn't known yet. A fresh-send cancel can race ahead of the
-      // `openRun` that establishes the input-codec-message-id → run linkage.
-      // Buffer it by input-codec-message-id so `openRun` can pull and honour
+      // `openRun` that establishes the input-transport-message-id → run linkage.
+      // Buffer it by input-transport-message-id so `openRun` can pull and honour
       // it. A bare run-id cancel for an unknown run is a no-op (the run never
       // existed here, or already ended).
-      if (inputCodecMessageId !== undefined) {
-        bufferDeferredCancel(inputCodecMessageId, msg);
+      if (inputTransportMessageId !== undefined) {
+        bufferDeferredCancel(inputTransportMessageId, msg);
       }
       return;
     }
@@ -353,14 +353,14 @@ export const createAgentTransport = <TInput, TOutput>(
     const { meta } = event;
     const eventRunId = meta.runId;
     if (eventRunId === undefined) return;
-    if (event.inputs.length === 0 || meta.codecMessageId === undefined) return;
+    if (event.inputs.length === 0 || meta.transportMessageId === undefined) return;
 
     const reg = registeredRuns.get(eventRunId);
     if (reg) {
-      reg.onSteerMessage(meta.codecMessageId);
+      reg.onSteerMessage(meta.transportMessageId);
       return;
     }
-    bufferPreOpenSteerId(eventRunId, meta.codecMessageId);
+    bufferPreOpenSteerId(eventRunId, meta.transportMessageId);
   };
 
   const onMessage = (message: Ably.InboundMessage): void => {
@@ -488,7 +488,7 @@ export const createAgentTransport = <TInput, TOutput>(
         runId,
         invocationId,
         open: continuation ? 'resume' : 'start',
-        inputCodecMessageId: opts?.inputCodecMessageId ?? inputMeta?.codecMessageId,
+        inputTransportMessageId: opts?.inputTransportMessageId ?? inputMeta?.transportMessageId,
         // The input's publisher clientId, as Ably stamped it on the input's
         // wire message from the publisher's realtime client. Re-stamped on the
         // run's own publishes as `input-client-id`.
@@ -523,7 +523,7 @@ export const createAgentTransport = <TInput, TOutput>(
    * @returns The run's write handle.
    */
   const createRun = (params: CreateRunParams, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
-    const { runId, invocationId, inputCodecMessageId, inputClientId } = params;
+    const { runId, invocationId, inputTransportMessageId, inputClientId } = params;
 
     // The run's cancel controller: an accepted cancel aborts it, ending
     // in-flight pipes `'cancelled'` and firing the handle's `abortSignal`.
@@ -539,7 +539,7 @@ export const createAgentTransport = <TInput, TOutput>(
     // and the per-attempt stamp delta; hasProducedOutput gates the initial
     // pass; knownSteerIds dedups a redelivered steer; consideredSteerIds
     // accumulates the ids step attempts took for stamping — the steer half of
-    // the input-codec-message-ids bracket receipt on suspend/end.
+    // the input-transport-message-ids bracket receipt on suspend/end.
     const steerTracker = new RunSteerTracker();
     let hasProducedOutput = false;
     const knownSteerIds = new Set<string>();
@@ -548,19 +548,19 @@ export const createAgentTransport = <TInput, TOutput>(
     /**
      * Track one steering message for this run. Skips the run's own triggering
      * input (the initial pass answers it) and a steer already tracked.
-     * @param codecMessageId - The steering message's codec-message-id.
+     * @param transportMessageId - The steering message's transport-message-id.
      * @returns True iff the steer became pending.
      */
-    const trackSteer = (codecMessageId: string): boolean => {
-      if (codecMessageId === inputCodecMessageId) return false;
-      if (knownSteerIds.has(codecMessageId)) return false;
-      knownSteerIds.add(codecMessageId);
-      steerTracker.addPending(codecMessageId);
+    const trackSteer = (transportMessageId: string): boolean => {
+      if (transportMessageId === inputTransportMessageId) return false;
+      if (knownSteerIds.has(transportMessageId)) return false;
+      knownSteerIds.add(transportMessageId);
+      steerTracker.addPending(transportMessageId);
       return true;
     };
 
     /**
-     * The `input-codec-message-ids` bracket receipt for this run's terminal
+     * The `input-transport-message-ids` bracket receipt for this run's terminal
      * events: the trigger plus every steer a step attempt took for stamping.
      * `undefined` until the run has produced output — a run that published
      * nothing considered nothing, so its bracket claims nothing.
@@ -568,7 +568,9 @@ export const createAgentTransport = <TInput, TOutput>(
      */
     const consideredInputIds = (): string[] | undefined => {
       if (!hasProducedOutput) return undefined;
-      return inputCodecMessageId === undefined ? [...consideredSteerIds] : [inputCodecMessageId, ...consideredSteerIds];
+      return inputTransportMessageId === undefined
+        ? [...consideredSteerIds]
+        : [inputTransportMessageId, ...consideredSteerIds];
     };
 
     /**
@@ -597,14 +599,14 @@ export const createAgentTransport = <TInput, TOutput>(
       controller,
       onCancel: hooks?.onCancel,
       onError: hooks?.onError,
-      inputCodecMessageId,
-      onSteerMessage: (codecMessageId) => {
-        if (trackSteer(codecMessageId)) notifySteer();
+      inputTransportMessageId,
+      onSteerMessage: (transportMessageId) => {
+        if (trackSteer(transportMessageId)) notifySteer();
       },
     };
     registeredRuns.set(runId, registration);
-    if (inputCodecMessageId !== undefined) {
-      runIdByInputCodecMessageId.set(inputCodecMessageId, runId);
+    if (inputTransportMessageId !== undefined) {
+      runIdByInputTransportMessageId.set(inputTransportMessageId, runId);
     }
 
     /**
@@ -616,11 +618,11 @@ export const createAgentTransport = <TInput, TOutput>(
     const deregister = (): void => {
       registeredRuns.delete(runId);
       preOpenSteersByRunId.delete(runId);
-      if (inputCodecMessageId !== undefined) {
-        if (runIdByInputCodecMessageId.get(inputCodecMessageId) === runId) {
-          runIdByInputCodecMessageId.delete(inputCodecMessageId);
+      if (inputTransportMessageId !== undefined) {
+        if (runIdByInputTransportMessageId.get(inputTransportMessageId) === runId) {
+          runIdByInputTransportMessageId.delete(inputTransportMessageId);
         }
-        deferredCancels.delete(inputCodecMessageId);
+        deferredCancels.delete(inputTransportMessageId);
       }
     };
 
@@ -642,17 +644,17 @@ export const createAgentTransport = <TInput, TOutput>(
     }
 
     // Honour a cancel that arrived before this openRun established the
-    // input-codec-message-id → run linkage. Fire-and-forget: with no onCancel
+    // input-transport-message-id → run linkage. Fire-and-forget: with no onCancel
     // hook the abort happens synchronously (no await precedes it), a hook
     // error is surfaced inside cancelRegistration, and a dispatch failure (a
     // throwing onError) is reported by the routing bracket below.
-    if (inputCodecMessageId !== undefined) {
-      const buffered = deferredCancels.get(inputCodecMessageId);
+    if (inputTransportMessageId !== undefined) {
+      const buffered = deferredCancels.get(inputTransportMessageId);
       if (buffered !== undefined) {
-        deferredCancels.delete(inputCodecMessageId);
-        logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId, inputCodecMessageId });
+        deferredCancels.delete(inputTransportMessageId);
+        logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId, inputTransportMessageId });
         cancelRegistration(registration, buffered).catch((error: unknown) => {
-          reportCancelRoutingFailure(error, { runId, inputCodecMessageId });
+          reportCancelRoutingFailure(error, { runId, inputTransportMessageId });
         });
       }
     }
@@ -687,7 +689,7 @@ export const createAgentTransport = <TInput, TOutput>(
             // Anchor the opening event to its trigger. This header is the only
             // thing that lets the client which published the input resolve the
             // run's id off the channel (see `PublishInputResult.runId`).
-            inputCodecMessageId: params.inputCodecMessageId,
+            inputTransportMessageId: params.inputTransportMessageId,
             continuation: params.open === 'resume',
           }),
       );
@@ -730,7 +732,7 @@ export const createAgentTransport = <TInput, TOutput>(
       consumeSteerStampIds: () => {
         // The moment a step attempt takes drained steers for stamping is the
         // moment they count as considered — the same transfer point the
-        // per-output steer-codec-message-ids stamp uses, so the bracket
+        // per-output steer-transport-message-ids stamp uses, so the bracket
         // receipt and the stamps agree.
         const ids = steerTracker.consumeRecentlyProcessed();
         consideredSteerIds.push(...ids);
@@ -754,7 +756,7 @@ export const createAgentTransport = <TInput, TOutput>(
       // threads it through openRun / per-pipe options itself).
       getAnchors: () => ({
         inputClientId,
-        inputCodecMessageId,
+        inputTransportMessageId,
       }),
     });
 

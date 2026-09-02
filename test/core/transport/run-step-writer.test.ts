@@ -37,7 +37,7 @@ const createMockCodec = (): WireCodec<TestInput, TestOutput> => ({
 
 const noAnchors = (): StepWriterAnchors => ({
   inputClientId: undefined,
-  inputCodecMessageId: undefined,
+  inputTransportMessageId: undefined,
 });
 
 /**

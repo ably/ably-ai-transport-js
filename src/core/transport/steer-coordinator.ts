@@ -8,7 +8,7 @@
  *     `published`).
  *   - {@link _inflightSteers} — outcome handlers awaiting a lifecycle
  *     event on the targeted Run.
- *   - {@link _consumedByRunId} — accumulator of `steer-codec-message-ids`
+ *   - {@link _consumedByRunId} — accumulator of `steer-transport-message-ids`
  *     stamps observed on the Run's response messages.
  *   - {@link _deadRunIds} — runs whose `run-end` the SDK has folded;
  *     subsequent `steer()` calls reject synchronously.
@@ -29,10 +29,10 @@ import * as Ably from 'ably';
 import {
   EVENT_RUN_END,
   EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
@@ -70,8 +70,8 @@ export interface SteerCoordinatorOptions<TInput> {
  * {@link SteerCoordinator}'s per-runId bucket.
  */
 interface InflightSteer {
-  /** The steer's codec-message-id; matched against the accumulated consumed set. */
-  steerCodecMessageId: string;
+  /** The steer's transport-message-id; matched against the accumulated consumed set. */
+  steerTransportMessageId: string;
   /** Resolve the outcome promise (called on every lifecycle event the entry survives to). */
   resolve: (outcome: SteerOutcome) => void;
   /** Reject the outcome promise (continuity loss, transport close). */
@@ -80,8 +80,8 @@ interface InflightSteer {
 
 /**
  * Pending steer awaiting its own channel echo. Keyed by the
- * client-minted codec-message-id stamped on the publish; the matching
- * inbound message carries it back as `codec-message-id`.
+ * client-minted transport-message-id stamped on the publish; the matching
+ * inbound message carries it back as `transport-message-id`.
  */
 interface PendingSteerEcho {
   /** The agent-minted run-id the steer is targeting. */
@@ -109,13 +109,13 @@ export class SteerCoordinator<TInput> {
   private readonly _inflightSteers = new Map<string, InflightSteer[]>();
 
   /**
-   * Per-run union of codec-message-ids the agent has stamped as consumed on
-   * its response messages (`steer-codec-message-ids` header). Cleared on
+   * Per-run union of transport-message-ids the agent has stamped as consumed on
+   * its response messages (`steer-transport-message-ids` header). Cleared on
    * `run-end` after resolving the matching in-flight bucket, and on close.
    */
   private readonly _consumedByRunId = new Map<string, Set<string>>();
 
-  /** Steers awaiting their own channel echo, keyed by codec-message-id. */
+  /** Steers awaiting their own channel echo, keyed by transport-message-id. */
   private readonly _pendingEchoes = new Map<string, PendingSteerEcho>();
 
   /**
@@ -135,7 +135,7 @@ export class SteerCoordinator<TInput> {
    * Publish a steering user-message targeting `runId`. Awaits the caller's
    * `runIdPromise` so a steer attempted before `ai-run-start` lands is
    * delayed (not rejected) until the agent has minted the id. Registers a
-   * pending-echo entry keyed by the steer's codec-message-id; when the
+   * pending-echo entry keyed by the steer's transport-message-id; when the
    * channel delivers the echo via {@link observeMessage}, the coordinator
    * resolves `published` with the Ably-assigned serial and moves the
    * outcome handler to `_inflightSteers` under the resolved `runId`.
@@ -213,19 +213,19 @@ export class SteerCoordinator<TInput> {
         return;
       }
 
-      const codecMessageId = crypto.randomUUID();
+      const transportMessageId = crypto.randomUUID();
       const inputEventId = crypto.randomUUID();
       const headers = buildTransportHeaders({
         role: 'user',
         runId: resolvedRunId,
-        codecMessageId,
+        transportMessageId,
         runClientId: this._clientId(),
         inputEventId,
       });
 
       // Register the pending-echo entry BEFORE publishing so the channel
       // delivery (which races publish completion) finds it.
-      this._pendingEchoes.set(codecMessageId, {
+      this._pendingEchoes.set(transportMessageId, {
         runId: resolvedRunId,
         resolvePublished,
         resolveOutcome,
@@ -237,12 +237,12 @@ export class SteerCoordinator<TInput> {
       // pass the same input shape a send does (typically
       // `codec.createUserMessage(...)`).
       try {
-        await this._publish(input, { extras: { headers }, messageId: codecMessageId });
+        await this._publish(input, { extras: { headers }, messageId: transportMessageId });
       } catch (error) {
         // Publish failed — pull the pending-echo entry and reject both
         // promises. The channel never observed the publish, so the echo
-        // path will never fire for this codec-message-id.
-        this._pendingEchoes.delete(codecMessageId);
+        // path will never fire for this transport-message-id.
+        this._pendingEchoes.delete(transportMessageId);
         const cause = errorCause(error);
         const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
         const err = new Ably.ErrorInfo(
@@ -264,11 +264,11 @@ export class SteerCoordinator<TInput> {
   /**
    * Process an inbound channel message. The coordinator inspects three
    * orthogonal facets:
-   *   1. Echo match — if the message's codec-message-id matches a pending
+   *   1. Echo match — if the message's transport-message-id matches a pending
    *      steer publish, resolve `published` with the Ably-assigned serial
    *      and move the outcome handler into `_inflightSteers`.
    *   2. Stamp accumulation — if the message carries
-   *      `steer-codec-message-ids`, union the listed ids into the run's
+   *      `steer-transport-message-ids`, union the listed ids into the run's
    *      consumed set.
    *   3. Lifecycle resolution — on `ai-run-suspend` / `ai-run-end`,
    *      resolve in-flight outcomes for the run by membership.
@@ -278,17 +278,17 @@ export class SteerCoordinator<TInput> {
     const headers = getTransportHeaders(msg);
 
     // (1) Echo match: this inbound is our own steer's channel delivery.
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-    if (codecMessageId !== undefined) {
-      const pending = this._pendingEchoes.get(codecMessageId);
+    const transportMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
+    if (transportMessageId !== undefined) {
+      const pending = this._pendingEchoes.get(transportMessageId);
       if (pending) {
-        this._pendingEchoes.delete(codecMessageId);
+        this._pendingEchoes.delete(transportMessageId);
         pending.resolvePublished({ serial: msg.serial });
         // Register the outcome handler on the resolved run-id's bucket.
         // The next `run-suspend`/`run-end` for this run will resolve it by
-        // checking whether `steerCodecMessageId` is in the consumed set.
+        // checking whether `steerTransportMessageId` is in the consumed set.
         const entry: InflightSteer = {
-          steerCodecMessageId: codecMessageId,
+          steerTransportMessageId: transportMessageId,
           resolve: pending.resolveOutcome,
           reject: pending.rejectOutcome,
         };
@@ -298,12 +298,12 @@ export class SteerCoordinator<TInput> {
       }
     }
 
-    // (2) Stamp accumulation: union the `steer-codec-message-ids` delta
+    // (2) Stamp accumulation: union the `steer-transport-message-ids` delta
     // for the run. Lifecycle events do NOT carry this header in the agent
     // implementation, but the parse is gated on its presence so an
     // accidental stamp would just be a harmless union.
     const runIdHeader = headers[HEADER_RUN_ID];
-    const steerIdsStamp = headers[HEADER_STEER_CODEC_MESSAGE_IDS];
+    const steerIdsStamp = headers[HEADER_STEER_TRANSPORT_MESSAGE_IDS];
     if (runIdHeader !== undefined && steerIdsStamp !== undefined) {
       try {
         // CAST: trust boundary — the agent always stamps a JSON array of
@@ -318,12 +318,12 @@ export class SteerCoordinator<TInput> {
           }
           for (const id of parsed) if (typeof id === 'string') bucket.add(id);
         } else {
-          this._logger.warn('SteerCoordinator.observeMessage(); ignoring non-array steer-codec-message-ids', {
+          this._logger.warn('SteerCoordinator.observeMessage(); ignoring non-array steer-transport-message-ids', {
             runId: runIdHeader,
           });
         }
       } catch (error) {
-        this._logger.warn('SteerCoordinator.observeMessage(); failed to parse steer-codec-message-ids', {
+        this._logger.warn('SteerCoordinator.observeMessage(); failed to parse steer-transport-message-ids', {
           runId: runIdHeader,
           error: errorMessage(error),
         });
@@ -416,7 +416,7 @@ export class SteerCoordinator<TInput> {
     if (bucket !== undefined && bucket.length > 0) {
       const remaining: InflightSteer[] = [];
       for (const entry of bucket) {
-        const consumed = consumedSet?.has(entry.steerCodecMessageId) ?? false;
+        const consumed = consumedSet?.has(entry.steerTransportMessageId) ?? false;
         if (consumed) {
           entry.resolve(
             terminalReason === undefined ? { consumed: true } : { consumed: true, runTerminalReason: terminalReason },
@@ -439,14 +439,14 @@ export class SteerCoordinator<TInput> {
       this._consumedByRunId.delete(runId);
       // Drain any pending-echo entries targeting this Run too: their
       // channel echo never landed before the terminal lifecycle event, so
-      // the codec-message-id couldn't be matched against the accumulated
+      // the transport-message-id couldn't be matched against the accumulated
       // consumed set. Resolve `published` with a missing serial (the echo
       // will not be observed) and resolve `outcome` as not-consumed with
       // the terminal reason. Without this drain a run-end racing ahead of
       // a steer's own publish echo would orphan its outcome promise.
-      for (const [codecMessageId, pending] of this._pendingEchoes) {
+      for (const [transportMessageId, pending] of this._pendingEchoes) {
         if (pending.runId !== runId) continue;
-        this._pendingEchoes.delete(codecMessageId);
+        this._pendingEchoes.delete(transportMessageId);
         pending.resolvePublished({ serial: undefined });
         pending.resolveOutcome(
           terminalReason === undefined ? { consumed: false } : { consumed: false, runTerminalReason: terminalReason },

@@ -84,18 +84,18 @@ const seedTurn = async (
   agentEvents: EventRecorder<VercelInput, VercelOutput>,
   sender: TransportEndpoint<ClientTransport<VercelInput, VercelOutput>>,
   index: number,
-): Promise<{ runId: string; codecMessageId: string }> => {
+): Promise<{ runId: string; transportMessageId: string }> => {
   const message: AI.UIMessage = {
     id: `user-${String(index)}`,
     role: 'user',
     parts: [{ type: 'text', text: `question ${String(index)}` }],
   };
   const sent = await sender.transport.publishInput({ kind: 'message', payload: message });
-  await agentEvents.next(isInputFor(sent.codecMessageId));
-  const run = agent.transport.openRun({ inputCodecMessageId: sent.codecMessageId });
+  await agentEvents.next(isInputFor(sent.transportMessageId));
+  const run = agent.transport.openRun({ inputTransportMessageId: sent.transportMessageId });
   await run.pipe(textResponseChunks(`asst-${String(index)}`, `text-${String(index)}`, `answer ${String(index)}`));
   await run.end({ reason: 'complete' });
-  return { runId: run.runId, codecMessageId: sent.codecMessageId };
+  return { runId: run.runId, transportMessageId: sent.transportMessageId };
 };
 
 /**
@@ -149,7 +149,7 @@ describe('transport history over real Ably', () => {
       kind: 'message',
       payload: { id: 'sentinel', role: 'user', parts: [{ type: 'text', text: 'after the attach point' }] },
     });
-    await freshEvents.next(isInputFor(sentinel.codecMessageId));
+    await freshEvents.next(isInputFor(sentinel.transportMessageId));
 
     const batches = await pageToExhaustion(fresh.transport);
     const chronological = batches.toReversed().flat();
@@ -196,7 +196,9 @@ describe('transport history over real Ably', () => {
     // The post-attach sentinel stays outside the untilAttach window, and the
     // exhausted cursor stays exhausted.
     expect(
-      chronological.some((event) => event.kind === 'message' && event.meta.codecMessageId === sentinel.codecMessageId),
+      chronological.some(
+        (event) => event.kind === 'message' && event.meta.transportMessageId === sentinel.transportMessageId,
+      ),
     ).toBe(false);
     await expect(fresh.transport.history({ limit: 1 })).resolves.toEqual({ events: [], exhausted: true });
   });

@@ -11,7 +11,7 @@
  * Domain decoders call `createDecoderCore(hooks)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
  * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
- * concerns (`codec-message-id`) are surfaced by the transport via `WireMeta`, not
+ * concerns (`transport-message-id`) are surfaced by the transport via `WireMeta`, not
  * here.
  */
 

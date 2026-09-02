@@ -1,7 +1,7 @@
 /**
  * Guards what each public entry point publishes.
  *
- * The package ships four entry points and each one's `index.ts` is the
+ * The package ships five entry points and each one's `index.ts` is the
  * authoritative list of its public API. The codec suites cannot catch a
  * mis-wired barrel because they import the internal modules directly and never
  * exercise the entry points, so an export that goes missing surfaces only in a
@@ -51,6 +51,8 @@ import {
 } from '../src/react/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
+import type { ChatTransportHandle, UseChatTransportOptions } from '../src/vercel/react/index.js';
+import { ChatTransportProvider, useChatTransport } from '../src/vercel/react/index.js';
 
 /**
  * Every key a wire codec may carry. The assertion reports any key outside
@@ -179,6 +181,21 @@ describe('@ably/ai-transport/vercel', () => {
 
     expect(input.kind).toBe('message');
     expect(output.type).toBe('start');
+  });
+});
+
+describe('@ably/ai-transport/vercel/react', () => {
+  it('publishes the provider and the hook', () => {
+    expect(ChatTransportProvider).toBeTypeOf('function');
+    expect(useChatTransport).toBeTypeOf('function');
+  });
+
+  it('publishes the types a caller needs to name the hook\'s options and handle', () => {
+    const options: UseChatTransportOptions = {};
+    const handle: ChatTransportHandle = { transport: undefined, chatTransport: undefined, error: undefined };
+
+    expect(options).toEqual({});
+    expect(handle.chatTransport).toBeUndefined();
   });
 });
 

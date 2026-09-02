@@ -78,9 +78,10 @@ export interface FramingActivities {
    */
   suspendRun(input: SuspendRunInput): Promise<void>;
   /**
-   * Best-effort failure cleanup: adopt the run and, if it is still active, end
-   * it as `error` so a waiting client unsticks. Does nothing when the run has
-   * already finished or is parked suspended.
+   * Best-effort failure cleanup: adopt the run and end it as `error` so a
+   * waiting client unsticks. Reads no wire state first, so it publishes over an
+   * already-ended run (a second terminal a reader ignores) and over one parked
+   * by `suspendRun` (which replaces the park with an error terminal).
    * @param input - The run's identity, its invocation, and the failure message.
    */
   cleanupRun(input: CleanupRunInput): Promise<void>;

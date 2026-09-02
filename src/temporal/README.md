@@ -38,8 +38,11 @@ it, and it is identical in every integration:
 The plugin registers all four, so none of them appear in your code. Two carry
 subtleties worth knowing: `openRun` pins the run id to the invocation id, which
 is what makes a retry re-enter the same run rather than opening a second one in
-parallel; and `cleanupRun` status-gates before publishing, so it quietly does
-nothing when the run already finished or is parked suspended.
+parallel; and `cleanupRun` reads no wire state before publishing, so it ends the run
+`error` whatever state the run was in. On an already-ended run that costs a
+second `ai-run-end` a reader ignores. On a run the workflow had parked with
+`suspend`, it replaces the park with an error terminal — see the note on
+`cleanup` below.
 
 ## Worker setup
 
@@ -70,7 +73,9 @@ const worker = await Worker.create({
 
 `createClient` is required: the SDK never reads your environment or builds Ably
 clients for you. It is called once per activity, and the client is closed before
-the activity returns. A client per activity is a correctness requirement, not
+the activity returns. Leave `echoMessages` at its default — `openRun` completes
+on the opening event arriving back over the subscription, so a client that does
+not echo its own publishes leaves the activity waiting for its timeout. A client per activity is a correctness requirement, not
 tidiness — a transport takes its channel from `client.channels.get(name)`, which
 caches per name, and detaching that channel detaches it for every holder, so two
 transports sharing a client on one channel would break each other.

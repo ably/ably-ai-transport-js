@@ -5,8 +5,8 @@
  * `withRun` owns the run's bookends. It opens the run — creating it, or resuming
  * an existing one when the turn is a continuation — and on a failure makes a
  * best-effort attempt to end it `error`, so a failed turn doesn't leave the
- * browser waiting on a stream that never ends. That attempt survives a cancel or
- * terminate of this workflow, which is when it matters most.
+ * browser waiting on a stream that never ends. That attempt survives a cancel of
+ * this workflow, which is when it matters most.
  *
  * What is left here is this app's own algorithm: run an inference, and while it
  * comes back asking for server tools, run those tools and infer again.
@@ -48,8 +48,9 @@ export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
   // withRun opens the run — creating it, or RESUMING an existing one when this
   // turn is a continuation — runs the body, and on a throw makes a best-effort
   // attempt to end the run 'error' so a waiting client unsticks. Best-effort is
-  // literal: that attempt is non-cancellable, gets one shot with a short timeout,
-  // and no-ops when the run is already terminal or parked suspended.
+  // literal: that attempt is non-cancellable, gets one shot with a short
+  // timeout, and reads no wire state — so it publishes over a run that is
+  // already terminal or parked.
   //
   // The handle carries plain data only. A live transport cannot cross an
   // activity boundary, so each activity re-enters the run from `run.ids` with

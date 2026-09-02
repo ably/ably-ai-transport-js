@@ -17,8 +17,10 @@
 import { Context } from '@temporalio/activity';
 import * as Ably from 'ably';
 
+import { channelAgent } from '../core/agent.js';
 import type { WireCodec } from '../core/codec/types.js';
 import { createAgentTransport } from '../core/transport/agent-transport.js';
+import { DEFAULT_HISTORY_PAGE_SIZE } from '../core/transport/history-pager.js';
 import { Invocation } from '../core/transport/invocation.js';
 import type { AgentTransport, RunIdentity } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
@@ -33,14 +35,6 @@ import type {
 } from './workflow/activity-types.js';
 
 /**
- * Page size assumed when a caller bounds the locate scan with
- * `maxHistoryPages` but names no `historyPageSize`. Mirrors the transport's own
- * default, so the bound means what its name says without the caller having to
- * set both.
- */
-const DEFAULT_LOCATE_PAGE_SIZE = 100;
-
-/**
  * Configuration for the framing activities. A consumer supplies this to
  * {@link createAblyTransportPlugin}, which builds and registers the activities
  * itself.
@@ -51,6 +45,11 @@ export interface FramingActivitiesOptions<TInput, TOutput> {
   /**
    * Builds the Ably client for one activity. Called once per activity
    * invocation; the returned client is closed before the activity returns.
+   *
+   * The client must echo its own publishes — leave `echoMessages` at its
+   * default. `openRun` completes on the opening event coming back over the
+   * subscription, so a client with `echoMessages: false` never sees it and the
+   * activity sits until its `startToCloseTimeout` and then retries.
    */
   createClient: () => Ably.Realtime;
   /** Logger propagated into every transport. */
@@ -76,7 +75,10 @@ export interface FramingActivitiesOptions<TInput, TOutput> {
 export const createFramingActivities = <TInput, TOutput>(
   options: FramingActivitiesOptions<TInput, TOutput>,
 ): FramingActivities => {
-  const { codec, createClient, logger } = options;
+  const { codec, createClient } = options;
+  // Each layer adds its own context, so a transport built inside an activity
+  // is distinguishable in the log from any other AgentTransport.
+  const logger = options.logger?.withContext({ component: 'FramingActivities' });
   const heartbeat = options.heartbeat ?? false;
 
   /** Per-page heartbeat for the history scans, when enabled. */
@@ -104,7 +106,14 @@ export const createFramingActivities = <TInput, TOutput>(
     const client = createClient();
     try {
       return await withHeartbeat(heartbeat, async () => {
-        const channel = client.channels.get(invocation.channelName);
+        // This module resolves the channel itself, so nothing downstream can
+        // add the attribution afterwards: without it every framing event these
+        // activities publish goes out unattributed. The mode set stays the
+        // caller's business — an activity publishes lifecycle events only, and
+        // the transport's base modes are the default.
+        const channel = client.channels.get(invocation.channelName, {
+          params: { agent: channelAgent(codec) },
+        });
         const transport = createAgentTransport<TInput, TOutput>({
           channel,
           codec,
@@ -164,6 +173,7 @@ export const createFramingActivities = <TInput, TOutput>(
   return {
     openRun: async (input: OpenRunInput): Promise<RunIdentity> => {
       const cancelSignal = Context.current().cancellationSignal;
+      logger?.trace('framingActivities.openRun();', { invocationId: input.invocationId });
       return inTransport(input.invocation, async ({ transport, invocation }) => {
         // The trigger was published before this process attached, so it sits
         // in channel history. Locate it and no more: this activity runs no
@@ -179,16 +189,23 @@ export const createFramingActivities = <TInput, TOutput>(
           // scanned and is page granular, so the product bounds the pages the
           // scan fetches.
           ...(options.maxHistoryPages !== undefined && {
-            limit: options.maxHistoryPages * (options.historyPageSize ?? DEFAULT_LOCATE_PAGE_SIZE),
+            limit: options.maxHistoryPages * (options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE),
           }),
         });
         if (!located) {
+          logger?.error('framingActivities.openRun(); trigger not found in history', {
+            inputEventId: invocation.inputEventId,
+          });
           throw new Ably.ErrorInfo(
             `unable to open run; input event ${invocation.inputEventId} not found in channel history`,
             ErrorCode.NotFound,
             404,
           );
         }
+        logger?.debug('framingActivities.openRun(); trigger located', {
+          inputEventId: invocation.inputEventId,
+          serial: located.meta.serial,
+        });
 
         // The located input drives the open: its run-id header names the run
         // a continuation re-enters (publishing `ai-run-resume`); without one, a
@@ -239,6 +256,7 @@ export const createFramingActivities = <TInput, TOutput>(
           /* observed via the race */
         });
         await Promise.race([opened, openFailed]);
+        logger?.debug('framingActivities.openRun(); run open', { runId: run.runId });
 
         return { runId: run.runId, invocationId: input.invocationId };
       });
@@ -246,6 +264,7 @@ export const createFramingActivities = <TInput, TOutput>(
 
     endRun: async (input: EndRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
+      logger?.trace('framingActivities.endRun();', { runId: input.ids.runId, reason: input.reason });
       await inTransport(input.invocation, async ({ transport }) => {
         // No wire-state check: this activity adopts and publishes. A retry
         // after a crash that already published puts a second `ai-run-end` on
@@ -259,7 +278,11 @@ export const createFramingActivities = <TInput, TOutput>(
         if (input.reason === 'error') {
           await run.end({
             reason: 'error',
-            error: new Ably.ErrorInfo(input.errorMessage ?? 'run failed', ErrorCode.RunResponseStreamFailed, 500),
+            error: new Ably.ErrorInfo(
+              input.errorMessage ?? 'unable to complete the run; the turn failed',
+              ErrorCode.RunResponseStreamFailed,
+              500,
+            ),
           });
           return;
         }
@@ -268,6 +291,7 @@ export const createFramingActivities = <TInput, TOutput>(
     },
 
     suspendRun: async (input: SuspendRunInput): Promise<void> => {
+      logger?.trace('framingActivities.suspendRun();', { runId: input.ids.runId });
       const cancelSignal = Context.current().cancellationSignal;
       await inTransport(input.invocation, async ({ transport }) => {
         // No wire-state check, as in `endRun`: adopt and publish.
@@ -281,17 +305,35 @@ export const createFramingActivities = <TInput, TOutput>(
     },
 
     cleanupRun: async (input: CleanupRunInput): Promise<void> => {
+      // Warn, not trace: this arm only runs because the workflow threw, and it
+      // publishes a terminal over whatever state the run was in.
+      logger?.warn('framingActivities.cleanupRun(); ending the run after a workflow failure', {
+        runId: input.ids.runId,
+      });
       // No cancellation signal: this is the cleanup arm, so it must still run
       // while the workflow itself is being cancelled.
       await inTransport(input.invocation, async ({ transport }) => {
         // No wire-state check: the cleanup arm publishes its error terminal
-        // unconditionally. When the run already ended, this adds a second
-        // `ai-run-end` that readers ignore in favour of the first, so the
-        // cost is channel noise rather than a wrong state.
+        // unconditionally, because reading the run's state would mean a history
+        // scan on the one path that has to stay cheap and cancellation-proof.
+        //
+        // Two consequences follow. On a run that already ended, this adds a
+        // second `ai-run-end` that readers ignore in favour of the first, so
+        // the cost is channel noise rather than a wrong state. On a run the
+        // workflow parked with `suspend`, the park is replaced by an error
+        // terminal: a suspend is not terminal, so there is a real state change
+        // here, and a client that had treated the park as the end of the turn
+        // sees the turn error afterwards. That is the intended reading for now
+        // — the orchestrator died, so nothing will resume the park — but it is
+        // the sharp edge of this arm, not an accident.
         const run = transport.adoptRun(input.ids.runId, { invocationId: input.ids.invocationId });
         await run.end({
           reason: 'error',
-          error: new Ably.ErrorInfo(input.errorMessage ?? 'workflow failed', ErrorCode.RunResponseStreamFailed, 500),
+          error: new Ably.ErrorInfo(
+            input.errorMessage ?? 'unable to complete the run; the workflow failed',
+            ErrorCode.RunResponseStreamFailed,
+            500,
+          ),
         });
       });
     },

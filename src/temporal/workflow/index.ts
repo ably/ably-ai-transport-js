@@ -90,7 +90,8 @@ export interface RunHandle {
   suspend(): Promise<void>;
   /**
    * Best-effort failure cleanup: end the run as `error` so a waiting client
-   * unsticks. Does nothing if the run already finished or is parked suspended.
+   * unsticks. Publishes without reading wire state, so it also fires over an
+   * already-ended run and over one this workflow parked with {@link suspend}.
    * @param errorMessage - Message for the published error.
    */
   cleanup(errorMessage?: string): Promise<void>;
@@ -190,14 +191,17 @@ export const openRun = async (invocation: InvocationData, options: OpenRunOption
  * That attempt is the point: an unclosed run leaves the client waiting on a
  * stream that never ends, and remembering to clean up by hand is the easiest
  * part of a durable agent to forget. It runs in a non-cancellable scope, so a
- * cancelled or terminated workflow still closes its run, and its own failure is
- * swallowed so `body`'s error reaches Temporal unmasked.
+ * cancelled workflow still closes its run, and its own failure is swallowed so
+ * `body`'s error reaches Temporal unmasked. A *terminated* workflow is beyond
+ * its reach: a terminate dispatches no further workflow task, so no `catch`
+ * here and no cleanup activity runs.
  *
  * Best-effort, not guaranteed, and deliberately so. Cleanup gets one attempt
  * with a short timeout — retrying would let a hanging cleanup hold up a
- * terminate — and it no-ops when the run is already terminal or parked
- * suspended. It also only fires on a throw: a `body` that returns without
- * publishing a terminal leaves the run open.
+ * terminate — and it reads no wire state, so it publishes its error terminal
+ * over an already-terminal run and over one `suspend` had parked. It also only
+ * fires on a throw: a `body` that returns without publishing a terminal leaves
+ * the run open.
  *
  * On success nothing is published: the application publishes its own terminal,
  * which is free inside an activity that already has the run loaded.

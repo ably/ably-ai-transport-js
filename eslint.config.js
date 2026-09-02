@@ -144,24 +144,33 @@ export default [
   {
     files: ['src/temporal/workflow/**/*.ts'],
 
+    plugins: {
+      '@typescript-eslint': fixupPluginRules(typescriptEslint),
+    },
+
     rules: {
       // This bundle runs inside Temporal's workflow sandbox, where `ably` and
       // the worker-side Temporal packages do not exist. The activity contract
-      // may only arrive here as types (`import type`), which erase.
-      'no-restricted-imports': [
+      // may only arrive here as types (`import type`), which erase — hence the
+      // typescript-eslint rule rather than the core one, which has no
+      // `allowTypeImports` and would reject the erasing import too.
+      'no-restricted-imports': 'off',
+      '@typescript-eslint/no-restricted-imports': [
         'error',
         {
-          paths: [
-            { name: 'ably', message: 'Workflow code runs in a sandbox without `ably`. Pass plain data instead.' },
-            {
-              name: '@temporalio/activity',
-              message: 'Activity-side only. Workflow code cannot reach the activity Context.',
-            },
-            {
-              name: '@temporalio/worker',
-              message: 'Worker-side only. Workflow code must not import worker APIs.',
-            },
-          ],
+          name: 'ably',
+          message: 'Workflow code runs in a sandbox without `ably`. Pass plain data instead.',
+          allowTypeImports: true,
+        },
+        {
+          name: '@temporalio/activity',
+          message: 'Activity-side only. Workflow code cannot reach the activity Context.',
+          allowTypeImports: true,
+        },
+        {
+          name: '@temporalio/worker',
+          message: 'Worker-side only. Workflow code must not import worker APIs.',
+          allowTypeImports: true,
         },
       ],
     },

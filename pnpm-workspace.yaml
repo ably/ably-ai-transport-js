@@ -1,8 +1,10 @@
 # Supply chain hardening: only allow build scripts for known packages.
 allowBuilds:
-  # Pulled in transitively by @temporalio/worker's webpack toolchain. Its build
-  # script is not needed — the prebuilt platform binary suffices, and the whole
-  # temporal test tier passes with the script skipped.
+  # Pulled in transitively by @temporalio/worker's webpack toolchain. The
+  # prebuilt platform binary is enough for the workflow bundling this repo's
+  # temporal tier does, and the whole tier passes with the script skipped. A
+  # demo that bundles workflows on a platform without a prebuilt binary needs
+  # it enabled in its own workspace — demo/temporal/temporal-agent does.
   '@swc/core': false
   # Bundler used by vite; installs the platform-specific binary helper.
   esbuild: true

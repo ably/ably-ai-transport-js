@@ -219,9 +219,6 @@ async function lastMergedMessage(stream: ReadableStream<UIMessageChunk>): Promis
   return last;
 }
 
-// Narrow the SDK's `PendingToolCall[]` down to the ones whose `execute` lives
-// in the server registry, in the shape the workflow needs to dispatch a
-// `runToolStep`.
 // -----------------------------------------------------------------------------
 // runToolStep — execute one server tool and publish its result as a single
 // tool-output-available chunk on its own SDK step. On failure it throws so
@@ -245,6 +242,9 @@ export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo })
 
     const step = run.createStep({ stepId });
 
+    // CAST: the registry is a heterogeneous tool map, so indexing it by a
+    // name that arrived over the wire loses the per-tool input types. Narrowed
+    // to the one shape this call needs, and guarded below.
     const tool = (tools as Record<string, { execute?: (input: unknown) => Promise<unknown> }>)[input.toolCall.toolName];
     if (!tool?.execute) throw new Error(`tool '${input.toolCall.toolName}' has no execute`);
     const output = await tool.execute(input.toolCall.input);

@@ -33,6 +33,14 @@ To run the integration tests (no credentials needed by default — a sandbox app
 pnpm run test:integration
 ```
 
+To run the Temporal tier (no credentials and no Ably connection — it boots a
+throwaway Temporal dev server and bundles the workflow fixtures through a real
+worker):
+
+```shell
+pnpm run test:temporal
+```
+
 ## Building
 
 ```shell

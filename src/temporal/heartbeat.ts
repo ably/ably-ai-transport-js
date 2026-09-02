@@ -3,8 +3,13 @@
  *
  * Temporal kills an activity that outlives its timeout, and cannot otherwise
  * tell a slow one from a hung one. Paging channel history is the slow part of a
- * framing activity, and most of that paging happens inside the transport where
- * there is no per-page hook, so the pump is time-based rather than per-page.
+ * framing activity.
+ *
+ * This pump is time-based, and it runs alongside the per-page beat the
+ * transport's own `onPage` hook drives — the two cover different stalls. A page
+ * that never returns produces no `onPage` call at all, which is exactly the
+ * case Temporal has to be told about, so a beat that only fires per page
+ * cannot report it.
  *
  * Off by default: a short conversation pages once and gains nothing from the
  * extra traffic.

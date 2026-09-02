@@ -523,8 +523,8 @@ export type RunEndParams =
  * Both fields are plain data, so an orchestration that opens a run in one
  * process can thread its identity to another that re-enters it (an
  * `openRun` naming the same `runId`); the run handle itself does not cross
- * processes. Neither field accepts the empty string; omit a field to have it
- * minted.
+ * processes. Both are required here — this is a run already identified. The
+ * place to omit one and have it minted is {@link OpenRunOptions}.
  */
 export interface RunIdentity {
   /**

@@ -1,0 +1,138 @@
+name: Claude Auto-Approve
+
+# Runs once per PR at the moment it becomes review-ready (opened non-draft,
+# or marked ready from draft). Claude reads the diff, decides whether the PR
+# is low-risk enough to approve without human review, and posts a single
+# review carrying the verdict — approving if low-risk, otherwise a stateless
+# comment-review.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: claude-auto-approve-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Fork PRs are skipped: this is a public repo, so a pull_request run from a
+    # fork has no access to the secrets below and could only ever fail.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Set at job level, not on the assessment step: the action's own env: block
+    # shadows same-named step env vars, so a step-level value never reaches the
+    # CLI. The API key belongs to a service account, which the API resolves to a
+    # workspace only when the request names one. The CLI parses this as
+    # newline-separated "Name: Value" pairs and sends them on every inference
+    # request.
+    env:
+      ANTHROPIC_CUSTOM_HEADERS: 'anthropic-workspace-id: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}'
+    steps:
+      - name: Check the workspace ID is configured
+        env:
+          WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+        run: |
+          if [ -z "$WORKSPACE_ID" ]; then
+            echo "::error::ANTHROPIC_WORKSPACE_ID secret is not set" >&2
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Generate GitHub App Token
+        id: generate-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.CLAUDE_APP_ID }}
+          private-key: ${{ secrets.CLAUDE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Pre-fetch PR diff
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: .github/scripts/prefetch-pr-diff.sh "${{ github.event.pull_request.number }}" 8000
+
+      - name: Run Claude assessment
+        uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.generate-token.outputs.token }}
+          allowed_bots: 'dependabot[bot]'
+          prompt: |
+            You are assessing PR #${{ github.event.pull_request.number }} in ${{ github.repository }} to decide whether it is low-risk enough to approve without human review.
+
+            ## Inputs
+
+            - The diff is at `/tmp/pr-diff.txt` (pre-fetched — do not run `gh pr diff`). Lockfiles have already been stripped.
+            - PR title and description: get with `gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json title,body,author`.
+            - You have read access to the repo via the Read/Glob/Grep tools if you need to check how something is used.
+
+            ## Decision
+
+            Classify the PR into one of two buckets:
+
+            **low-risk** — safe to approve without human review. Use your judgement. Examples of things that typically qualify:
+            - Test-only changes (new tests, fixed flakes, refactored test helpers)
+            - Documentation, comments, log message tweaks
+            - Trivial dependency bumps (patch versions, dev-only deps, type-definition packages, where the diff doesn't suggest behaviour changes)
+            - Pure formatting / lint fixes
+            - CI workflow tweaks
+
+            This is not exhaustive — apply judgement. The question to ask is "if this merged with no human review, what is the realistic worst case?" If the worst case is a small, easily-revertable issue and the change looks sound, it's low-risk.
+
+            **needs-human** — should be reviewed by a human. Everything not classified as low-risk.
+
+            Treat any change to published API surface as needs-human, including changes to an entry point's `index.ts` re-exports, even when the diff looks small.
+
+            For dependabot PRs specifically: bumps of dev-only, test-only, or type-definition packages are low-risk. For other things, have a look around how the dependency is used in the repo and make a judgement call.
+
+            ## Output
+
+            Post your verdict by running exactly one command:
+
+            ```
+            .github/scripts/post-auto-approve-verdict.sh ${{ github.event.pull_request.number }} <low-risk|needs-human> "<rationale>"
+            ```
+
+            The script posts the verdict as a single PR review and picks the review state itself. Do not run `gh pr review` or `gh pr comment` yourself, and do not add a verdict line to the rationale — the script appends it.
+
+            The rationale must be concise: 1-4 sentences, no headers, no severity markers, no inline annotations.
+
+            ## Action
+
+            After posting the verdict:
+
+            - If your verdict is **needs-human** AND the PR author is `dependabot[bot]`: request review from the ait-reviewers team so a human gets pinged. Round-robin assignment will pick someone. First check whether reviewers are already requested:
+
+              ```
+              gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json reviewRequests
+              ```
+
+              If the list is empty, request review:
+
+              ```
+              gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --add-reviewer ably/ait-reviewers
+              ```
+            - Otherwise: do nothing further.
+          claude_args: |
+            --max-turns 15
+            --model claude-sonnet-4-6
+            --allowedTools "Read,Glob,Grep,Bash(.github/scripts/post-auto-approve-verdict.sh:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(ls:*),Bash(find:*)"

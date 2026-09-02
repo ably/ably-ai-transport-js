@@ -12,6 +12,7 @@ import type * as AI from 'ai';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { WireCodec } from '../../src/core/codec/types.js';
+import type { TransportEvent } from '../../src/core/transport/types.js';
 import { createUIMessageCodec, type VercelInput, type VercelOutput } from '../../src/vercel/index.js';
 import { type ChatTransport, createChatTransport } from '../../src/vercel/transport/chat-transport.js';
 
@@ -33,6 +34,28 @@ describe('Vercel UIMessage generic threading', () => {
     type Input = Parameters<ReturnType<typeof codec.createEncoder>['publishInput']>[0];
     expectTypeOf<Extract<Input, { kind: 'message' }>['payload']>().toEqualTypeOf<MyMessage>();
     expect(codec.createDecoder()).toBeDefined();
+  });
+
+  it('threads the metadata type onto the decoder output chunks', () => {
+    const codec = createUIMessageCodec<MyMetadata, MyDataParts, MyTools>();
+
+    type Output = ReturnType<ReturnType<typeof codec.createDecoder>['decode']>['outputs'][number];
+    expectTypeOf<Extract<Output, { type: 'start' }>['messageMetadata']>().toEqualTypeOf<MyMetadata | undefined>();
+    expect(codec).toBeDefined();
+  });
+
+  it('threads both unions through a transport event a consumer merges itself', () => {
+    type Event = TransportEvent<VercelInput<MyMetadata, MyDataParts, MyTools>, VercelOutput<MyMetadata, MyDataParts>>;
+
+    expectTypeOf<Extract<Event, { kind: 'message' }>['inputs']>().toEqualTypeOf<
+      VercelInput<MyMetadata, MyDataParts, MyTools>[]
+    >();
+    expectTypeOf<Extract<Event, { kind: 'message' }>['outputs']>().toEqualTypeOf<
+      VercelOutput<MyMetadata, MyDataParts>[]
+    >();
+
+    const message: MyMessage = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
+    expect(message.id).toBe('m1');
   });
 
   it('createChatTransport preserves the message type', () => {

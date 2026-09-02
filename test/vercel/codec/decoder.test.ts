@@ -21,6 +21,7 @@ import {
   HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
 
 const UIMessageCodec = createUIMessageCodec();
 
@@ -1080,6 +1081,118 @@ describe('Vercel decoder', () => {
     });
   });
 
+  // -- stream replacement (non-prefix update) -------------------------------
+
+  describe('stream replacement', () => {
+    it('never completes a diverged tool-input with the partial it had accumulated', () => {
+      // The regression guard for the reason a diverged update emits nothing.
+      // A tool-input's terminal carries the accumulated arguments, so a
+      // synthesised close built from a half-received stream would hand the
+      // application `tool-input-available` with truncated JSON — a tool call
+      // presented as complete, executed with garbage arguments.
+      const decoder = createDecoder();
+
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'tc-1',
+            [HEADER_RUN_ID]: 'run-1',
+            kind: 'tool-input',
+            toolCallId: 'tc-1',
+            toolName: 'getWeather',
+          },
+        ),
+      );
+      decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '{"city":"Lon' }, {}),
+      );
+
+      const { outputs } = decoder.decode(
+        withHeaders(
+          {
+            action: 'message.update',
+            serial: 's1',
+            name: EVENT_AI_OUTPUT,
+            data: '{"city":"Paris"}',
+            version: { serial: 'v2' },
+          },
+          { [HEADER_STREAM]: 'true' },
+        ),
+      );
+
+      // No terminal at all, and in particular none carrying the partial.
+      expect(eventTypesOf(outputs)).not.toContain('tool-input-available');
+      expect(outputs).toEqual([]);
+    });
+
+    it('folds a terminal diverged update through the provider reducer, leaving no part streaming', async () => {
+      // A recovery update whose data does not extend what this decoder
+      // accumulated delivers no content (the wire is the authority a refold
+      // reads), and its terminal closes the open group. Folding through the
+      // real reducer proves the sequence is one it accepts: no throw, and no
+      // part left at state 'streaming'.
+      const decoder = createDecoder();
+      const chunks: AI.UIMessageChunk[] = [];
+
+      const collect = (outputs: AI.UIMessageChunk[]): void => {
+        chunks.push(...outputs);
+      };
+
+      collect(
+        decoder.decode(
+          withHeaders(
+            { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
+            {
+              [HEADER_STREAM]: 'true',
+              [HEADER_STATUS]: 'streaming',
+              [HEADER_STREAM_ID]: 'txt-1',
+              [HEADER_RUN_ID]: 'run-1',
+              kind: 'text',
+              id: 'txt-1',
+            },
+          ),
+        ).outputs,
+      );
+      collect(
+        decoder.decode(withHeaders({ action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: 'Hel' }, {}))
+          .outputs,
+      );
+      // The diverged terminal update: not an extension of 'Hel'.
+      collect(
+        decoder.decode(
+          withHeaders(
+            {
+              action: 'message.update',
+              serial: 's1',
+              name: EVENT_AI_OUTPUT,
+              data: 'Completely different',
+              version: { serial: 'v2' },
+            },
+            { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'complete' },
+          ),
+        ).outputs,
+      );
+      // Close the run scope so the fold's message settles.
+      collect(
+        decoder.decode(
+          withHeaders(
+            { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
+            { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', kind: 'finish' },
+          ),
+        ).outputs,
+      );
+
+      const message = await foldWithProviderReducer(chunks);
+
+      expect(message).toBeDefined();
+      const streaming = (message?.parts ?? []).filter((part) => 'state' in part && part.state === 'streaming');
+      expect(streaming).toEqual([]);
+    });
+  });
+
   // -- discrete message decoding (writeMessages relays) ---------------------
 
   describe('discrete message decoding', () => {
@@ -1103,6 +1216,18 @@ describe('Vercel decoder', () => {
       expect(messages[0]?.id).toBe('m1');
       expect(messages[0]?.role).toBe('user');
       expect(messages[0]?.parts).toEqual([{ type: 'text', text: 'Hello world' }]);
+    });
+
+    it('decodes an ai-input regenerate wire into the message it regenerates from', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: '' },
+        { [HEADER_STREAM]: 'false', kind: 'regenerate', messageId: 'asst-3' },
+      );
+
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(inputs).toEqual([{ kind: 'regenerate', payload: { messageId: 'asst-3' } }]);
+      expect(outputs).toHaveLength(0);
     });
 
     it('decodes agent-published data-* events under ai-output as output events, not message parts', () => {
@@ -1150,18 +1275,6 @@ describe('Vercel decoder', () => {
       const messages = messagesOf(decoder.decode(msg).inputs);
       expect(messages).toHaveLength(1);
       expect(messages[0]?.parts).toEqual([{ type: 'text', text: 'no marker' }]);
-    });
-
-    it('decodes an ai-input regenerate wire into the message it regenerates from', () => {
-      const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: '' },
-        { [HEADER_STREAM]: 'false', kind: 'regenerate', messageId: 'asst-3' },
-      );
-
-      const { inputs, outputs } = decoder.decode(msg);
-      expect(inputs).toEqual([{ kind: 'regenerate', payload: { messageId: 'asst-3' } }]);
-      expect(outputs).toHaveLength(0);
     });
   });
 });

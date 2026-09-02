@@ -85,6 +85,14 @@ export interface AgentLoopRequest {
    * server-side before the next model turn.
    */
   priorMessages: OpenAIMessage[];
+  /**
+   * Called with each batch of events the loop publishes, once per `run.pipe`
+   * and in publish order, for the caller to record. The loop is the only place
+   * that knows what reached the channel, and the store is written from it
+   * rather than from a history read — see `lib/conversation.ts`.
+   * @param events - The batch's events, in wire order.
+   */
+  record: (events: OpenAIOutput[]) => void;
 }
 
 /**
@@ -150,12 +158,17 @@ async function pipeModelTurn(
   run: AgentLoopRun,
   input: Responses.ResponseInputItem[],
   signal: AbortSignal,
+  record: (events: OpenAIOutput[]) => void,
 ): Promise<{ result: StreamResult; turn: ModelTurn }> {
   const turn: ModelTurn = { outputItems: [], calls: [] };
+  // What this pipe put on the channel, for the caller to record as one
+  // message. Collected on the way past, because nothing else sees it.
+  const published: OpenAIOutput[] = [];
 
   async function* stream(): AsyncGenerator<OpenAIOutput> {
     try {
       for await (const value of await createResponseStream({ input, signal })) {
+        published.push(value);
         yield value;
         if (value.type !== 'response.output_item.done') continue;
         turn.outputItems.push(value.item);
@@ -168,11 +181,19 @@ async function pipeModelTurn(
     }
     for (const call of turn.calls) {
       if (!needsApproval(call.name)) continue;
-      yield { type: 'tool-approval-request', call_id: call.call_id, name: call.name, arguments: call.arguments };
+      const request: OpenAIOutput = {
+        type: 'tool-approval-request',
+        call_id: call.call_id,
+        name: call.name,
+        arguments: call.arguments,
+      };
+      published.push(request);
+      yield request;
     }
   }
 
   const result = await run.pipe(stream());
+  record(published);
   return { result, turn };
 }
 
@@ -221,6 +242,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
   if (approved.length > 0) {
     const { items, events } = runToolCalls(approved);
     fail(await run.pipe(asStream(events)));
+    req.record(events);
     input.push(...items);
   }
 
@@ -229,7 +251,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
 
     // One model /responses turn = one assistant message. A gated call's
     // approval request rides this same message (see pipeModelTurn).
-    const { result, turn } = await pipeModelTurn(run, input, run.abortSignal);
+    const { result, turn } = await pipeModelTurn(run, input, run.abortSignal, req.record);
     fail(result);
 
     // No tool calls (or aborted) → the model's reply is final. Done.
@@ -252,6 +274,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
     if (serverCalls.length > 0) {
       const { items, events } = runToolCalls(serverCalls);
       fail(await run.pipe(asStream(events)));
+      req.record(events);
       input.push(...items);
     }
 

@@ -48,9 +48,8 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
     [log],
   );
 
-  // The demo's conversation state: hydrated from the messages endpoint plus a
-  // gap walk to the live attach point, then live transport events, all merged
-  // through OpenAI's own accumulator.
+  // The demo's conversation state: hydrated from the messages endpoint, then
+  // live transport events, all merged through OpenAI's own accumulator.
   const { messages, runs, isRunning, activeRunId, hydrated } = useResponsesThread({
     channelName: chatId,
     onMergeError: reportError,

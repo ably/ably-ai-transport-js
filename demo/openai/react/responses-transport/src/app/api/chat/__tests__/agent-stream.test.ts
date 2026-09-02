@@ -24,13 +24,17 @@ afterEach(() => {
  * A stand-in for the run's publishing surface. Each `pipe` drains its stream
  * into its own message, mirroring the transport minting a fresh
  * `transport-message-id` per pipe — so `messages` holds one entry per unit of work
- * the loop published.
+ * the loop published. `recorded` holds what the loop reported through its
+ * `record` callback, which the route stores; the two must agree.
  */
 function makeRun(signal: AbortSignal): {
   run: { abortSignal: AbortSignal; pipe: (source: AsyncIterable<OpenAIOutput>) => Promise<StreamResult> };
   messages: OpenAIOutput[][];
+  recorded: OpenAIOutput[][];
+  record: (events: OpenAIOutput[]) => void;
 } {
   const messages: OpenAIOutput[][] = [];
+  const recorded: OpenAIOutput[][] = [];
   const run = {
     abortSignal: signal,
     pipe: async (source: AsyncIterable<OpenAIOutput>): Promise<StreamResult> => {
@@ -38,13 +42,20 @@ function makeRun(signal: AbortSignal): {
       return { reason: 'complete' };
     },
   };
-  return { run, messages };
+  return {
+    run,
+    messages,
+    recorded,
+    record: (events) => {
+      recorded.push(events);
+    },
+  };
 }
 
 describe('runAgentLoop', () => {
   it('publishes one message for a plain text reply with no tool calls', async () => {
-    const { run, messages } = makeRun(new AbortController().signal);
-    const result = await runAgentLoop({ run, input: userInput('Say "hi" as your reply'), priorMessages: [] });
+    const { run, messages, record } = makeRun(new AbortController().signal);
+    const result = await runAgentLoop({ run, input: userInput('Say "hi" as your reply'), priorMessages: [], record });
 
     expect(result.reason).toBe('complete');
     // No tools → a single model turn → a single message.
@@ -56,8 +67,8 @@ describe('runAgentLoop', () => {
   });
 
   it('publishes the tool call, its output, and the final reply as separate messages', async () => {
-    const { run, messages } = makeRun(new AbortController().signal);
-    await runAgentLoop({ run, input: userInput("what's the weather in London?"), priorMessages: [] });
+    const { run, messages, record } = makeRun(new AbortController().signal);
+    await runAgentLoop({ run, input: userInput("what's the weather in London?"), priorMessages: [], record });
 
     // Three messages: the turn that emitted the call, the tool outputs, the final turn.
     expect(messages).toHaveLength(3);
@@ -99,11 +110,12 @@ describe('runAgentLoop', () => {
       inputs.push(structuredClone(req.input));
       return realCreate(req);
     });
-    const { run } = makeRun(new AbortController().signal);
+    const { run, record } = makeRun(new AbortController().signal);
     await runAgentLoop({
       run,
       input: userInput('think it through and tell me the weather in London'),
       priorMessages: [],
+      record,
     });
 
     // Two model turns: the reasoning+tool turn, then the reply after the tool result.
@@ -123,11 +135,12 @@ describe('runAgentLoop', () => {
   });
 
   it('emits a gated call and its approval request on ONE message, then suspends', async () => {
-    const { run, messages } = makeRun(new AbortController().signal);
+    const { run, messages, record } = makeRun(new AbortController().signal);
     const result = await runAgentLoop({
       run,
       input: userInput("what's the weather forecast for Paris?"),
       priorMessages: [],
+      record,
     });
 
     // The gated call needs a human decision, so the run suspends after one turn.
@@ -158,11 +171,12 @@ describe('runAgentLoop', () => {
   });
 
   it('emits one gated call per place when a turn asks about two, and suspends once', async () => {
-    const { run, messages } = makeRun(new AbortController().signal);
+    const { run, messages, record } = makeRun(new AbortController().signal);
     const result = await runAgentLoop({
       run,
       input: userInput("what's the weather forecast for Paris and London?"),
       priorMessages: [],
+      record,
     });
 
     // Both calls ride one model turn, so the run suspends once holding two
@@ -200,11 +214,12 @@ describe('runAgentLoop', () => {
         toolCallStates: { 'call-paris': { approval: 'approved' }, 'call-london': { approval: 'approved' } },
       },
     ];
-    const { run, messages } = makeRun(new AbortController().signal);
+    const { run, messages, record } = makeRun(new AbortController().signal);
     const result = await runAgentLoop({
       run,
       input: [...userInput("what's the weather forecast for Paris and London?"), paris, london],
       priorMessages,
+      record,
     });
 
     expect(result.reason).toBe('complete');
@@ -227,11 +242,12 @@ describe('runAgentLoop', () => {
     const priorMessages: OpenAIMessage[] = [
       { role: 'assistant', items: [call], toolCallStates: { 'call-forecast': { approval: 'approved' } } },
     ];
-    const { run, messages } = makeRun(new AbortController().signal);
+    const { run, messages, record } = makeRun(new AbortController().signal);
     const result = await runAgentLoop({
       run,
       input: [...userInput("what's the weather forecast for Paris?"), call],
       priorMessages,
+      record,
     });
 
     expect(result.reason).toBe('complete');
@@ -245,8 +261,8 @@ describe('runAgentLoop', () => {
   it('stops cleanly when the signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort();
-    const { run, messages } = makeRun(controller.signal);
-    await runAgentLoop({ run, input: userInput("what's the weather in London?"), priorMessages: [] });
+    const { run, messages, record } = makeRun(controller.signal);
+    await runAgentLoop({ run, input: userInput("what's the weather in London?"), priorMessages: [], record });
     // Aborted before the first pipe → nothing published.
     expect(messages).toHaveLength(0);
   });

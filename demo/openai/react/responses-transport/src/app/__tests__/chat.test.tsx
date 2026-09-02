@@ -205,9 +205,8 @@ describe('<Chat>', () => {
     );
     mockState.cancel.mockClear();
     // Two fetch surfaces: the hydration GET to the messages endpoint (answered
-    // with an empty seed, so the gap walk pages mockState.historyBatches), and
-    // the wake POST to the chat route (answered with the run-id wakeAgent
-    // reads).
+    // with an empty conversation), and the wake POST to the chat route
+    // (answered with the run-id wakeAgent reads).
     vi.stubGlobal(
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
@@ -263,27 +262,7 @@ describe('<Chat>', () => {
     expect(screen.queryByText('Hi there')).not.toBeNull();
   });
 
-  it('hydrates the thread from history batches before live events', async () => {
-    mockState.historyBatches = [
-      // First call returns the most recent slice; the next call the older one.
-      {
-        events: [runStart('run-1', 'cm-u1'), assistantTurnEvent('cm-a1', 'run-1', 'restored reply')],
-        exhausted: false,
-      },
-      { events: [userMessageEvent('cm-u1', 'restored prompt')], exhausted: true },
-    ];
-    await renderChat();
-    expect(screen.queryByText('restored prompt')).not.toBeNull();
-    expect(screen.queryByText('restored reply')).not.toBeNull();
-  });
-
-  it('hydrates from the stored messages and walks only the gap newer than its seam', async () => {
-    const withSerial = (event: Event, serial: string): Event =>
-      event.kind === 'message' ? { ...event, meta: { ...event.meta, serial } } : event;
-    // The store holds the prompt as a merged message, complete up to s-2. The
-    // gap walk must merge only the newer assistant turn, even though the first
-    // history batch replays the stored prompt too, and must stop at the seam
-    // without paging the older batch.
+  it('hydrates the thread from the stored messages, with no history paging', async () => {
     const storedMessages = [
       {
         transportMessageId: 'cm-u1',
@@ -292,7 +271,7 @@ describe('<Chat>', () => {
           {
             type: 'message' as const,
             role: 'user' as const,
-            content: [{ type: 'input_text' as const, text: 'stored prompt' }],
+            content: [{ type: 'input_text' as const, text: 'restored prompt' }],
           },
         ],
       },
@@ -301,28 +280,48 @@ describe('<Chat>', () => {
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
         String(url).includes('/api/messages')
-          ? Promise.resolve(Response.json({ messages: storedMessages, runs: [], latestSerial: 's-2' }))
+          ? Promise.resolve(Response.json({ messages: storedMessages, runs: [] }))
           : Promise.resolve(Response.json({ runId: 'run-1' })),
       ),
     );
-    mockState.historyBatches = [
-      {
-        events: [
-          withSerial(userMessageEvent('cm-u1', 'stored prompt'), 's-2'),
-          withSerial(assistantTurnEvent('cm-a1', 'run-1', 'newer reply'), 's-3'),
-        ],
-        exhausted: false,
-      },
-      { events: [withSerial(userMessageEvent('cm-u0', 'beyond the seam'), 's-1')], exhausted: true },
-    ];
+    // Anything in history would be a second source for the conversation. The
+    // store is the only one, so these batches must never be paged.
+    mockState.historyBatches = [{ events: [userMessageEvent('cm-u0', 'never paged')], exhausted: true }];
 
     await renderChat();
 
-    expect(screen.getAllByText('stored prompt')).toHaveLength(1);
-    expect(screen.queryByText('newer reply')).not.toBeNull();
-    // The walk stopped at the seam: the older batch was never paged.
-    expect(screen.queryByText('beyond the seam')).toBeNull();
+    expect(screen.queryByText('restored prompt')).not.toBeNull();
+    expect(screen.queryByText('never paged')).toBeNull();
     expect(mockState.historyBatches).toHaveLength(1);
+  });
+
+  it('skips live events of a run the store already holds', async () => {
+    const storedMessages = [
+      {
+        transportMessageId: 'cm-a1',
+        role: 'assistant' as const,
+        runId: 'run-done',
+        items: [messageItem('i-a1', 'stored reply')],
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: RequestInfo | URL) =>
+        String(url).includes('/api/messages')
+          ? Promise.resolve(Response.json({ messages: storedMessages, runs: [['run-done', { status: 'complete' }]] }))
+          : Promise.resolve(Response.json({ runId: 'run-1' })),
+      ),
+    );
+
+    await renderChat();
+    expect(screen.getAllByText('stored reply')).toHaveLength(1);
+
+    // A late delivery of that run's own output. The store already accounts for
+    // it, so merging it again would render the reply twice — under the wire's
+    // transport-message-id rather than the stored one.
+    emit(assistantTurnEvent('cm-wire-a1', 'run-done', 'stored reply'));
+
+    expect(screen.getAllByText('stored reply')).toHaveLength(1);
   });
 
   it('shows Send (not Stop) when the latest run is suspended', async () => {

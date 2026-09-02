@@ -30,6 +30,7 @@ fi
 WATCH=(
   "src/"
   "demo/vercel/react/use-chat/"
+  "demo/shared-frontend/"
   "package.json"
   "pnpm-lock.yaml"
   "tsconfig.json"

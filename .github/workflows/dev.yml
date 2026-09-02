@@ -213,6 +213,9 @@ jobs:
         # runs during bundling even though the routes are never called at build time
         env:
           ABLY_API_KEY: dummy:key
+      - name: pnpm run lint (demo)
+        run: pnpm run lint
+        working-directory: ${{ matrix.demo }}
       - name: pnpm test (demo)
         run: pnpm test
         working-directory: ${{ matrix.demo }}

@@ -220,7 +220,13 @@ function ChatInner({
   // through resumeStream(), so an idle tab has to ask for another
   // participant's run explicitly or it renders nothing while they chat. The
   // adapter fires this only while idle, so it cannot fight our own send.
-  useEffect(() => chatTransport.onForeignRun(() => void resumeStreamRef.current()), [chatTransport]);
+  // The run id goes back as the reconnect hint: the callback already knows
+  // which run woke it, and leaving the adapter to guess picks the newest it
+  // has seen, which is the wrong one while two participants overlap.
+  useEffect(
+    () => chatTransport.onForeignRun((runId) => void resumeStreamRef.current({ body: { runId } })),
+    [chatTransport],
+  );
 
   // Track status transitions for the debug pane. Recording a history of an
   // external value's transitions is the intended use of this effect — it

@@ -14,7 +14,7 @@ and `vitest.config.integration.ts` (`*.integration.test.ts`).
 
 ### Scope
 
-Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage.
+Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage on non-React code, 80%+ on React hooks.
 
 ### Style
 
@@ -28,6 +28,7 @@ Every exported function and every non-trivial internal module gets its own test 
 - Error handler isolation (one throwing handler doesn't kill others)
 - State machine transitions (run lifecycle, cancel routing)
 - Invalid input validation
+- React hook lifecycle (with `renderHook` / jsdom)
 
 ## Integration tests
 
@@ -85,11 +86,11 @@ mock channel cannot stand in for.
    its own input triggered.
 2. **History paging.** A fresh client pages backwards from its attach point
    and receives chronological batches of classified events, each call
-   returning a strictly older slice, with a completed stream folded into one
+   returning a strictly older slice, with a completed stream merged into one
    message's worth of output. Messages published after the attach point stay
    outside the window.
 3. **Attach boundary.** A run streaming across a client's attach point yields
-   one message's worth of events. The live fold and the history walk share a
+   one message's worth of events. The live merge and the history walk share a
    decoder, so the accumulated prefix is delivered once, not twice — the
    spanning message, when the window includes it, comes back from history
    carrying its metadata and no events.
@@ -118,3 +119,4 @@ encoder/decoder-to-transport seam is guarded in the fast tier as well.
 - Encoding/decoding edge cases (unit tests)
 - Error handler isolation (unit tests)
 - Invalid input validation (unit tests)
+- React hook lifecycle (unit tests with jsdom)

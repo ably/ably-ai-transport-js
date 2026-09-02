@@ -6,7 +6,7 @@
 
 Ably AI Transport is a durable transport for AI applications. Your agent streams tokens onto an Ably channel rather than into an HTTP response, so a client that reconnects picks up where it left off, the same conversation is open on any device the user picks up, and any participant can cancel, interrupt, or steer a response that is still in flight.
 
-AI Transport is not an agent framework, and it holds no conversation state. It carries runs, steps and codec events over one channel; your application folds that event stream into its own messages and owns the store. It works alongside the stack you already have: the Vercel AI SDK, the OpenAI Responses API, or your own framework through a custom codec. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
+AI Transport is not an agent framework, and it holds no conversation state. It carries runs, steps and codec events over one channel; your application merges that event stream into its own messages and owns the store. It works alongside the stack you already have: the Vercel AI SDK, the OpenAI Responses API, or your own framework through a custom codec. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
 > This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release.
@@ -38,10 +38,11 @@ This SDK supports the following platforms:
 | Node.js       | Version 22 or newer.                                                                      |
 | Browsers      | All major desktop and mobile browsers, including Chrome, Firefox, Edge, and Safari.       |
 | TypeScript    | Fully supported, the library is written in TypeScript and ships its own type definitions. |
+| React         | Versions 18 and 19, through `@ably/ai-transport/react`.                                   |
 | Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                    |
 | OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                   |
 
-The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai` and `openai` are optional peer dependencies, each needed only by the codec entry point that uses it.
+The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
 
 ---
 
@@ -130,7 +131,7 @@ export async function POST(req: Request) {
 
 Publishing an input and waking the agent is two calls. Reading the reply is a
 subscription: each inbound wire message arrives as one classified event, and the
-application folds the events it cares about into whatever state it renders from.
+application merges the events it cares about into whatever state it renders from.
 
 ```typescript
 import * as Ably from 'ably';
@@ -152,8 +153,8 @@ await transport.connect();
 transport.subscribe((event) => {
   if (event.kind === 'message') {
     // `event.outputs` are the provider's own chunks, in wire order. Hand them
-    // to the provider's reducer, keyed by `event.meta.codecMessageId`.
-    fold(event.meta.codecMessageId, event.outputs);
+    // to the provider's reducer, keyed by `event.meta.transportMessageId`.
+    merge(event.meta.transportMessageId, event.outputs);
     return;
   }
   if (event.kind === 'run-lifecycle' && event.event.type === 'end') {
@@ -183,7 +184,7 @@ stopButton?.addEventListener('click', () => void transport.cancel(runId));
 ```
 
 To rebuild a conversation on load, page backwards from the attach point with
-`transport.history()` and fold the batches oldest-first.
+`transport.history()` and merge the batches oldest-first.
 
 ---
 

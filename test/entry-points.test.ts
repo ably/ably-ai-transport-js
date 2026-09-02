@@ -34,8 +34,8 @@ import {
   OBJECT_MODES,
   resolveChannelModes,
 } from '../src/index.js';
-import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../src/openai/index.js';
-import { ResponsesCodec } from '../src/openai/index.js';
+import type { ModelledOutputItem, OpenAIOutput } from '../src/openai/index.js';
+import { createResponsesCodec } from '../src/openai/index.js';
 import type {
   ClientTransportHandle,
   ClientTransportProviderProps,
@@ -121,7 +121,7 @@ describe('@ably/ai-transport', () => {
 
 describe.each([
   ['@ably/ai-transport/vercel', () => createUIMessageCodec()],
-  ['@ably/ai-transport/openai', () => ResponsesCodec],
+  ['@ably/ai-transport/openai', () => createResponsesCodec()],
 ])('%s', (_name, build) => {
   it('publishes a wire codec that encodes and decodes, and nothing more', () => {
     const codec = build();
@@ -200,12 +200,24 @@ describe('@ably/ai-transport/vercel/react', () => {
 });
 
 describe('@ably/ai-transport/openai', () => {
-  it('publishes the input and output unions a caller names', () => {
-    const message: OpenAIMessage = { role: 'user', items: [] };
-    const input: OpenAIInput = { kind: 'message', payload: message };
+  it('publishes the output union and the item type a caller names', () => {
     const output: OpenAIOutput = { type: 'tool-approval-request', call_id: 'c1', name: 'getWeather', arguments: '{}' };
+    const items: ModelledOutputItem[] = [];
 
-    expect(input.kind).toBe('message');
     expect(output.type).toBe('tool-approval-request');
+    expect(items).toEqual([]);
+  });
+
+  it("types its input direction by the application's own union", () => {
+    // The passthrough is parameterized by the caller, so this is the surface
+    // an application actually names — a codec that stopped being generic
+    // would fail the typecheck here.
+    interface MyInput {
+      kind: 'ask';
+      question: string;
+    }
+    const codec = createResponsesCodec<MyInput>();
+
+    expect(codec.createDecoder()).toBeDefined();
   });
 });

@@ -4,6 +4,6 @@
 
 - **Use `async`/`await` with `try`/`catch`**, not `.then()`/`.catch()` chains.
 - **Exceptions** (must be commented with the reason):
-  - Fire-and-forget promises where `await` would block a value the caller needs now, and the awaited work reports its own failure by another route (an error event, or a stream the caller already holds). Comment which route carries the failure.
+  - Fire-and-forget promises where `await` would block a value the caller needs now (e.g. `void collector.awaitRunId(…)` in the Vercel chat transport's `_send`: awaiting it would hold the stream back from `useChat` while the run id arrives over the channel), and the awaited work reports its own failure by another route (an error event, or a stream the caller already holds). Comment which route carries the failure.
   - `Promise.race` discriminants where `.then(() => value)` transforms a void promise into a tagged union member.
   - A no-op `.catch()` attached to a promise the caller may legitimately never await, so an ignored value cannot surface as an unhandled rejection. Comment where the failure does surface — the same promise still rejects for anyone who does await it.

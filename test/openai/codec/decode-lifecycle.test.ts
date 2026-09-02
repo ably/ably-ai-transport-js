@@ -26,6 +26,7 @@ import {
   contentPartAdded,
   createBridge,
   created,
+  decodeOutputs,
   eventsOfType,
   functionCallArgsRun,
   itemAdded,
@@ -80,12 +81,6 @@ const midStreamJoin = (msgs: Ably.InboundMessage[]): Ably.InboundMessage => {
 // The decoded outputs a joiner sees from a single first-contact update.
 const decodeJoin = (update: Ably.InboundMessage): OpenAIOutput[] =>
   ResponsesCodec.createDecoder().decode(update).outputs;
-
-// Decode a whole inbound sequence's outputs through a fresh decoder.
-const decodeAll = (msgs: Ably.InboundMessage[]): OpenAIOutput[] => {
-  const decoder = ResponsesCodec.createDecoder();
-  return msgs.flatMap((msg) => decoder.decode(msg).outputs);
-};
 
 describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
   it('synthesises the message opening bracket ahead of joined output_text', async () => {
@@ -212,7 +207,7 @@ describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
     // start, a synthesised one for the same id — the policy holds no state, so
     // it cannot tell a join from a replay. Both adds carry the same item id,
     // which is what lets a consumer collapse them into one item.
-    const outputs = decodeAll(await encodeInbound(textRun('msg_1', 'Hello, world!')));
+    const outputs = decodeOutputs(await encodeInbound(textRun('msg_1', 'Hello, world!')));
 
     const adds = eventsOfType(outputs, 'response.output_item.added');
     expect(adds).toHaveLength(2);

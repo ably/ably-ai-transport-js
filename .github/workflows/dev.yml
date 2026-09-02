@@ -85,11 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - ai: '^6'
-            ai-sdk-react: '^3'
-          - ai: '^7'
-            ai-sdk-react: '^4'
+        ai: ['^6', '^7']
     name: test ai@${{ matrix.ai }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -102,10 +98,8 @@ jobs:
           node-version: ${{ env.BASE_NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # `@ai-sdk/react` majors move in lockstep with `ai` (ai 6 -> react 3,
-      # ai 7 -> react 4), so both are pinned per matrix row.
       - name: install ai@${{ matrix.ai }}
-        run: pnpm add -D "ai@${{ matrix.ai }}" "@ai-sdk/react@${{ matrix.ai-sdk-react }}"
+        run: pnpm add -D "ai@${{ matrix.ai }}"
       - name: verify the resolved major
         run: node -e "console.log('ai', require('ai/package.json').version)"
       - run: pnpm run typecheck

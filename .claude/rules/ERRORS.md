@@ -67,8 +67,8 @@ Codes should either exist here or be a custom code in the `104xxx` range. Custom
 
 ```ts
 export enum ErrorCode {
-  BadRequest = 40000,
   InvalidArgument = 40003,
+  OperationCancelled = 40033,
   // Custom SDK-specific codes (104xxx range)
   StreamedMessageFinalizeFailed = 104000,
   SessionSubscriptionFailed = 104001,

@@ -5,7 +5,7 @@
  * `defineCodec` injects the direction-scoped `{ event, batch }` builder; the
  * generic input drivers consume the returned array. The chunk action carries
  * the AI SDK's own tool-output chunk as its wire data; the approval decision
- * is field-mapped; `regenerate` is a wire-only signal; the multi-part message
+ * is field-mapped; `regenerate` carries the id it regenerates from; the multi-part message
  * is a `batch` that fans each `UIMessage` part out into one wire event, so a
  * large body still fits the wire.
  */
@@ -15,7 +15,7 @@ import type * as AI from 'ai';
 import { HEADER_ROLE } from '../../constants.js';
 import type { InputBuilder, InputDescriptor } from '../../core/codec/index.js';
 import type { VercelInput } from './events.js';
-import { fApproved, fId, fMediaType, fMessageId, fReason, fToolCallId } from './fields.js';
+import { fApproved, fId, fMediaType, fMessageId, fReason, fTargetMessageId, fToolCallId } from './fields.js';
 import { asString, readToolOutputChunkWireData } from './wire-data.js';
 
 /** Fallback for a message with no encodable parts (see the `message` batch). */
@@ -57,12 +57,12 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
 
   event('approval', { fields: [fToolCallId, fApproved, fReason] }),
 
-  // --- wire-only signal ---------------------------------------------------------
+  // --- regeneration signal --------------------------------------------------------
 
-  // `regenerate` carries no body; the `regenerates` / `parent` structure rides
-  // the transport headers built from the publish options, so it stamps only
-  // the `kind` header and decodes to [].
-  event('regenerate', { wireOnly: true }),
+  // `regenerate` names the message useChat is regenerating from. The id is
+  // domain data for the agent to act on; it describes no conversation
+  // structure and nothing in the transport reads it.
+  event('regenerate', { fields: [fTargetMessageId] }),
 
   // --- multi-part client message ------------------------------------------------
 

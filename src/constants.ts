@@ -70,46 +70,6 @@ export const HEADER_INPUT_CLIENT_ID = 'input-client-id';
 export const HEADER_ROLE = 'role';
 
 // ---------------------------------------------------------------------------
-// Fork / branching headers
-// ---------------------------------------------------------------------------
-
-/** Header: the codec-message-id of the immediately preceding message in this branch. */
-export const HEADER_PARENT = 'parent';
-
-/** Header: the codec-message-id of the message this one replaces (creates a fork). */
-export const HEADER_FORK_OF = 'fork-of';
-
-/**
- * Header: the codec-message-id of the assistant message this run regenerates.
- *
- * Stamped on the regenerate wire (and echoed on `run-start`) when the
- * client requested a regeneration. A regenerate run parents at the SAME input
- * as the reply it regenerates, so it joins that input's reply runs as a
- * same-parent sibling (no fork-of). The transport carries the header verbatim;
- * a consumer reconstructing conversation structure uses it to resolve the
- * message-level sibling group and to drop the regenerated message from the
- * earlier reply (Spec: AIT-CT13d).
- */
-export const HEADER_MSG_REGENERATE = 'msg-regenerate';
-
-/**
- * Header: the run-id this client tool-result fork SUPERSEDES — the suspended run
- * whose pending tool call the fork resolves.
- *
- * A client tool-result forks its own reply run (a same-parent sibling of the
- * suspended run). The suspended run is then dead: nothing will ever resume it
- * (its answer went to the fork). The client stamps this header with that run's
- * id so a consumer reconstructing conversation structure can mark it
- * superseded and EXCLUDE it from branch selection — so a single client's
- * single response renders as ONE linear reply (the dead trunk hidden), while
- * genuinely concurrent forks from multiple clients still surface as sibling
- * branches. Distinct from `fork-of` / `msg-regenerate`,
- * which create a NAVIGABLE sibling (both kept visible); `supersedes` HIDES the
- * superseded run. Value is a run-id, not a codec-message-id.
- */
-export const HEADER_SUPERSEDES = 'supersedes';
-
-// ---------------------------------------------------------------------------
 // Run lifecycle headers
 // ---------------------------------------------------------------------------
 

@@ -44,8 +44,7 @@ import type { Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
 import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './channel-support.js';
 import { buildTransportHeaders } from './headers.js';
-import { walkHistoryBatch } from './history-walk.js';
-import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
+import { createHistoryPager, type HistoryPager } from './history-pager.js';
 import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
 import { SteerCoordinator } from './steer-coordinator.js';
 import type { SteerResult } from './types/steer.js';
@@ -75,7 +74,7 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
 export interface ClientTransportOptions<TInput, TOutput> {
   /** The Ably channel to publish on and receive from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
   channel: Ably.RealtimeChannel;
-  /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. Any full `Codec` satisfies it. */
+  /** The codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
   codec: WireCodec<TInput, TOutput>;
   /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and the local echo's `clientId` is `undefined`. */
   clientId?: string;
@@ -149,18 +148,11 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   private _hasAttachedOnce: boolean;
   private _closed = false;
   /**
-   * The shared backward history cursor, opened lazily on the first `history()`
-   * call (capturing the attach serial then) and advanced by one caller at a
-   * time under {@link _historyTail}.
+   * The shared backward history pager: a lazily opened `untilAttach` cursor,
+   * single-flight across `history()` calls, classifying on the live stream's
+   * decoder. See {@link createHistoryPager}.
    */
-  private _historyCursor: HistoryPagesCursor | undefined;
-  /**
-   * Tail of the single-flight history chain. Each `history()` links behind the
-   * current tail so the cursor is never paged concurrently. A link's failure
-   * is its own to throw — the tail stores a settled void promise, so a
-   * follower is isolated from a prior link's rejection.
-   */
-  private _historyTail: Promise<void> = Promise.resolve();
+  private readonly _historyPager: HistoryPager<TInput, TOutput>;
 
   constructor(options: ClientTransportOptions<TInput, TOutput>) {
     this._channel = options.channel;
@@ -172,6 +164,17 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     });
     this._decoder = this._codec.createDecoder();
     this._receiver = createReceiveTransport<TInput, TOutput>(this._decoder, this._logger);
+    // A decode failure while paging surfaces on the receive stream's `error`,
+    // matching the live fold.
+    this._historyPager = createHistoryPager({
+      channel: this._channel,
+      decoder: this._decoder,
+      pageLimit: this._historyPageSize,
+      logger: this._logger,
+      onDecodeError: (err) => {
+        this._receiver.emitError(err);
+      },
+    });
     this._onMessage = (message: Ably.InboundMessage) => {
       if (this._closed) return;
       // A failed decode drops the message (the receiver emitted `error`); its
@@ -261,18 +264,11 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     const codecMessageId = opts?.codecMessageId ?? crypto.randomUUID();
     const eventId = crypto.randomUUID();
 
-    const parent = opts?.parent;
-    const forkOf = opts?.forkOf;
-    const regenerates = opts?.regenerates;
-
     const headers = buildTransportHeaders({
       role: 'user',
       runId: opts?.runId,
       codecMessageId,
       runClientId: this._clientId,
-      ...(parent !== undefined && { parent }),
-      ...(forkOf !== undefined && { forkOf }),
-      ...(regenerates !== undefined && { regenerates }),
       inputEventId: eventId,
     });
 
@@ -348,22 +344,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   async history(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
     this._logger.trace('ClientTransport.history();');
     await this._requireOpen('history');
-
-    // Link behind the tail so the shared cursor is advanced by one caller at a
-    // time; a prior link's failure is its own to throw.
-    const prev = this._historyTail;
-    const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
-      await prev;
-      return this._walkHistory(opts);
-    })();
-    this._historyTail = (async (): Promise<void> => {
-      try {
-        await mine;
-      } catch {
-        /* a link's failure is its own caller's to observe */
-      }
-    })();
-    return mine;
+    return this._historyPager.next(opts);
   }
 
   close(): void {
@@ -374,45 +355,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     this._channel.off(this._onChannelStateChange);
     this._steer.drainClosed();
     this._drainRunIdWatches(this._closedError('await run start'));
-  }
-
-  /**
-   * Fetch and classify the next older slice of channel history via the shared
-   * {@link walkHistoryBatch}, on the lazily opened cursor and the live
-   * stream's decoder. A decode failure is surfaced on the receive stream's
-   * `error`, matching the live fold.
-   * @param opts - The caller's batch bounds.
-   * @returns The batch of classified events and the exhaustion flag.
-   */
-  private async _walkHistory(
-    opts: TransportHistoryOptions | undefined,
-  ): Promise<TransportHistoryResult<TInput, TOutput>> {
-    // Check before the cursor is opened, so an already-aborted call costs no
-    // attach and no page fetch. The signal is deliberately not bound to the
-    // cursor: it is shared across calls, and an aborted signal would wedge its
-    // `hasNext()` at false, making a later `history()` report `exhausted` for a
-    // channel it never finished walking.
-    if (opts?.signal?.aborted) {
-      throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
-    }
-    if (this._historyCursor === undefined) {
-      this._historyCursor = await loadHistoryPages(this._channel, {
-        pageLimit: this._historyPageSize,
-        untilAttach: true,
-        logger: this._logger,
-      });
-    }
-    return walkHistoryBatch(
-      {
-        cursor: this._historyCursor,
-        decoder: this._decoder,
-        logger: this._logger,
-        onDecodeError: (err) => {
-          this._receiver.emitError(err);
-        },
-      },
-      opts,
-    );
   }
 
   /**

@@ -12,17 +12,21 @@ import type { VercelToolOutputChunk } from './events.js';
 
 /** Wire format for the agent-side `tool-input-error` chunk data payload. */
 export interface ToolInputErrorWireData {
+  /** The provider's error text for the failed input stream, when it supplied one. */
   errorText?: string;
+  /** The partial tool input at failure — tool-defined, carried unconstrained. */
   input?: unknown;
 }
 
 /** Wire format for the agent-side `tool-output-available` chunk data payload. */
 export interface ToolOutputAvailableWireData {
+  /** The tool's output — tool-defined, carried unconstrained. */
   output?: unknown;
 }
 
 /** Wire format for the agent-side `tool-output-error` chunk data payload. */
 export interface AgentToolOutputErrorWireData {
+  /** The provider's error text for the failed tool call, when it supplied one. */
   errorText?: string;
 }
 
@@ -38,8 +42,6 @@ const isRecord = (data: unknown): data is Record<string, unknown> => typeof data
 const isRecordWithOptionalString = (data: unknown, key: string): boolean =>
   isRecord(data) && (data[key] === undefined || typeof data[key] === 'string');
 
-// Validates the typed `errorText` field; `input` is tool-defined and
-// intentionally left unconstrained.
 /**
  * Coerce wire `data` to a string, falling back to `''` for any non-string
  * payload — the defensive read for descriptors whose data is plain text.

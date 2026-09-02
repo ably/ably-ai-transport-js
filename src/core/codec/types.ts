@@ -228,6 +228,14 @@ export interface DecodedMessage<TInput, TOutput> {
  * decoder instance can therefore be shared by the live subscription and
  * a backwards history walk — whichever route delivers a message's content first
  * wins, and the other route's covered deliveries are no-ops.
+ *
+ * An update that does not extend what the decoder has accumulated is not
+ * rendered: the missing piece sits inside content the fold already delivered,
+ * and a provider reducer can only append to an open part, so no emittable
+ * delta exists. The wire's content is authoritative — a fresh decode of the
+ * message (history, or a refold with a new decoder) yields it in full — and a
+ * terminal status on such an update still closes the group so the consumer's
+ * open part ends rather than staying open.
  */
 export interface Decoder<TInput, TOutput> {
   /** Decode one Ably inbound message into the input/output halves. */

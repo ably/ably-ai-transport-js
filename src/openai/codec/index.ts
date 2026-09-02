@@ -42,7 +42,6 @@ export type {
   OpenAIMessage,
   OpenAIMessageInput,
   OpenAIOutput,
-  OpenAIRegenerateInput,
   OpenAIToolCallState,
   ToolApprovalRequestEvent,
 } from './events.js';

@@ -161,18 +161,17 @@ describe('Vercel wire-codec inputs', () => {
     expect(inputs).toEqual([{ kind: 'approval', payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' } }]);
   });
 
-  it('publishes regenerate as a wire-only signal that decodes to nothing', async () => {
+  it('round-trips a regenerate signal carrying the message id it redoes', async () => {
     const writer = createMockWriter();
     const encoder = codec.createEncoder(writer);
 
-    await encoder.publishInput({ kind: 'regenerate' });
+    await encoder.publishInput({ kind: 'regenerate', payload: { messageId: 'asst-1' } });
 
     const wire = firstDiscrete(writer);
     expect(codecHeadersOf(wire).kind).toBe('regenerate');
-    expect(wire.data).toBe('');
 
     const decoder = codec.createDecoder();
-    expect(decoder.decode(asInbound(wire)).inputs).toEqual([]);
+    expect(decoder.decode(asInbound(wire)).inputs).toEqual([{ kind: 'regenerate', payload: { messageId: 'asst-1' } }]);
   });
 
   it('publishes the empty text fallback for a message with no encodable parts', async () => {

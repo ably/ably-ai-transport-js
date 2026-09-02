@@ -38,10 +38,7 @@
  *
  * Input side: the user message is a `batch` that fans the user message's
  * content parts out into one `ai-input` event per part (one for a plain text prompt),
- * reassembled by a consumer merging parts by codec-message-id — see {@link inputs}. The `regenerate`
- * signal is a wire-only event: it stamps only its `kind` header and carries no
- * body — the `regenerates` / `parent` structure rides the transport headers,
- * and `WireMeta` reports it on the way back.
+ * reassembled by a consumer merging parts by codec-message-id — see {@link inputs}.
  *
  * Hosted tools are added by adding entries here; the codec/transport split is
  * unaffected.
@@ -412,8 +409,8 @@ export const outputs = ({
   // place they fold in type-safely. The finalised item's content is typed
   // `ResponseOutputText`, whose `logprobs` is the rich SDK shape (with `bytes`)
   // a folded message's content slot wants, so the fold is a plain, cast-free
-  // assignment. The
-  // output_text.done EVENT also carries logprobs at runtime, but its SDK type
+  // assignment. The output_text.done EVENT also carries logprobs at runtime,
+  // but its SDK type
   // (`ResponseTextDoneEvent`) declares a leaner, `bytes`-less shape, so sourcing
   // them there would need an unsafe cast betting on a richer runtime shape than
   // the type promises. And `content_part.done`, the event that literally hands
@@ -516,7 +513,7 @@ export const outputs = ({
  * codec-message-id. A message with no encodable part still emits one empty
  * text part so it round-trips. The tool resolution carries OpenAI's own
  * `function_call_output` item as its wire data; the approval decision is
- * field-mapped; `regenerate` is a wire-only signal.
+ * field-mapped.
  * @param builder - The `{ event, batch }` builder curried on {@link OpenAIInput}.
  * @param builder.event - Declare a discrete input event.
  * @param builder.batch - Declare a multi-part (fan-out) input.
@@ -551,10 +548,6 @@ export const inputs = ({ event, batch }: InputBuilder<OpenAIInput>): readonly In
 
   event('approval', { fields: [fCallId, fApproved, fReason] }),
 
-  // Regenerate is a wire-only signal: it carries no payload and folds to
-  // nothing. The `regenerates` / `parent` structure rides the transport
-  // headers built from the publish options.
-  event('regenerate', { wireOnly: true }),
   batch('message', {
     explode: (input) => {
       // Precondition: a message turn must have exactly one item, and this

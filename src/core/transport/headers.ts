@@ -19,13 +19,10 @@ import {
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INPUT_CODEC_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -34,7 +31,6 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
   HEADER_STEP_START_SERIAL,
-  HEADER_SUPERSEDES,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent } from './types.js';
@@ -48,18 +44,6 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  *   from the headers when undefined; a continuation still carries the known run-id.
  * @param opts.codecMessageId - Message identity — the wire `codec-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
- * @param opts.parent - Preceding message's codec-message-id (for branching).
- * @param opts.forkOf - Forked user-prompt's codec-message-id (for edits — creates a run-level fork sibling).
- * @param opts.regenerates - Assistant codec-message-id this run regenerates. Stamps
- *   `msg-regenerate`. Distinct from `forkOf`: regenerate is a
- *   continuation of the prior run (no run-level fork), with the message
- *   replacement resolved when a consumer materialises messages.
- * @param opts.supersedes - Run-id this client tool-result fork supersedes (the
- *   suspended run it resolves). Stamps `supersedes` so a consumer
- *   reconstructing conversation structure hides that dead run from branch
- *   selection — a single response renders linearly while concurrent forks
- *   still branch. Unlike `forkOf`, the superseded sibling is not kept
- *   navigable.
  * @param opts.invocationId - Agent-minted invocation id. Stamped by the agent on every event it publishes for the invocation (run lifecycle + outputs) so the client can observe it; not set by the client on the input.
  * @param opts.inputClientId - ClientId of the input event (the `ai-input`) that
  *   drove the current invocation. The agent reads it from the publisher's
@@ -91,10 +75,6 @@ export const buildTransportHeaders = (opts: {
   runId?: string;
   codecMessageId: string;
   runClientId?: string;
-  parent?: string;
-  forkOf?: string;
-  regenerates?: string;
-  supersedes?: string;
   invocationId?: string;
   inputClientId?: string;
   inputCodecMessageId?: string;
@@ -109,10 +89,6 @@ export const buildTransportHeaders = (opts: {
   };
   if (opts.runId !== undefined) h[HEADER_RUN_ID] = opts.runId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
-  if (opts.parent) h[HEADER_PARENT] = opts.parent;
-  if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
-  if (opts.regenerates) h[HEADER_MSG_REGENERATE] = opts.regenerates;
-  if (opts.supersedes) h[HEADER_SUPERSEDES] = opts.supersedes;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
@@ -128,19 +104,14 @@ export const buildTransportHeaders = (opts: {
  * run-resume, run-suspend, run-end). Single source of truth for lifecycle
  * header stamping, mirroring {@link buildTransportHeaders} for the
  * message-carrier path. Every field except `runId`/`runClientId` is optional
- * and omitted when not provided.
- *
- * A resume suppresses the structural `parent` / `forkOf` / `regenerates`
- * headers — the caller passes them only for a fresh run-start. `reason` is
- * stamped only on run-end.
+ * and omitted when not provided. `reason` is stamped only on run-end.
  * @param opts - The lifecycle header values to include.
  * @param opts.runId - The run's id.
  * @param opts.runClientId - ClientId of the run initiator (empty string when unknown).
- * @param opts.parent - Structural parent codec-message-id (fresh run-start only).
- * @param opts.forkOf - Forked user-prompt codec-message-id (fresh run-start only).
- * @param opts.regenerates - Regenerated assistant codec-message-id (fresh run-start only).
  * @param opts.invocationId - Agent-minted invocation id; carried on every lifecycle event.
- * @param opts.inputClientId - ClientId of the triggering input event.
+ * @param opts.inputClientId - ClientId of the triggering input's publisher,
+ *   read off the input's own wire message (Ably stamps the publisher's
+ *   realtime clientId on it) and re-stamped here as `input-client-id`.
  * @param opts.inputCodecMessageId - Codec-message-id of the triggering input event.
  * @param opts.reason - Terminal reason; stamped on run-end only.
  * @param opts.consideredInputIds - Codec-message-ids of every input the run's
@@ -157,9 +128,6 @@ export const buildTransportHeaders = (opts: {
 export const buildLifecycleHeaders = (opts: {
   runId: string;
   runClientId: string;
-  parent?: string;
-  forkOf?: string;
-  regenerates?: string;
   invocationId?: string;
   inputClientId?: string;
   inputCodecMessageId?: string;
@@ -173,9 +141,6 @@ export const buildLifecycleHeaders = (opts: {
     [HEADER_RUN_CLIENT_ID]: opts.runClientId,
   };
   if (opts.reason !== undefined) h[HEADER_RUN_REASON] = opts.reason;
-  if (opts.parent !== undefined) h[HEADER_PARENT] = opts.parent;
-  if (opts.forkOf !== undefined) h[HEADER_FORK_OF] = opts.forkOf;
-  if (opts.regenerates !== undefined) h[HEADER_MSG_REGENERATE] = opts.regenerates;
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
@@ -280,9 +245,6 @@ export const parseRunLifecycle = (
   const stamped = timestamp === undefined ? {} : { timestamp };
 
   if (name === EVENT_RUN_START) {
-    const parent = headers[HEADER_PARENT];
-    const forkOf = headers[HEADER_FORK_OF];
-    const regenerates = headers[HEADER_MSG_REGENERATE];
     // The triggering input's codec-message-id, already stamped on the wire by
     // `buildLifecycleHeaders`. Carried onto the 'start' event so a consumer
     // can correlate the run back to its triggering input — the client
@@ -295,9 +257,6 @@ export const parseRunLifecycle = (
       serial,
       invocationId: headers[HEADER_INVOCATION_ID] ?? '',
       ...stamped,
-      ...(parent !== undefined && { parent }),
-      ...(forkOf !== undefined && { forkOf }),
-      ...(regenerates !== undefined && { regenerates }),
       ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
     };
   }
@@ -378,9 +337,7 @@ export const buildStepHeaders = (opts: {
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   // `invocationClientId` rides the existing `input-client-id` wire name: it is
-  // the publisher of the triggering input, which equals the POST issuer's id
-  // only when that issuer published the input event it points at — the common
-  // case. See HEADER_INPUT_CLIENT_ID.
+  // the same fact (the triggering input's publisher) scoped to the invocation.
   if (opts.invocationClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.invocationClientId;
   if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   if (opts.reason !== undefined) h[HEADER_STEP_REASON] = opts.reason;

@@ -409,10 +409,8 @@ export const defineCodec =
       createDecoder: () =>
         new DefaultCodecDecoder<TInput, TOutput>(
           // The lifecycle policy (and its tracker) stays per-decoder: each
-          // decoder instance gets independent per-run phase state. No options
-          // thread through: WireCodec.createDecoder takes none, so accepting
-          // any here would be unreachable surface.
-          createDecoderCore(buildHooks(outputDecoder, inputDecoder, decoderSynthesiseLifecycle?.()), {}),
+          // decoder instance gets independent per-run phase state.
+          createDecoderCore(buildHooks(outputDecoder, inputDecoder, decoderSynthesiseLifecycle?.())),
         ),
     };
   };

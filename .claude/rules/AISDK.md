@@ -18,7 +18,7 @@ type that is neither described nor an explicit `drop` throws at encode
 (`src/core/codec/output-descriptor-encoder.ts`), so a variant a future major
 adds fails loudly at runtime rather than being dropped silently.
 
-**`ai` is a runtime dependency, not a types-only peer.** `src/` imports one
+**`ai` is a value-importing peer, not a types-only one.** `src/` imports one
 value from it — `getToolName` in `src/vercel/tool-registry.ts` — so any value
 imported from `ai` must exist with the same signature in both supported majors.
 `test-ai-peer-range` in CI is the only thing checking that. Assembling chunks

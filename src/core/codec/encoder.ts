@@ -346,7 +346,15 @@ class DefaultEncoderCore implements EncoderCore {
       const tracker = this._trackers.get(streamId);
       if (!tracker) continue;
 
-      const recoveryStatus = tracker.cancelled ? 'cancelled' : 'complete';
+      // The tracker's actual state, never an assumed terminal: `_pending` is
+      // shared by every stream, so the flush a closing stream triggers also
+      // recovers other streams' failed appends — and a stream that is still
+      // streaming must not be stamped `complete`, which would close every
+      // subscriber's tracker and silently drop the rest of its output.
+      // `streaming` is the create's own status, so existing decoders treat the
+      // recovered stream as still open and the recovery update becomes a pure
+      // prefix extension.
+      const recoveryStatus = tracker.completed ? 'complete' : tracker.cancelled ? 'cancelled' : 'streaming';
       const msg: Ably.Message = {
         serial: tracker.serial,
         data: tracker.accumulated,

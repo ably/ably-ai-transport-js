@@ -9,8 +9,18 @@
 
 import { describe, expect, it } from 'vitest';
 
+import pkg from '../../package.json' with { type: 'json' };
 import { channelAgent } from '../../src/core/agent.js';
 import { VERSION } from '../../src/version.js';
+
+describe('VERSION', () => {
+  it('matches the published package version', () => {
+    // The agent string is how Ably attributes traffic, so a release that bumps
+    // package.json and forgets this constant would report a version the
+    // package does not have. Failing here beats relying on release discipline.
+    expect(VERSION).toBe(pkg.version);
+  });
+});
 
 describe('channelAgent', () => {
   it('always names this SDK at its current version', () => {

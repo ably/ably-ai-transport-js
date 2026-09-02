@@ -13,10 +13,10 @@ import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
-import { EVENT_AI_INPUT, HEADER_ROLE, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
+import { EVENT_AI_INPUT, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import { ErrorCode } from '../../../src/errors.js';
-import type { OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { ResponsesCodec } from '../../../src/openai/codec/index.js';
+import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
+import { createResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
@@ -25,11 +25,8 @@ import {
   contentPartDone,
   createBridge,
   created,
-  decodeInputs,
-  decodeOutputs,
   eventsOfType,
   failed,
-  firstInputText,
   functionCallArgsRun,
   functionCallItem,
   functionCallOutputEvent,
@@ -54,8 +51,10 @@ import {
   textDone,
   textRun,
   toolApprovalRequestEvent,
-  userTurn,
 } from './fixtures.js';
+
+// The codec under test, at its untyped default input instantiation.
+const responsesCodec = createResponsesCodec();
 
 const transportOf = (m: Ably.InboundMessage): Record<string, string> => getTransportHeaders(m);
 
@@ -84,18 +83,25 @@ const roundtrip = async (
   events: OpenAIOutput[],
 ): Promise<{ inbound: Ably.InboundMessage[]; outputs: OpenAIOutput[] }> => {
   const { writer, inbound } = createBridge();
-  const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+  const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
   for (const event of events) await encoder.publishOutput(event);
   await encoder.close();
   const messages = inbound();
-  return { inbound: messages, outputs: decodeOutputs(messages) };
+  const decoder = responsesCodec.createDecoder();
+  const outputs = messages.flatMap((msg) => decoder.decode(msg).outputs);
+  return { inbound: messages, outputs };
 };
 
-// The first decoded message-turn payload of a wire sequence, or undefined
-// when no message input decodes.
-const decodedMessagePayload = (messages: Ably.InboundMessage[]): OpenAIMessage | undefined => {
-  const first = decodeInputs(messages)[0];
-  return first?.kind === 'message' ? first.payload : undefined;
+// Decode a whole inbound sequence's output events through a fresh decoder.
+const decodeOutputs = (messages: Ably.InboundMessage[]): OpenAIOutput[] => {
+  const decoder = responsesCodec.createDecoder();
+  return messages.flatMap((msg) => decoder.decode(msg).outputs);
+};
+
+// Decode a whole inbound sequence's input events through a fresh decoder.
+const decodeInputs = (messages: Ably.InboundMessage[]): unknown[] => {
+  const decoder = responsesCodec.createDecoder();
+  return messages.flatMap((msg) => decoder.decode(msg).inputs);
 };
 
 describe('OpenAI codec roundtrip (offline)', () => {
@@ -125,7 +131,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
     const types = outputs.map((e) => e.type);
 
     // The item envelope leads, then the content-part opener, then the streamed
-    // text, then the closes — the (start, delta*, end) bracket a consumer folds.
+    // text, then the closes — the (start, delta*, end) bracket a consumer merges.
     expect(types).toContain('response.content_part.added');
     expect(types).toContain('response.output_item.done');
     expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));
@@ -308,7 +314,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('rejects a function-call output_item.added that carries no item id', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // The item id is the stream's slot key; a streamed function_call without one
     // is malformed wire data and is rejected at the encode boundary.
     await expect(
@@ -367,7 +373,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('throws on an unmodelled output event (safety net)', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // A hosted-tool event (web search) the codec doesn't model: it must surface
     // loudly rather than being dropped, since it signals an opt-in feature we
     // don't support yet.
@@ -397,7 +403,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('throws on an unmodelled output item type at encode (added and done)', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // A computer_call_output is a ResponseOutputItem member the codec does not
     // model (and not a valid ResponseInputItem). The item envelope is carried on
     // output_item.added / .done, whose encode asserts the item is modelled, so an
@@ -413,7 +419,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('drops the framing events silently at encode (no publish, no throw)', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // The codec's drop entries: each encodes to nothing, unlike an undescribed
     // event (which throws — see the safety-net test above).
     await encoder.publishOutput(created());
@@ -459,122 +465,99 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('function_call_output'));
   });
 
-  it('roundtrips a user message on the ai-input wire', async () => {
+  it('passes an arbitrary JSON input body through the ai-input wire verbatim', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    await encoder.publishInput({ kind: 'message', payload: userTurn('Hi there') });
+    const encoder = responsesCodec.createEncoder(writer);
+    const body = {
+      kind: 'message',
+      payload: {
+        role: 'user',
+        items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hi there' }] }],
+      },
+    };
+    await encoder.publishInput(body, { messageId: 'm-1' });
     await encoder.close();
 
     const messages = inbound();
     const input = messages.find((m) => m.name === EVENT_AI_INPUT);
     expect(input).toBeDefined();
-    expect(input && getCodecHeaders(input).kind).toBe('message');
-    expect(input && getCodecHeaders(input).partType).toBe('input_text');
-    expect(input && getTransportHeaders(input)[HEADER_ROLE]).toBe('user');
-    expect(input?.data).toBe('Hi there');
+    // One discrete message; the body rides the data as JSON, and the
+    // transport's transport-message-id stamp survives.
+    expect(input && getTransportHeaders(input)['transport-message-id']).toBe('m-1');
+    expect(input?.data).toBe(JSON.stringify(body));
 
-    expect(decodeInputs(messages)).toEqual([{ kind: 'message', payload: userTurn('Hi there') }]);
+    expect(decodeInputs(messages)).toEqual([body]);
   });
 
-  it('round-trips an empty prompt as a single empty text part', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    // A turn whose message has no content parts exercises explode's ≥1-part guarantee.
-    await encoder.publishInput({
-      kind: 'message',
-      payload: { role: 'user', items: [{ type: 'message', role: 'user', content: [] }] },
-    });
-    await encoder.close();
-
-    const messages = inbound();
-    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
-    expect(input && getCodecHeaders(input).partType).toBe('input_text');
-    expect(input?.data).toBe('');
-
-    expect(firstInputText(decodedMessagePayload(messages))).toBe('');
-  });
-
-  it('rejects a user turn with more than one message item', async () => {
+  it('rejects an input that is not JSON-serialisable', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    // The fan-out carries no item boundary, so more than one message item
-    // can't be represented on the wire — reject rather than silently
-    // collapsing them into one.
+    const encoder = responsesCodec.createEncoder(writer);
+
+    // A function has no JSON form, so JSON.stringify yields nothing to publish.
     await expect(
-      encoder.publishInput({
-        kind: 'message',
-        payload: {
-          role: 'user',
-          items: [
-            { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'one' }] },
-            { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'two' }] },
-          ],
-        },
+      encoder.publishInput(() => {
+        /* not serialisable */
       }),
     ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
-  it('rejects a user turn whose sole item is not a message', async () => {
+  it('rejects an input JSON.stringify throws on, with the same coded error', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    // Only a message item is a valid user turn; any other item type is a
-    // genuine caller bug on the encode side and is rejected rather than skipped.
-    await expect(
-      encoder.publishInput({
-        kind: 'message',
-        payload: { role: 'user', items: [functionCallItem('fc_1', 'call_1', 'getWeather')] },
-      }),
-    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    const encoder = responsesCodec.createEncoder(writer);
+
+    // The other failure mode: stringify throws rather than returning
+    // undefined. Both are the caller's mistake, so both carry the same code —
+    // a raw TypeError here would be rewrapped as an internal fault.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    await expect(encoder.publishInput(circular)).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
-  it('rejects a content part type that we currently do not handle', async () => {
-    const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    // input_text is the only content part type this version of the codec
-    // handles; any other part type is a genuine caller bug on the encode
-    // side (e.g. an input_image sent before AIT-1120 lands) and is rejected
-    // rather than silently dropped.
-    await expect(
-      encoder.publishInput({
-        kind: 'message',
-        payload: {
-          role: 'user',
-          items: [{ type: 'message', role: 'user', content: [{ type: 'input_image', detail: 'auto' }] }],
-        },
-      }),
-    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-  });
-
-  it('round-trips the turn role rather than defaulting it', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    // A non-'user' role would be masked by the 'user' fallback if the header
-    // were mis-keyed, so round-tripping it proves the role is actually read.
-    await encoder.publishInput({
-      kind: 'message',
-      payload: {
-        role: 'assistant',
-        items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
-      },
-    });
-    await encoder.close();
-
-    expect(decodedMessagePayload(inbound())?.role).toBe('assistant');
-  });
-
-  it('defaults the role to user when the role header is absent', () => {
-    // CAST: a minimal inbound ai-input part with no role transport header, to
-    // exercise assemble's `?? 'user'` fallback.
-    const msg = {
+  it('decodes a foreign ai-input (no extras.ai envelope) to nothing', () => {
+    // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    const foreign = {
       action: 'message.create',
       serial: 's1',
       version: { serial: 's1' },
       name: EVENT_AI_INPUT,
-      data: 'hi',
-      extras: { ai: { transport: {}, codec: { kind: 'message', partType: 'input_text' } } },
+      data: '{"text":"hello from the app"}',
+      extras: { headers: { topic: 'support' } },
     } as unknown as Ably.InboundMessage;
 
-    expect(decodedMessagePayload([msg])?.role).toBe('user');
+    expect(decodeInputs([foreign])).toEqual([]);
+  });
+
+  it('throws on malformed input wire data — the receive path drops the one message', () => {
+    // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    const malformed = {
+      action: 'message.create',
+      serial: 's1',
+      version: { serial: 's1' },
+      name: EVENT_AI_INPUT,
+      data: 'not-json',
+      extras: { ai: { transport: {} } },
+    } as unknown as Ably.InboundMessage;
+
+    // The peer sent a bad body, so it is InvalidArgument — not the
+    // internal-fault code a raw SyntaxError would be wrapped as.
+    expect(() => decodeInputs([malformed])).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws on a non-string input wire body', () => {
+    // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    const notAString = {
+      action: 'message.create',
+      serial: 's1',
+      version: { serial: 's1' },
+      name: EVENT_AI_INPUT,
+      data: { already: 'an object' },
+      extras: { ai: { transport: {} } },
+    } as unknown as Ably.InboundMessage;
+
+    // Coercing this with String() would produce "[object Object]" and then
+    // fail the parse for the wrong reason.
+    expect(() => decodeInputs([notAString])).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 });
 
@@ -619,21 +602,21 @@ describe('OpenAI codec foreign messages (offline)', () => {
   });
 
   it('decodes a foreign message to no events', () => {
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = responsesCodec.createDecoder();
 
     expect(decoder.decode(foreignMessage('foreign-1'))).toEqual({ inputs: [], outputs: [] });
   });
 });
 
-// The client-driven tool events carry no Responses stream event of their own;
-// these prove the wire framing round-trips: the codec headers each descriptor
-// declares (call_id / name / approved / reason) and its data envelope survive
-// encode → wire → decode. The plain `item` and approved-decision round-trips
-// live in inputs.test.ts.
+// The codec-authored approval request carries no Responses stream event of
+// its own; this proves its wire framing round-trips: the codec headers the
+// descriptor declares (call_id / name) and its data envelope survive
+// encode → wire → decode. Client answers are application-defined passthrough
+// inputs, covered by the passthrough tests above.
 describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
   it('roundtrips a tool-approval-request: call_id/name on headers, arguments in data', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     await encoder.publishOutput(toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{"location":"Paris"}'));
     await encoder.close();
 
@@ -651,25 +634,6 @@ describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
         name: 'getWeatherForecast',
         arguments: '{"location":"Paris"}',
       },
-    ]);
-  });
-
-  it('roundtrips a denied approval decision: approved and reason ride the headers', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    await encoder.publishInput(
-      { kind: 'approval', payload: { call_id: 'call_1', approved: false, reason: 'User denied' } },
-      { messageId: 'run-1' },
-    );
-    await encoder.close();
-
-    const messages = inbound();
-    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
-    expect(wire && getCodecHeaders(wire).approved).toBe('false');
-    expect(wire && getCodecHeaders(wire).reason).toBe('User denied');
-
-    expect(decodeInputs(messages)).toEqual([
-      { kind: 'approval', payload: { call_id: 'call_1', approved: false, reason: 'User denied' } },
     ]);
   });
 });

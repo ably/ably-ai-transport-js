@@ -10,8 +10,7 @@ import type { Responses } from 'openai/resources/responses/responses';
 
 import { HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/index.js';
-import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { ResponsesCodec } from '../../../src/openai/index.js';
+import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 
 // --- minimal domain objects --------------------------------------------------
 
@@ -400,19 +399,6 @@ export const textRun = (itemId: string, text: string): Responses.ResponseStreamE
   ];
 };
 
-// A plain-text user message: one input message item with a single `input_text` part.
-export const userTurn = (text: string): OpenAIMessage => ({
-  role: 'user',
-  items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
-});
-
-// The first `input_text` part's text from a (user) message, or '' if absent.
-export const firstInputText = (message: OpenAIMessage | undefined): string => {
-  const item = message?.items.find((i): i is Responses.ResponseInputItem.Message => i.type === 'message');
-  const part = item?.content.find((p) => p.type === 'input_text');
-  return part?.type === 'input_text' ? part.text : '';
-};
-
 // --- transport-header helpers ------------------------------------------------
 
 /**
@@ -519,24 +505,4 @@ export const createBridge = (): { writer: ChannelWriter; inbound: () => Ably.Inb
           }) as unknown as Ably.InboundMessage,
       ),
   };
-};
-
-/**
- * Decode a whole inbound sequence's output events through a fresh decoder.
- * @param messages - The inbound wire messages, in order.
- * @returns The decoded outputs, flattened.
- */
-export const decodeOutputs = (messages: Ably.InboundMessage[]): OpenAIOutput[] => {
-  const decoder = ResponsesCodec.createDecoder();
-  return messages.flatMap((msg) => decoder.decode(msg).outputs);
-};
-
-/**
- * Decode a whole inbound sequence's input events through a fresh decoder.
- * @param messages - The inbound wire messages, in order.
- * @returns The decoded inputs, flattened.
- */
-export const decodeInputs = (messages: Ably.InboundMessage[]): OpenAIInput[] => {
-  const decoder = ResponsesCodec.createDecoder();
-  return messages.flatMap((msg) => decoder.decode(msg).inputs);
 };

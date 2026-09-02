@@ -88,6 +88,8 @@ export interface LifecyclePolicy<TOutput> {
  * @template TOutput - The codec's output union.
  */
 export interface DefineCodecConfig<TInput extends { kind: string }, TOutput extends { type: string }> {
+  /** Optional Ably-Agent identifier; omit to opt out of agent registration. */
+  adapterTag?: string;
   /**
    * The declarative output (`ai-output`) descriptor table, returned from the
    * injected `{ event, stream, drop }` builder (curried on `TOutput`).
@@ -405,6 +407,10 @@ export const defineCodec =
     const outputDecoder = createOutputDescriptorDecoder(outputs);
     const inputDecoder = createInputDescriptorDecoder(inputs);
     return {
+      // adapterTag is optional on WireCodec, so only set the key when the
+      // codec supplied one. Spreading `undefined` would put the key on the
+      // object and defeat the opt-out.
+      ...(config.adapterTag === undefined ? {} : { adapterTag: config.adapterTag }),
       createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
       createDecoder: () =>
         new DefaultCodecDecoder<TInput, TOutput>(

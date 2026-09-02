@@ -26,14 +26,24 @@ import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
 import type { TransportEvent, WireMeta } from '../src/index.js';
-import { AIT_BASE_MODES, createAgentTransport, createClientTransport, OBJECT_MODES } from '../src/index.js';
+import {
+  channelAgent,
+  createAgentTransport,
+  createClientTransport,
+  OBJECT_MODES,
+  resolveChannelModes,
+} from '../src/index.js';
 import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../src/openai/index.js';
 import { ResponsesCodec } from '../src/openai/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
 
-/** The complete surface of a wire codec. Anything else is message assembly. */
-const WIRE_CODEC_KEYS = ['createDecoder', 'createEncoder'];
+/**
+ * Every key a wire codec may carry. An allowlist rather than a denylist: a
+ * codec that grew a surface nobody anticipated still fails here, where a list
+ * of names we thought of would not.
+ */
+const WIRE_CODEC_KEYS = new Set(['adapterTag', 'createDecoder', 'createEncoder']);
 
 describe('@ably/ai-transport', () => {
   it('publishes the two transport factories', () => {
@@ -41,22 +51,30 @@ describe('@ably/ai-transport', () => {
     expect(createAgentTransport).toBeTypeOf('function');
   });
 
-  it('publishes both halves of the channel-mode recipe a caller needs', () => {
+  it('publishes the channel-mode recipe a caller needs', () => {
     // A caller resolves its own channel, and setting any mode replaces the
-    // server default rather than adding to it — so requesting object access
-    // means naming the base set too. Both constants have to be reachable.
-    expect([...AIT_BASE_MODES, ...OBJECT_MODES]).toEqual([
+    // server default rather than adding to it, so asking for object access
+    // means asking for the base set too. resolveChannelModes does that union
+    // in a fixed order, so two resolutions compare equal and ably-js sees no
+    // mode change to reattach for.
+    expect(resolveChannelModes(OBJECT_MODES)).toEqual([
       'PUBLISH',
       'SUBSCRIBE',
       'PRESENCE',
       'PRESENCE_SUBSCRIBE',
-      'ANNOTATION_PUBLISH',
-      'OBJECT_SUBSCRIBE',
       'OBJECT_PUBLISH',
+      'OBJECT_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
     ]);
+    // No extras means no mode flags on the wire, so the server default applies.
+    expect(resolveChannelModes()).toBeUndefined();
   });
 
-  it('publishes the types a consumer needs to fold the event stream itself', () => {
+  it('publishes the agent string a caller stamps on its channel', () => {
+    expect(channelAgent()).toMatch(/^ai-transport-js\/\d+\.\d+\.\d+$/);
+  });
+
+  it('publishes the types a consumer needs to merge the event stream itself', () => {
     // Spelled in full, with no cast: a new required field on WireMeta should
     // fail the typecheck here rather than pass silently.
     const meta: WireMeta = {
@@ -64,7 +82,7 @@ describe('@ably/ai-transport', () => {
       codec: {},
       headers: {},
       serial: 's-1',
-      transportMessageId: 'cmid-1',
+      transportMessageId: 'tmid-1',
       runId: 'run-1',
       stepId: undefined,
       stepStartSerial: undefined,
@@ -91,7 +109,11 @@ describe.each([
   it('publishes a wire codec that encodes and decodes, and nothing more', () => {
     const codec = build();
 
-    expect(Object.keys(codec).toSorted()).toEqual(WIRE_CODEC_KEYS);
+    // Subset plus required, because adapterTag is optional: a codec that opts
+    // out of agent registration carries only the two functions.
+    const unexpected = Object.keys(codec).filter((key) => !WIRE_CODEC_KEYS.has(key));
+
+    expect(unexpected, 'a wire codec carries encode, decode, and its adapter tag').toEqual([]);
     expect(codec.createDecoder()).toBeDefined();
     expect(typeof codec.createEncoder).toBe('function');
   });

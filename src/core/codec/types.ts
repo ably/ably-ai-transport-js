@@ -257,6 +257,12 @@ export interface Decoder<TInput, TOutput> {
  *   `ai-output` wire.
  */
 export interface WireCodec<TInput, TOutput> {
+  /**
+   * Optional Ably-Agent identifier. When present, the caller stamps it on the
+   * channel alongside this SDK's own agent, so traffic is attributed to this
+   * codec; when absent, the codec opts out. Read by `channelAgent`.
+   */
+  readonly adapterTag?: string;
   /** Create a stateful encoder bound to the given channel. */
   createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
   /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */

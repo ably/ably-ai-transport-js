@@ -39,8 +39,11 @@ export {
   createReceiveTransport,
 } from './core/transport/index.js';
 
+// Ably-Agent registration
+export { channelAgent } from './core/agent.js';
+
 // Channel modes
-export { AIT_BASE_MODES, OBJECT_MODES } from './core/channel-options.js';
+export { OBJECT_MODES, resolveChannelModes } from './core/channel-options.js';
 
 // Core codec
 export type {

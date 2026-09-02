@@ -105,11 +105,16 @@ const executedAssistant = (id = 'a1'): AI.UIMessage => ({
 });
 
 /**
- * An output-carrying wire event under a run.
+ * An output-carrying wire event under a run — one delivery of one wire
+ * message. A streamed message keeps its channel serial for its whole life and
+ * advances `version.serial` per append, so a fixture that models an append
+ * repeats the serial and passes a fresh `versionSerial` (see
+ * {@link appendEvent}). A single delivery gets both from `serial`.
  * @param runId - The run the output belongs to.
  * @param transportMessageId - The wire message the chunks accumulate on.
  * @param chunks - The decoded output chunks.
- * @param serial - The event's channel serial.
+ * @param serial - The wire message's channel serial.
+ * @param versionSerial - The delivery's version serial. Defaults to `serial`, as a first delivery's does.
  * @returns The event.
  */
 const outputEvent = (
@@ -117,7 +122,27 @@ const outputEvent = (
   transportMessageId: string,
   chunks: AI.UIMessageChunk[],
   serial = 'serial-1',
-): Event => messageEvent({ runId, transportMessageId, role: 'assistant', serial }, { outputs: chunks });
+  versionSerial = serial,
+): Event => messageEvent({ runId, transportMessageId, role: 'assistant', serial, versionSerial }, { outputs: chunks });
+
+/**
+ * A later append of a wire message already on the channel: the same channel
+ * serial, a new version serial. This is what a streaming reply actually looks
+ * like on the wire, and keying anything on `serial` alone collapses it.
+ * @param runId - The run the output belongs to.
+ * @param transportMessageId - The wire message the chunks accumulate on.
+ * @param chunks - The decoded output chunks this append carried.
+ * @param serial - The wire message's channel serial, unchanged from the first delivery.
+ * @param versionSerial - This append's version serial.
+ * @returns The event.
+ */
+const appendEvent = (
+  runId: string,
+  transportMessageId: string,
+  chunks: AI.UIMessageChunk[],
+  serial: string,
+  versionSerial: string,
+): Event => outputEvent(runId, transportMessageId, chunks, serial, versionSerial);
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -909,8 +934,16 @@ describe('ChatTransport', () => {
       const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
       expect(stream).not.toBeNull();
 
+      // The live append is the SAME wire message: the channel serial is
+      // unchanged from the walked delivery and only the version advances.
       fake.emit(
-        outputEvent('run-2', 'wire-a2', [{ type: 'text-delta', id: 'a2-t', delta: ' Berlin is 4C' }], 'serial-22'),
+        appendEvent(
+          'run-2',
+          'wire-a2',
+          [{ type: 'text-delta', id: 'a2-t', delta: ' Berlin is 4C' }],
+          'serial-21',
+          'serial-21:2',
+        ),
       );
       fake.emit(runEndEvent('run-2'));
 
@@ -921,6 +954,68 @@ describe('ChatTransport', () => {
         { type: 'text-delta', id: 'a2-t', delta: 'The weather in' },
         { type: 'text-delta', id: 'a2-t', delta: ' Berlin is 4C' },
       ]);
+    });
+
+    it('replays every append buffered during the walk, not just the first', async () => {
+      const { fake, chat } = setup();
+      // A page that loads mid-stream: the decoder's first contact with the
+      // message in flight emits an opener plus the text so far, and the reply
+      // keeps arriving as appends of that SAME wire message while hydration
+      // runs — one channel serial, an advancing version. All three land in the
+      // live buffer, and the walk brings back only the run's start, because
+      // the shared decoder has already incorporated the message itself.
+      fake.emit(
+        outputEvent(
+          'run-2',
+          'wire-a2',
+          [
+            { type: 'start', messageId: 'a2' },
+            { type: 'text-start', id: 'a2-t' },
+            { type: 'text-delta', id: 'a2-t', delta: 'The weather in' },
+          ],
+          'serial-21',
+        ),
+      );
+      fake.emit(
+        appendEvent('run-2', 'wire-a2', [{ type: 'text-delta', id: 'a2-t', delta: ' Berlin' }], 'serial-21', 'v-2'),
+      );
+      fake.emit(
+        appendEvent('run-2', 'wire-a2', [{ type: 'text-delta', id: 'a2-t', delta: ' is 4C' }], 'serial-21', 'v-3'),
+      );
+      fake.historyBatches = [{ events: [runStartEvent('run-2', 'serial-20')], exhausted: true }];
+      await chat.readSince();
+
+      const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
+      fake.emit(runEndEvent('run-2'));
+
+      // Every delivery reaches the reducer. Keying the hand-off dedupe on the
+      // channel serial would keep the first and drop the rest of the reply,
+      // and no chunk in the UIMessageChunk union could put the text back.
+      const chunks = await readAll(stream as ReadableStream<AI.UIMessageChunk>);
+      expect(chunks).toEqual([
+        { type: 'start', messageId: 'a2' },
+        { type: 'text-start', id: 'a2-t' },
+        { type: 'text-delta', id: 'a2-t', delta: 'The weather in' },
+        { type: 'text-delta', id: 'a2-t', delta: ' Berlin' },
+        { type: 'text-delta', id: 'a2-t', delta: ' is 4C' },
+      ]);
+    });
+
+    it('still drops a delivery the walk and the live buffer both hold', async () => {
+      const { fake, chat } = setup();
+      const opener = outputEvent('run-2', 'wire-a2', [{ type: 'start', messageId: 'a2' }], 'serial-21');
+      // The live buffer has been running since construction, so one delivery
+      // can land there and come back from the walk as well. It must reach the
+      // reducer once.
+      fake.emit(opener);
+      fake.historyBatches = [{ events: [runStartEvent('run-2', 'serial-20'), opener], exhausted: true }];
+      await chat.readSince();
+
+      const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
+      fake.emit(runEndEvent('run-2'));
+
+      const chunks = await readAll(stream as ReadableStream<AI.UIMessageChunk>);
+      expect(chunks).toEqual([{ type: 'start', messageId: 'a2' }]);
     });
 
     it('closes cleanly when the run ended between the walk and the reconnect', async () => {

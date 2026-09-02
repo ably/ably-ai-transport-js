@@ -351,23 +351,30 @@ const dropSupersededAttempts = <TMetadata, TDataParts extends AI.UIDataTypes, TT
 };
 
 /**
- * Join two event sequences, dropping any event whose serial has already been
+ * Join two event sequences, dropping any event whose delivery has already been
  * seen. A second walk can put one event in both the retention and the live
  * buffer, and delivering it twice would duplicate its content in the reducer.
+ *
+ * A message event is keyed on its **version serial**, not its message serial.
+ * A streamed message keeps one message serial for its whole life and advances
+ * `version.serial` per append, so keying on the message serial would collapse
+ * every append of a streaming message to whichever one arrived first —
+ * silently dropping the rest of the reply on the path this exists to serve.
+ * Lifecycle events carry their own serial and are one delivery each.
  * @param events - The events to join, oldest first.
- * @returns The events with serial duplicates removed, order preserved.
+ * @returns The events with duplicate deliveries removed, order preserved.
  */
-const dedupeBySerial = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
+const dedupeByDelivery = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
   events: AdapterEvent<TMetadata, TDataParts, TTools>[],
 ): AdapterEvent<TMetadata, TDataParts, TTools>[] => {
   const seen = new Set<string>();
   return events.filter((event) => {
-    const serial = event.kind === 'message' ? event.meta.serial : event.event.serial;
-    // Only a locally synthesised event lacks a serial, and the transport
-    // publishes none; keep it rather than treat it as a duplicate.
-    if (serial === undefined) return true;
-    if (seen.has(serial)) return false;
-    seen.add(serial);
+    const key = event.kind === 'message' ? (event.meta.versionSerial ?? event.meta.serial) : event.event.serial;
+    // Only a locally synthesised event lacks both, and the transport publishes
+    // none; keep it rather than treat it as a duplicate.
+    if (key === undefined) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 };
@@ -583,7 +590,7 @@ class DefaultChatTransport<
     // published between attach and here is already held. history() is bounded
     // at the attach point and shares the live decoder, so the buffered events
     // are strictly newer than every page; a re-walk's overlap is removed by
-    // serial at hand-off.
+    // delivery at hand-off.
 
     let all: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
     let exhausted = false;
@@ -655,7 +662,7 @@ class DefaultChatTransport<
     // Awaited so the returned stream already holds its replay: useChat starts
     // reading a stream whose withheld message is buffered, not one that fills
     // in behind it.
-    await collector.awaitRunId(runId, dropSupersededAttempts(dedupeBySerial([...retained, ...buffered])));
+    await collector.awaitRunId(runId, dropSupersededAttempts(dedupeByDelivery([...retained, ...buffered])));
     return collector.stream;
   }
 

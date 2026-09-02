@@ -21,8 +21,8 @@ override), the severity scale, and the exact report format. Use
 **concern = `demos`**. Apply the criteria below, then emit the report it
 specifies.
 
-The demos live under `demo/` — `demo/vercel`, `demo/vercel/react`, and the
-shared e2e harness `demo/e2e`. Each demo carries its own Playwright suite under
+The demos live under `demo/` — `demo/vercel/react`,
+`demo/openai/react`, and the shared e2e harness `demo/e2e`. Each demo carries its own Playwright suite under
 `<demo>/tests/e2e/*.spec.ts`, launched through `demo/e2e/run-e2e.mjs`. Identify
 which public API surface the change touched (additions, renames, removals,
 signature changes in any entry-point `index.ts`).

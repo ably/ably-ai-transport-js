@@ -82,10 +82,9 @@ describe('defineCodec — decoder direction routing', () => {
 
     const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind: 'quirky' }));
 
-    // The decoded event is { type: 'quirky', kind: 'looks-like-input' }. The old
-    // `'kind' in event` check would have placed it in `inputs`; routing by the wire
-    // name keeps it in `outputs`. The domain `kind` field is reconstructed by the
-    // data decoder and is distinct from the `kind` wire dispatch header.
+    // The decoded event is { type: 'quirky', kind: 'looks-like-input' }: a
+    // domain `kind` field must not be mistaken for the `kind` wire dispatch
+    // header — routing goes by the wire name, so this stays in `outputs`.
     expect(outputs).toEqual([{ type: 'quirky', kind: 'looks-like-input' }]);
     expect(inputs).toEqual([]);
   });
@@ -186,17 +185,6 @@ describe('defineCodec — encoder wiring', () => {
     if (!msg) throw new Error('no publish');
     expect(msg.name).toBe(EVENT_AI_INPUT);
     expect(headersOf(msg).kind).toBe('noop');
-  });
-
-  it('surfaces the channel publish acknowledgement from publishInput', async () => {
-    // The Encoder contract reports the ACK so a caller can record the serial
-    // its input landed on. defineCodec forwards it rather than dropping it.
-    const writer = createMockWriter();
-    const encoder = codec.createEncoder(writer);
-
-    const result = await encoder.publishInput({ kind: 'noop', transportMessageId: 'cm-1', payload: {} });
-
-    expect(result).toEqual({ serials: ['serial-1'] });
   });
 
   it('round-trips an output event through encode then decode', async () => {

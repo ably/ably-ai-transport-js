@@ -51,8 +51,8 @@ const getAiTier = (message: Ably.InboundMessage, tier: 'transport' | 'codec'): R
 
 /**
  * Extract the transport-tier headers (`extras.ai.transport`) from an Ably
- * InboundMessage. These are the generic transport headers (run/stream/identity/
- * branching), set and read by the transport layer.
+ * InboundMessage. These are the generic transport headers (run, stream and
+ * identity), set and read by the transport layer.
  * @param message - The Ably message to extract headers from.
  * @returns The transport headers record, or an empty object if absent.
  */

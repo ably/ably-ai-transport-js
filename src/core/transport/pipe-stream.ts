@@ -3,7 +3,7 @@
  *
  * Reads outputs from a ReadableStream, writes them to an encoder via
  * `publishOutput`, and handles cancel/error. No dependencies on run
- * state or transport internals.
+ * state or session internals.
  */
 
 import type { Logger } from '../../logger.js';

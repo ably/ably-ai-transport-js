@@ -84,11 +84,21 @@ export interface LifecyclePolicy<TOutput> {
 
 /**
  * The parts a codec supplies to {@link defineCodec}.
+ *
+ * The `kind` / `type` constraints bind ONLY this declarative authoring
+ * helper, never the transports: {@link WireCodec} and everything generic that
+ * consumes it are unconstrained, carry events opaquely, and read no event
+ * content (pinned by the opaque-codec transport tests). The descriptor tables
+ * here dispatch each event to its wire form by a typed discriminant, and
+ * `kind` / `type` are the field names that dispatch keys on — mirroring how
+ * every provider SDK discriminates its own unions. A provider whose events
+ * discriminate differently wraps them, or implements {@link WireCodec}
+ * directly without this helper.
  * @template TInput - The codec's input union.
  * @template TOutput - The codec's output union.
  */
 export interface DefineCodecConfig<TInput extends { kind: string }, TOutput extends { type: string }> {
-  /** Optional Ably-Agent identifier; omit to opt out of agent registration. */
+  /** Optional Ably-Agent identifier registered on the channel; omit to opt out. */
   adapterTag?: string;
   /**
    * The declarative output (`ai-output`) descriptor table, returned from the
@@ -134,9 +144,9 @@ class DefaultCodecEncoder<TInput extends { kind: string }, TOutput extends { typ
   }
 
   async publishInput(input: TInput, options?: WriteOptions): Promise<Ably.PublishResult> {
-    // No `messageId` threads into inputs: a user-message part carries no
-    // transport-message-id of its own, so an input relies on `opts.messageId`,
-    // which the transport stamps.
+    // No `messageId` threads into inputs — user-message parts carry no
+    // transport transport-message-id today; inputs rely on opts.messageId stamped
+    // by the transport.
     return this._inputEncoder.encode(input, this._core, { opts: options });
   }
 
@@ -407,9 +417,8 @@ export const defineCodec =
     const outputDecoder = createOutputDescriptorDecoder(outputs);
     const inputDecoder = createInputDescriptorDecoder(inputs);
     return {
-      // adapterTag is optional on WireCodec, so only set the key when the
-      // codec supplied one. Spreading `undefined` would put the key on the
-      // object and defeat the opt-out.
+      // adapterTag is optional on WireCodec; only set it when supplied so a
+      // codec can opt out of Ably-Agent registration.
       ...(config.adapterTag === undefined ? {} : { adapterTag: config.adapterTag }),
       createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
       createDecoder: () =>

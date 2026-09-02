@@ -1,38 +1,37 @@
 /**
  * The self-contained client transport: publish, receive, and history over one
- * channel and codec. It keeps no conversation state — a consumer folds the
- * event stream into state of its own.
+ * channel and codec.
  *
  * {@link createClientTransport} owns its whole receive path: it mints a codec
  * decoder, wraps it in a receive transport, and — once {@link
- * ClientTransport.connect} subscribes and attaches — folds every inbound wire
+ * ClientTransport.connect} subscribes and attaches — merges every inbound wire
  * message through it (`deliverEvent`, then `deliverAblyMessage`), so a
  * consumer subscribes to the transport directly instead of wiring a receiver
  * and channel listener by hand.
  *
  * On the send side, `publishInput` stamps the transport-tier headers a `user`
- * input carries (`buildTransportHeaders`), publishes the event through the
- * codec's encoder, and emits an optimistic local `message` echo so the sender
- * sees its own input before the wire round-trips. `cancel` publishes a
+ * input carries (`buildTransportHeaders`) and publishes the event through the
+ * codec's encoder; the sender's own input reaches it back as the ordinary
+ * channel delivery, like any other subscriber's. `cancel` publishes a
  * stateless `ai-cancel` envelope for a run the caller names. `steer` publishes
  * a steering input into an open run through the {@link SteerCoordinator},
- * which matches the steer's own channel echo (resolving `published` with the
- * Ably-assigned serial), accumulates the `steer-transport-message-ids` stamps the
- * agent puts on the run's outputs, and resolves each steer's `outcome` by id
- * membership at the run's next lifecycle bracket. A channel state listener
- * drains in-flight steers on continuity loss — post-loss the channel will not
- * deliver the echoes or lifecycle events that would resolve them.
+ * which resolves `published` from the publish acknowledgement's serial,
+ * accumulates the `steer-transport-message-ids` stamps the agent puts on the
+ * run's outputs, and resolves each steer's `outcome` by id membership at the
+ * run's next lifecycle bracket. A channel state listener drains in-flight
+ * steers on continuity loss — post-loss the channel will not deliver the
+ * lifecycle events that would resolve them.
  *
  * `history` pages the channel backwards from the attach point and returns each
  * older slice as a batch of classified events — decoded on the same decoder as
  * the live stream, so a stream spanning the attach boundary is never
  * double-decoded.
  *
- * The transport holds no run registry: a consumer keying on `transportMessageId`
- * reconciles the local echo against the later wire echo, and sources a
- * cancel's or steer's `runId` from `publishInput`'s returned `runId` promise
- * (resolved from the first `ai-run-start` whose `input-transport-message-id`
- * matches the publish) or from the receive stream's run-lifecycle events.
+ * The transport holds no run registry: a consumer keys its own send on the
+ * returned `transportMessageId` and sources a cancel's or steer's `runId` from
+ * `publishInput`'s returned `runId` promise (resolved from the first
+ * `ai-run-start` whose `input-transport-message-id` matches the publish) or from
+ * the receive stream's run-lifecycle events.
  */
 
 import * as Ably from 'ably';
@@ -44,8 +43,8 @@ import type { Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
 import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './channel-support.js';
 import { buildTransportHeaders } from './headers.js';
-import { createHistoryPager, type HistoryPager } from './history-pager.js';
-import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
+import { DEFAULT_HISTORY_PAGE_SIZE, HistoryPager } from './history-pager.js';
+import { createReceiveTransport, forwardReceiverOn, type ReceiveTransport } from './receive-transport.js';
 import { SteerCoordinator } from './steer-coordinator.js';
 import type { SteerResult } from './types/steer.js';
 import type {
@@ -55,16 +54,8 @@ import type {
   TransportEvent,
   TransportHistoryOptions,
   TransportHistoryResult,
+  TransportReceiver,
 } from './types/transport.js';
-import { wireMetaFromLocalEcho } from './wire-meta.js';
-
-/**
- * Default wire-message limit per Ably history page, used when
- * {@link ClientTransportOptions.historyPageSize} is unset. Over-provisions for
- * the many-Ably-messages-per-domain-message ratio so a single round trip
- * usually covers several domain messages.
- */
-const DEFAULT_HISTORY_PAGE_SIZE = 100;
 
 /**
  * Options for {@link createClientTransport}.
@@ -74,9 +65,9 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
 export interface ClientTransportOptions<TInput, TOutput> {
   /** The Ably channel to publish on and receive from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
   channel: Ably.RealtimeChannel;
-  /** The codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
+  /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
   codec: WireCodec<TInput, TOutput>;
-  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and the local echo's `clientId` is `undefined`. */
+  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and a receiver reads `WireMeta.clientId` as `undefined`. */
   clientId?: string;
   /** Wire-message limit per `channel.history()` round trip in {@link ClientTransport.history}. Defaults to 100. */
   historyPageSize?: number;
@@ -84,15 +75,10 @@ export interface ClientTransportOptions<TInput, TOutput> {
   logger?: Logger;
 }
 
-/**
- * An input published against an existing `transportMessageId` amends something
- * that is already there, so it gets no optimistic echo; an input publishing
- * without one introduces content, so it is echoed. The rule reads only the
- * transport's own options — the input body is opaque to the transport.
- * @param opts - The publish options for the input.
- * @returns True when the input is wire-only (no optimistic echo).
- */
-const isWireOnlyInput = (opts: PublishInputOptions | undefined): boolean => opts?.transportMessageId !== undefined;
+/** The unwatch for a publish that registered no runId watch. */
+const noopUnwatch = (): void => {
+  /* nothing to deregister */
+};
 
 /**
  * Merge user-provided headers into an outgoing Ably message's own
@@ -115,11 +101,12 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: WireCodec<TInput, TOutput>;
   private readonly _clientId: string | undefined;
-  private readonly _historyPageSize: number;
   private readonly _logger: Logger;
-  /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded. */
+  /** The one decoder shared by the live merge and the history scan, so a stream spanning the attach boundary is never double-decoded. */
   private readonly _decoder: Decoder<TInput, TOutput>;
   private readonly _receiver: ReceiveTransport<TInput, TOutput>;
+  /** The public `on`, forwarding to the receiver via the shared dispatch. */
+  readonly on: TransportReceiver<TInput, TOutput>['on'];
   private readonly _connectGuard = new ConnectGuard();
   /** The channel listener — one bound reference so `close()` can unsubscribe it. */
   private readonly _onMessage: (message: Ably.InboundMessage) => void;
@@ -147,29 +134,23 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    */
   private _hasAttachedOnce: boolean;
   private _closed = false;
-  /**
-   * The shared backward history pager: a lazily opened `untilAttach` cursor,
-   * single-flight across `history()` calls, classifying on the live stream's
-   * decoder. See {@link createHistoryPager}.
-   */
+  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live merge. */
   private readonly _historyPager: HistoryPager<TInput, TOutput>;
 
   constructor(options: ClientTransportOptions<TInput, TOutput>) {
     this._channel = options.channel;
     this._codec = options.codec;
     this._clientId = options.clientId;
-    this._historyPageSize = options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ClientTransport',
     });
     this._decoder = this._codec.createDecoder();
     this._receiver = createReceiveTransport<TInput, TOutput>(this._decoder, this._logger);
-    // A decode failure while paging surfaces on the receive stream's `error`,
-    // matching the live fold.
-    this._historyPager = createHistoryPager({
+    this.on = forwardReceiverOn(this._receiver);
+    this._historyPager = new HistoryPager({
       channel: this._channel,
+      pageSize: options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE,
       decoder: this._decoder,
-      pageLimit: this._historyPageSize,
       logger: this._logger,
       onDecodeError: (err) => {
         this._receiver.emitError(err);
@@ -184,16 +165,17 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       if (delivery.outcome === 'failed') return;
       if (delivery.outcome === 'classified') this._resolveRunIdWatches(delivery.event);
       this._receiver.deliverAblyMessage(message);
-      // Feed the steer ledger every delivered message: it matches steer echoes
-      // (for the publish serial), accumulates `steer-transport-message-ids`
-      // stamps, and resolves steer outcomes on run-suspend / run-end.
+      // Feed the steer ledger every delivered message: it accumulates
+      // `steer-transport-message-ids` stamps and resolves steer outcomes on
+      // run-suspend / run-end. The publish serial comes from the publish
+      // acknowledgement, not from here.
       this._steer.observeMessage(message);
     };
     this._steer = new SteerCoordinator<TInput>({
       publish: async (input, opts) => {
         const encoder = this._codec.createEncoder(this._channel);
         try {
-          await encoder.publishInput(input, opts);
+          return await encoder.publishInput(input, opts);
         } finally {
           await encoder.close();
         }
@@ -226,34 +208,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     return this._receiver.on('event', handler);
   }
 
-  on(event: 'event', handler: (e: TransportEvent<TInput, TOutput>) => void): () => void;
-  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
-  on(event: 'error', handler: (err: Ably.ErrorInfo) => void): () => void;
-  on(
-    event: 'event' | 'ably-message' | 'error',
-    handler:
-      | ((e: TransportEvent<TInput, TOutput>) => void)
-      | ((msg: Ably.InboundMessage) => void)
-      | ((err: Ably.ErrorInfo) => void),
-  ): () => void {
-    switch (event) {
-      case 'event': {
-        // CAST: the public overloads pair each event name with its handler
-        // type; TypeScript cannot correlate the union members in the
-        // implementation signature.
-        return this._receiver.on(event, handler as (e: TransportEvent<TInput, TOutput>) => void);
-      }
-      case 'ably-message': {
-        // CAST: see the 'event' case.
-        return this._receiver.on(event, handler as (msg: Ably.InboundMessage) => void);
-      }
-      case 'error': {
-        // CAST: see the 'event' case.
-        return this._receiver.on(event, handler as (err: Ably.ErrorInfo) => void);
-      }
-    }
-  }
-
   async publishInput(event: TInput, opts?: PublishInputOptions): Promise<PublishInputResult> {
     this._logger.trace('ClientTransport.publishInput();');
     await this._requireOpen('publishInput');
@@ -274,19 +228,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
 
     const userHeaders = opts?.headers;
 
-    // Optimistic echo for fresh local content only; emitted before the publish
-    // so the sender sees its own input without the round-trip. It carries the
-    // same user headers the publish will stamp, so the echo and the wire echo
-    // surface identical metadata.
-    if (!isWireOnlyInput(opts)) {
-      this._receiver.emitEvent({
-        kind: 'message',
-        meta: wireMetaFromLocalEcho(headers, this._clientId, userHeaders ?? {}),
-        inputs: [event],
-        outputs: [],
-      });
-    }
-
     const encoder = this._codec.createEncoder(
       this._channel,
       userHeaders
@@ -297,9 +238,16 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
           }
         : undefined,
     );
-    // Watch before the publish so a run-start racing the publish's own ack can
-    // never slip past; a failed publish removes the watch again.
-    const { runId, unwatch } = this._watchRunId(transportMessageId);
+    // The run's id: a continuation already names it in the options, so it
+    // resolves immediately — an addressed run answers with `ai-run-resume`,
+    // which carries no input-transport-message-id for a watch to match. A fresh
+    // publish watches for the `ai-run-start` that will name it. Watch before
+    // the publish so a run-start racing the publish's own ack can never slip
+    // past; a failed publish removes the watch again.
+    const { runId, unwatch } =
+      opts?.runId === undefined
+        ? this._watchRunId(transportMessageId)
+        : { runId: Promise.resolve(opts.runId), unwatch: noopUnwatch };
     try {
       await encoder.publishInput(event, { extras: { headers }, messageId: transportMessageId });
     } catch (error) {
@@ -322,10 +270,19 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     return { transportMessageId, eventId, runId };
   }
 
-  async cancel(runId: string): Promise<void> {
-    this._logger.trace('ClientTransport.cancel();', { runId });
+  async cancel(runId: string | Promise<string>): Promise<void> {
+    this._logger.trace('ClientTransport.cancel();', {
+      runId: typeof runId === 'string' ? runId : '(pending promise)',
+    });
     await this._requireOpen('cancel');
-    await this._channel.publish(buildCancelMessage({ runId }));
+    // A promise-valued runId (e.g. a fresh publishInput result's) resolves
+    // from the run's ai-run-start; the cancel publishes once it does.
+    const resolved = await runId;
+    // Re-check after the await: a cancel parked on a pending id can outlive
+    // the transport, and publishing from a closed one is worse than dropping
+    // it — the caller has already torn down.
+    await this._requireOpen('cancel');
+    await this._channel.publish(buildCancelMessage({ runId: resolved }));
   }
 
   steer(runId: string | Promise<string>, event: TInput): SteerResult {
@@ -333,7 +290,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       runId: typeof runId === 'string' ? runId : '(pending promise)',
     });
     // .then(): steer() returns its promise pair synchronously, so the open
-    // guard folds into the runId promise the coordinator awaits instead of
+    // guard chains onto the runId promise the coordinator awaits instead of
     // being awaited here. A promise-valued runId (e.g. a publishInput
     // result's) flattens through the .then, so the coordinator always awaits
     // one Promise<string>.
@@ -359,8 +316,8 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
 
   /**
    * Drain in-flight steers on a continuity-breaking channel state change:
-   * post-loss the channel will not deliver the steer echoes or lifecycle
-   * events that would resolve their promises, so they would otherwise hang
+   * post-loss the channel will not deliver the lifecycle events that would
+   * resolve their promises, so they would otherwise hang
    * until `close()`. State changes before the first attach are ignored —
    * there is no continuity to lose yet.
    * @param stateChange - The channel state change to classify.
@@ -372,12 +329,20 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       return;
     }
     if (!isContinuityLost(stateChange)) return;
-    this._logger.warn('ClientTransport._handleChannelStateChange(); channel continuity lost, draining steers', {
-      current: stateChange.current,
-      resumed: stateChange.resumed,
-    });
+    this._logger.warn(
+      'ClientTransport._handleChannelStateChange(); channel continuity lost, draining in-flight waiters and signalling consumers',
+      {
+        current: stateChange.current,
+        resumed: stateChange.resumed,
+      },
+    );
     this._steer.drainContinuityLost(continuityLostError(stateChange, 'await steer outcome'));
     this._drainRunIdWatches(continuityLostError(stateChange, 'await run start'));
+    // Surface the loss on the error stream too: a consumer merging events (or
+    // holding a run's chunk stream open) can silently miss messages after the
+    // loss, so it needs the signal — the drained promises above only reach
+    // callers that were awaiting them.
+    this._receiver.emitError(continuityLostError(stateChange, 'deliver events'));
   }
 
   /**
@@ -391,12 +356,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    *   the publish itself fails).
    */
   private _watchRunId(transportMessageId: string): { runId: Promise<string>; unwatch: () => void } {
-    let resolve!: (runId: string) => void;
-    let reject!: (err: Ably.ErrorInfo) => void;
-    const runId = new Promise<string>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
+    const { promise: runId, resolve, reject } = Promise.withResolvers<string>();
     runId.catch(() => {
       /* the caller may ignore runId entirely */
     });

@@ -94,7 +94,7 @@ export enum LogLevel {
  * Represents the context of a log message.
  * It is an object of key-value pairs that can be used to provide additional context to a log message.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- log context is intentionally open-shaped for callers; values are only ever serialized
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type LogContext = Record<string, any>;
 
 /**

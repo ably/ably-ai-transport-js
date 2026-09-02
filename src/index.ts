@@ -17,12 +17,14 @@ export type {
   ReceiveTransport,
   RunEndParams,
   RunEndReason,
+  RunEndResult,
   RunLifecycleEvent,
   RunStepTransport,
   SteerOutcome,
   SteerResult,
   StepEndParams,
   StepEndReason,
+  StepEndResult,
   StepLifecycleEvent,
   StepOptions,
   StreamResult,
@@ -39,10 +41,10 @@ export {
   createReceiveTransport,
 } from './core/transport/index.js';
 
-// Ably-Agent registration
+// Channel resolution for a caller-owned channel: the SDK's channel agent
+// param and the mode-set union, for an application that resolves its own
+// channel with `client.channels.get(name, options)`.
 export { channelAgent } from './core/agent.js';
-
-// Channel modes
 export { OBJECT_MODES, resolveChannelModes } from './core/channel-options.js';
 
 // Core codec

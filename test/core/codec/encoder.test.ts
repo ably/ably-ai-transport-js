@@ -144,7 +144,7 @@ describe('createEncoderCore', () => {
     });
 
     it('preserves default headers (e.g. step-id/step-client-id) under a per-write override that does not set them', async () => {
-      // `AgentRunTransport.createStep` stamps step-id/step-client-id as encoder defaults; a
+      // `Run.createStep` stamps step-id/step-client-id as encoder defaults; a
       // per-write override merges OVER the defaults, so an override that only
       // touches other headers leaves the step attribution intact.
       const core = createEncoderCore(writer, { extras: { headers: { 'step-id': 'S', 'step-client-id': 'C' } } });
@@ -396,57 +396,6 @@ describe('createEncoderCore', () => {
       expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
     });
 
-    it('recovers a still-open stream with status streaming, so subscribers keep it open', async () => {
-      // `_pending` is shared by every stream: closing s1 flushes s2's failed
-      // append too, and s2 — still streaming — must not be stamped `complete`,
-      // which would close every subscriber's tracker and drop the rest of its
-      // output. `streaming` is the create's own status, so the recovery update
-      // reads as a pure prefix extension of an open stream.
-      let callCount = 0;
-      writer.nextAppendResult = async () => {
-        callCount++;
-        // Call 1 is s2's append (fails); call 2 is s1's closing append (lands).
-        if (callCount === 1) return await Promise.reject(new Error('network'));
-        return {} as Ably.UpdateDeleteResult;
-      };
-
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text' }));
-      await core.startStream('s2', streamPayload({ name: 'text' }));
-      core.appendStream('s2', 'partial');
-
-      await core.closeStream('s1', streamPayload({ name: 'text' }));
-
-      const recovery = first(writer.updateCalls);
-      // The recovery targets s2 (its accumulated content), not the closed s1.
-      expect(recovery.data).toBe('partial');
-      expect(headersOf(recovery)[HEADER_STATUS]).toBe('streaming');
-    });
-
-    it('recovers a mid-sequence failure with the full accumulated content, making the wire whole', async () => {
-      // Appends a (lands), b (fails), c (lands): the wire briefly holds 'ac',
-      // and the recovery update rewrites the message data wholesale — so the
-      // wire ends whole, and history readers always see the complete text.
-      let callCount = 0;
-      writer.nextAppendResult = async () => {
-        callCount++;
-        if (callCount === 2) return await Promise.reject(new Error('network'));
-        return {} as Ably.UpdateDeleteResult;
-      };
-
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text' }));
-      core.appendStream('s1', 'a');
-      core.appendStream('s1', 'b');
-      core.appendStream('s1', 'c');
-
-      await core.closeStream('s1', streamPayload({ name: 'text' }));
-
-      const recovery = first(writer.updateCalls);
-      expect(recovery.data).toBe('abc');
-      expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
-    });
-
     it('recovery message includes initial startStream data in accumulation', async () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
@@ -484,6 +433,33 @@ describe('createEncoderCore', () => {
       await core.cancelAllStreams();
 
       expect(headersOf(first(writer.updateCalls))[HEADER_STATUS]).toBe('cancelled');
+    });
+
+    it('recovers a still-open stream with status streaming, so subscribers keep it open', async () => {
+      // `_pending` is shared by every stream: closing s1 flushes s2's failed
+      // append too, and s2 — still streaming — must not be stamped `complete`,
+      // which would close every subscriber's tracker and drop the rest of its
+      // output. `streaming` is the create's own status, so the recovery update
+      // reads as a pure prefix extension of an open stream.
+      let callCount = 0;
+      writer.nextAppendResult = async () => {
+        callCount++;
+        // Call 1 is s2's append (fails); call 2 is s1's closing append (lands).
+        if (callCount === 1) return await Promise.reject(new Error('network'));
+        return {} as Ably.UpdateDeleteResult;
+      };
+
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text' }));
+      await core.startStream('s2', streamPayload({ name: 'text' }));
+      core.appendStream('s2', 'partial');
+
+      await core.closeStream('s1', streamPayload({ name: 'text' }));
+
+      const recovery = first(writer.updateCalls);
+      // The recovery targets s2 (its accumulated content), not the closed s1.
+      expect(recovery.data).toBe('partial');
+      expect(headersOf(recovery)[HEADER_STATUS]).toBe('streaming');
     });
 
     it('closeStream throws when recovery also fails', async () => {

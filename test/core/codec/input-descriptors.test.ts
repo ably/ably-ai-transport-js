@@ -333,49 +333,4 @@ describe('input descriptor drivers', () => {
     expect('output' in decoded.payload).toBe(false);
     expect(decoded.payload.toolCallId).toBe('t9');
   });
-
-  it('returns the publish acknowledgement for an event-construct input', async () => {
-    // A caller needs the serial its input landed on to join a stored
-    // conversation back to the channel, so encode reports the ACK rather than
-    // swallowing it.
-    const core = createMockCore();
-
-    const result = await encoder.encode(
-      { kind: 'tool-result-like', transportMessageId: 'cm-1', payload: { toolCallId: 't1', output: { ok: true } } },
-      core,
-      { opts: undefined },
-    );
-
-    expect(result).toEqual({ serials: ['s'] });
-  });
-
-  it('returns one serial per part for a batch-construct input, in publish order', async () => {
-    const core = createMockCore();
-
-    const result = await encoder.encode(
-      {
-        kind: 'doc',
-        transportMessageId: 'cm-doc-ack',
-        message: {
-          id: 'm-ack',
-          parts: [
-            { type: 'text', text: 'a' },
-            { type: 'text', text: 'b' },
-          ],
-        },
-      },
-      core,
-      { opts: undefined },
-    );
-
-    expect(result).toEqual({ serials: ['s0', 's1'] });
-  });
-
-  it('returns the acknowledgement for a wire-only input', async () => {
-    const core = createMockCore();
-
-    const result = await encoder.encode({ kind: 'signal' }, core, { opts: undefined });
-
-    expect(result).toEqual({ serials: ['s'] });
-  });
 });

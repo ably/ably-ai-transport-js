@@ -189,9 +189,10 @@ describe('buildLifecycleHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
   });
 
-  it('stamps an empty-string runClientId (distinguished from omitted)', () => {
-    const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: '' });
+  it('stamps empty-string correlation values (distinguished from omitted)', () => {
+    const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: '', inputClientId: '' });
     expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
+    expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
   });
 
   it('stamps the input receipt as a JSON array when non-empty, omitting it otherwise', () => {
@@ -278,6 +279,7 @@ describe('parseRunLifecycle', () => {
         [HEADER_RUN_ID]: 'run-1',
         [HEADER_RUN_CLIENT_ID]: 'user-a',
         [HEADER_INVOCATION_ID]: 'inv-1',
+        [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'trigger-msg',
       },
       's2',
       2000,
@@ -290,6 +292,7 @@ describe('parseRunLifecycle', () => {
       serial: 's2',
       invocationId: 'inv-1',
       timestamp: 2000,
+      inputTransportMessageId: 'trigger-msg',
     });
   });
 
@@ -306,10 +309,8 @@ describe('parseRunLifecycle', () => {
       noTimestamp,
     );
 
-    expect(event).not.toHaveProperty('parent');
     expect(event).not.toHaveProperty('timestamp');
-    expect(event).not.toHaveProperty('forkOf');
-    expect(event).not.toHaveProperty('regenerates');
+    expect(event).not.toHaveProperty('inputTransportMessageId');
   });
 
   it('parses a run-end with an explicit reason', () => {

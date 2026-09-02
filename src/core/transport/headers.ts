@@ -3,7 +3,7 @@
  *
  * Single source of truth for which transport headers every transport
  * message carries. Used by the agent's output path (pipe) and by
- * the client's optimistic message stamping.
+ * the client's input publish path.
  */
 
 import * as Ably from 'ably';
@@ -104,14 +104,14 @@ export const buildTransportHeaders = (opts: {
  * run-resume, run-suspend, run-end). Single source of truth for lifecycle
  * header stamping, mirroring {@link buildTransportHeaders} for the
  * message-carrier path. Every field except `runId`/`runClientId` is optional
- * and omitted when not provided. `reason` is stamped only on run-end.
+ * and omitted when not provided.
+ *
+ * `reason` is stamped only on run-end.
  * @param opts - The lifecycle header values to include.
  * @param opts.runId - The run's id.
  * @param opts.runClientId - ClientId of the run initiator (empty string when unknown).
  * @param opts.invocationId - Agent-minted invocation id; carried on every lifecycle event.
- * @param opts.inputClientId - ClientId of the triggering input's publisher,
- *   read off the input's own wire message (Ably stamps the publisher's
- *   realtime clientId on it) and re-stamped here as `input-client-id`.
+ * @param opts.inputClientId - ClientId of the triggering input event.
  * @param opts.inputTransportMessageId - Transport-message-id of the triggering input event.
  * @param opts.reason - Terminal reason; stamped on run-end only.
  * @param opts.consideredInputIds - Transport-message-ids of every input the run's
@@ -337,7 +337,9 @@ export const buildStepHeaders = (opts: {
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   // `invocationClientId` rides the existing `input-client-id` wire name: it is
-  // the same fact (the triggering input's publisher) scoped to the invocation.
+  // the publisher of the triggering input, which equals the POST issuer's id
+  // only when that issuer published the input event it points at — the common
+  // case. See HEADER_INPUT_CLIENT_ID.
   if (opts.invocationClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.invocationClientId;
   if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   if (opts.reason !== undefined) h[HEADER_STEP_REASON] = opts.reason;

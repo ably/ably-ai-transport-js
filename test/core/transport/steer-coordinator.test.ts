@@ -29,7 +29,7 @@ interface PublishCall {
 interface Harness {
   coord: SteerCoordinator<TestInput>;
   publishCalls: PublishCall[];
-  publishImpl: { fn: (input: TestInput, opts: WriteOptions) => Promise<void> };
+  publishImpl: { fn: (input: TestInput, opts: WriteOptions) => Promise<Ably.PublishResult> };
   closed: { value: boolean };
 }
 
@@ -40,9 +40,9 @@ const makeHarness = (clientId: string | undefined = 'client-a'): Harness => {
   // (e.g. to make it reject) without re-constructing the coordinator.
   const publishImpl = {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock builds the resolved promise directly
-    fn: (input: TestInput, opts: WriteOptions): Promise<void> => {
+    fn: (input: TestInput, opts: WriteOptions): Promise<Ably.PublishResult> => {
       publishCalls.push({ input, opts });
-      return Promise.resolve();
+      return Promise.resolve({ serials: [`ack-serial-${String(publishCalls.length)}`] });
     },
   };
   const coord = new SteerCoordinator<TestInput>({
@@ -100,10 +100,8 @@ describe('SteerCoordinator', () => {
       const { published } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
       expect(publishCalls).toHaveLength(1);
-      // Echo the publish back so `published` resolves.
-      const transportMessageId = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: transportMessageId }, 'serial-x'));
-      await expect(published).resolves.toEqual({ serial: 'serial-x' });
+      // `published` resolves from the publish acknowledgement's serial.
+      await expect(published).resolves.toEqual({ serial: 'ack-serial-1' });
     });
 
     it('stamps the resolved runId, the publisher clientId, and a minted transport-message-id', async () => {
@@ -144,12 +142,7 @@ describe('SteerCoordinator', () => {
       const { coord, closed } = h;
       closed.value = true;
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
-      // The message distinguishes the pre-publish closed guard from the two
-      // drainClosed() paths, which share this code.
-      await expect(published).rejects.toBeErrorInfo({
-        code: ErrorCode.SessionClosed,
-        message: 'unable to steer; transport closed',
-      });
+      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
       await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
       expect(h.publishCalls).toHaveLength(0);
     });
@@ -179,13 +172,10 @@ describe('SteerCoordinator', () => {
   // ---------------------------------------------------------------------
 
   describe('observeMessage()', () => {
-    it('echo-match resolves published with the message serial', async () => {
+    it('resolves published with the publish acknowledgement serial — no echo involved', async () => {
       const { coord } = h;
       const { published } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
-      await flush();
-      const transportMessageId = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: transportMessageId }, 'serial-7'));
-      await expect(published).resolves.toEqual({ serial: 'serial-7' });
+      await expect(published).resolves.toEqual({ serial: 'ack-serial-1' });
     });
 
     it('resolves outcome consumed: true when the steer id is stamped before run-end', async () => {
@@ -193,8 +183,6 @@ describe('SteerCoordinator', () => {
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
       const id = lastSteerTransportMessageId(h);
-      // Echo the publish so the outcome is registered.
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: id }));
       // Agent stamps the id on a response message.
       coord.observeMessage(
         ablyMsg('ai-output', {
@@ -210,8 +198,6 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const id = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: id }));
       coord.observeMessage(
         ablyMsg('ai-output', {
           [HEADER_RUN_ID]: 'run-1',
@@ -226,8 +212,6 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const id = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: id }));
       coord.observeMessage(ablyMsg(EVENT_RUN_SUSPEND, { [HEADER_RUN_ID]: 'run-1' }));
       const sentinel = Symbol('pending');
       const result = await Promise.race([outcome, Promise.resolve(sentinel)]);
@@ -239,11 +223,9 @@ describe('SteerCoordinator', () => {
       const s1 = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'a' });
       await flush();
       const idA = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: idA }));
       const s2 = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'b' });
       await flush();
       const idB = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: idB }));
       // Two response deltas, each stamping one id.
       coord.observeMessage(
         ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: JSON.stringify([idA]) }),
@@ -260,8 +242,6 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const id = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: id }));
       coord.observeMessage(
         ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: 'not-json' }),
       );
@@ -274,7 +254,6 @@ describe('SteerCoordinator', () => {
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
       const id = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: id }));
       coord.observeMessage(
         ablyMsg('ai-output', {
           [HEADER_RUN_ID]: 'run-1',
@@ -285,14 +264,19 @@ describe('SteerCoordinator', () => {
       await expect(outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });
     });
 
-    it('drains pending-echo entries on run-end when the echo never arrives', async () => {
-      const { coord } = h;
+    it('resolves a steer not-consumed when the run ends while its publish is in flight', async () => {
+      const { coord, publishImpl } = h;
+      const { promise: ackGate, resolve: releaseAck } = Promise.withResolvers<Ably.PublishResult>();
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- return the gate promise by reference
+      publishImpl.fn = () => ackGate;
+
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      // Run-end without the echo first.
+      // The terminal lands before the publish acknowledges.
       coord.observeMessage(ablyMsg(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_REASON]: 'complete' }));
-      // `published` resolves with undefined serial; outcome resolves not-consumed.
-      await expect(published).resolves.toEqual({ serial: undefined });
+      releaseAck({ serials: ['ack-late'] });
+
+      await expect(published).resolves.toEqual({ serial: 'ack-late' });
       await expect(outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });
     });
   });
@@ -306,21 +290,25 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const id = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: id }));
       const err = new Ably.ErrorInfo('continuity lost', ErrorCode.SessionContinuityNotGuaranteed, 500);
       coord.drainContinuityLost(err);
       await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
     });
 
-    it('resolves pending-echo published with undefined and rejects outcome', async () => {
-      const { coord } = h;
-      // Steer without echoing — pending-echo entry stays registered.
+    it('rejects the outcome of a steer whose publish was in flight at the drain', async () => {
+      const { coord, publishImpl } = h;
+      const { promise: ackGate, resolve: releaseAck } = Promise.withResolvers<Ably.PublishResult>();
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- return the gate promise by reference
+      publishImpl.fn = () => ackGate;
+
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const err = new Ably.ErrorInfo('continuity lost', ErrorCode.SessionContinuityNotGuaranteed, 500);
-      coord.drainContinuityLost(err);
-      await expect(published).resolves.toEqual({ serial: undefined });
+      coord.drainContinuityLost(new Ably.ErrorInfo('continuity lost', ErrorCode.SessionContinuityNotGuaranteed, 500));
+      releaseAck({ serials: ['ack-late'] });
+
+      // The publish itself was acknowledged, so published still resolves; the
+      // outcome can never be observed post-drain, so it rejects.
+      await expect(published).resolves.toEqual({ serial: 'ack-late' });
       await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
     });
   });
@@ -330,25 +318,23 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      const id = lastSteerTransportMessageId(h);
-      coord.observeMessage(ablyMsg('ai-input', { [HEADER_TRANSPORT_MESSAGE_ID]: id }));
       coord.drainClosed();
-      await expect(outcome).rejects.toBeErrorInfo({
-        code: ErrorCode.SessionClosed,
-        message: 'unable to await steer outcome; transport closed',
-      });
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
 
-    it('settles pending-echo published with undefined and rejects outcome with SessionClosed', async () => {
-      const { coord } = h;
+    it('rejects the outcome of a steer whose publish was in flight at the close', async () => {
+      const { coord, publishImpl } = h;
+      const { promise: ackGate, resolve: releaseAck } = Promise.withResolvers<Ably.PublishResult>();
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- return the gate promise by reference
+      publishImpl.fn = () => ackGate;
+
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
       coord.drainClosed();
-      await expect(published).resolves.toEqual({ serial: undefined });
-      await expect(outcome).rejects.toBeErrorInfo({
-        code: ErrorCode.SessionClosed,
-        message: 'unable to await steer publish; transport closed',
-      });
+      releaseAck({ serials: ['ack-late'] });
+
+      await expect(published).resolves.toEqual({ serial: 'ack-late' });
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 });

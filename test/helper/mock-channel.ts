@@ -75,13 +75,9 @@ export const createMockChannel = (pages: Ably.InboundMessage[][] = []): MockChan
       for (const listener of stateListeners) listener(stateChange);
     },
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
-    publish: vi.fn(async (msg: Ably.Message | Ably.Message[]): Promise<Ably.PublishResult> => {
-      // A batch publish (an input fanned out into one wire message per part)
-      // arrives as an array; store flattened so `publishCalls` is honestly
-      // per-message and per-publish serials stay deterministic.
-      const messages = Array.isArray(msg) ? msg : [msg];
-      mock.publishCalls.push(...messages);
-      return { serials: messages.map(() => `serial-${String(mock.publishCalls.length)}`) };
+    publish: vi.fn(async (msg: Ably.Message): Promise<Ably.PublishResult> => {
+      mock.publishCalls.push(msg);
+      return { serials: [`serial-${String(mock.publishCalls.length)}`] };
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
     subscribe: vi.fn(async (listener: (msg: Ably.InboundMessage) => void): Promise<void> => {

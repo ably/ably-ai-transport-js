@@ -10,6 +10,13 @@ import * as Ably from 'ably';
  */
 export enum ErrorCode {
   /**
+   * The request was invalid (Ably 40000). No SDK code path throws it; it is
+   * here because the platform can deliver it inbound and consumers switch on
+   * this enum to classify the errors they receive, not only the ones we mint.
+   */
+  BadRequest = 40000,
+
+  /**
    * Invalid argument provided.
    */
   InvalidArgument = 40003,

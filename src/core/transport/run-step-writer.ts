@@ -21,7 +21,7 @@ import * as Ably from 'ably';
 import { HEADER_STEER_TRANSPORT_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause, errorMessage } from '../../utils.js';
+import { errorCause } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
@@ -31,9 +31,9 @@ import type {
   OpenRunHooks,
   PipeSource,
   RunEndReason,
-  RunStepTransport,
   StepEndParams,
   StepEndReason,
+  StepEndResult,
   StepLifecycleEvent,
   StepOptions,
   StreamResult,
@@ -78,13 +78,13 @@ interface SteerIdsRef {
 }
 
 /**
- * The run's resolved input anchor, read by every output publish. It is
+ * The run's resolved structural anchors, read by every output publish. They are
  * resolved lazily when the run opens (undefined until then), so the writer reads
- * it live through {@link RunStepWriterContext.getAnchors} rather than capturing
- * it at construction.
+ * them live through {@link RunStepWriterContext.getAnchors} rather than capturing
+ * them at construction.
  */
 export interface StepWriterAnchors {
-  /** The triggering input's publisher clientId, re-stamped as `input-client-id` on the agent's own publishes. */
+  /** The triggering input's publisher client-id, re-stamped as `input-client-id` on the agent's own publishes. */
   inputClientId: string | undefined;
   /** The triggering input's transport-message-id, stamped as `input-transport-message-id`. */
   inputTransportMessageId: string | undefined;
@@ -157,7 +157,9 @@ export interface RunStepWriterContext<TInput, TOutput> {
  * `step-start-serial`, so a retry supersedes the prior attempt's output.
  * @template TOutput - The codec output type carried by the step's streams.
  */
-export interface WriterStep<TOutput> extends RunStepTransport<TOutput> {
+export interface WriterStep<TOutput> {
+  /** This step's id — stable across retry attempts of the same step. */
+  readonly stepId: string;
   /**
    * The run's AbortSignal; there is no per-step abort. Fires when a cancel
    * arrives for this run.
@@ -167,12 +169,31 @@ export interface WriterStep<TOutput> extends RunStepTransport<TOutput> {
    * Publish `ai-step-start`, opening the step for output. Idempotent — a
    * second call is a no-op. Rejects if another step is already active on the
    * run (only one step may be open at a time), or if the run has ended.
-   *
-   * The transport surface has no `start()`: it wraps this handle and starts the
-   * step lazily on the first `pipe` / `send`, so an unused step never puts an
-   * empty bracket on the wire.
    */
   start(): Promise<void>;
+  /**
+   * Pipe an output stream through the encoder to the channel, stamping every
+   * output with this step's identity. A stream error returns
+   * `{ reason: 'error' }` (it does NOT throw) and marks the step `failed`
+   * when {@link WriterStep.end} closes it.
+   * @param source - The output source to pipe (see {@link PipeSource}).
+   * @returns The {@link StreamResult} for this pipe.
+   */
+  pipe(source: PipeSource<TOutput>): Promise<StreamResult>;
+  /**
+   * Publish a single discrete output as one assistant message, stamped with
+   * this step's identity. The step must be active (started, not ended).
+   * @param output - The single codec output to publish.
+   */
+  send(output: TOutput): Promise<void>;
+  /**
+   * Publish `ai-step-end`, closing the step. Idempotent. Omit `params` to
+   * derive the reason from the step's piped output (`failed` if any pipe
+   * errored, else `complete`).
+   * @param params - Optional {@link StepEndParams}.
+   * @returns The terminal publish's acknowledgement; see {@link StepEndResult}.
+   */
+  end(params?: StepEndParams): Promise<StepEndResult>;
 }
 
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
@@ -211,17 +232,17 @@ export const createRunStepWriter = <TInput, TOutput>(
   // resolveStepClientId). Set each time a step resolves its client.
   let lastStepClientId: string | undefined;
 
-  // At most one step may be open on a run at a time. The handle has no
-  // lexical bracket, so the writer tracks the open step explicitly: run.end
-  // auto-closes it (closeActiveStep) and run.suspend rejects while it is open
-  // (hasActiveStep). Holds the active step's settle fn, or undefined when no
-  // step is open.
-  let activeStep: { settle: (reason: StepEndReason) => Promise<void> } | undefined;
+  // At most one step may be open on a run at a time. The handle has no lexical
+  // bracket, so the writer tracks the open step
+  // explicitly: run.end auto-closes it (closeActiveStep) and run.suspend rejects
+  // while it is open (hasActiveStep). Holds the active step's settle fn, or
+  // undefined when no step is open.
+  let activeStep: { settle: (reason: StepEndReason) => Promise<string | undefined> } | undefined;
   // Set synchronously while a step is opening but `activeStep` is not yet
   // latched: start()'s mid-publish window, and a run.pipe's whole duration (its
   // implicit step opens lazily at first output, so there is no single publish to
   // bracket). Lets the guard reject a concurrent start()/pipe before the latch is
-  // set, and is folded into hasActiveStep() so run.suspend rejects across that
+  // set, and is included in hasActiveStep() so run.suspend rejects across that
   // window too.
   let opening = false;
 
@@ -333,22 +354,23 @@ export const createRunStepWriter = <TInput, TOutput>(
    * @param stepStartSerial - The attempt's `step-start-serial` (its `ai-step-start`'s serial), or `undefined`.
    * @param reason - The step-end reason.
    * @param stepClientId - The step's resolved client (the value its matching `ai-step-start` was stamped with).
+   * @returns The `ai-step-end`'s own channel serial, or `undefined` when the publish reported none or the step-end was skipped.
    */
   const closeStep = async (
     stepId: string,
     stepStartSerial: string | undefined,
     reason: StepEndReason,
     stepClientId: string,
-  ): Promise<void> => {
+  ): Promise<string | undefined> => {
     const runId = ctx.getRunId();
     lastStepId = stepId;
     lastStepReason = reason;
     if (stepStartSerial === undefined) {
       logger?.warn('RunStepWriter.closeStep(); no step-start-serial for step, skipping step-end', { runId, stepId });
-      return;
+      return undefined;
     }
     const scopes = stepScopes(stepClientId);
-    await publishLifecycleEvent(
+    const serial = await publishLifecycleEvent(
       { phase: 'step-end', component: 'RunStepWriter', method: 'closeStep', runId, logger, logContext: { stepId } },
       async () => runManager.endStep(runId, stepId, stepStartSerial, reason, scopes),
     );
@@ -361,9 +383,12 @@ export const createRunStepWriter = <TInput, TOutput>(
       runClientId: scopes.runClientId ?? '',
       invocationClientId: scopes.invocationClientId ?? '',
       stepClientId,
-      serial: undefined,
+      // The publish acknowledgement's own serial, so the locally emitted
+      // event carries the same identity the channel delivery will.
+      serial,
       reason,
     });
+    return serial;
   };
 
   /**
@@ -475,7 +500,7 @@ export const createRunStepWriter = <TInput, TOutput>(
     // Drain the steers this pass answers and stamp them on THIS pipe's outputs.
     // Done per-pipe (not once at step open) so a step carrying more than one
     // pipe — the agent loops another inference pass into the same step for a
-    // steering message that folded in mid-stream — stamps each steering message
+    // steering message that arrived mid-stream — stamps each steering message
     // on the pipe that answers it. hasInput() moves a pending steering message
     // into the "recently processed" set this consume reads.
     step.steerIdsRef.value = ctx.consumeSteerStampIds?.() ?? [];
@@ -492,7 +517,7 @@ export const createRunStepWriter = <TInput, TOutput>(
         500,
         errorCause(result.error),
       );
-      logger?.error('RunStepWriter.pipe(); stream error', { runId, error: result.error.message });
+      logger?.error('RunStepWriter.pipe(); stream error', { runId });
       runOnError?.(errInfo);
     }
 
@@ -583,11 +608,11 @@ export const createRunStepWriter = <TInput, TOutput>(
       // Idempotent close that clears the latch if this step holds it, so
       // run.end's auto-close (run.end -> closeActiveStep)
       // and the close-iff-opened below never double-publish `ai-step-end`.
-      const settle = async (reason: StepEndReason): Promise<void> => {
-        if (stepState.settled) return;
+      const settle = async (reason: StepEndReason): Promise<string | undefined> => {
+        if (stepState.settled) return undefined;
         stepState.settled = true;
         if (activeStep?.settle === settle) activeStep = undefined;
-        await closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
+        return closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
       };
 
       const result = await doPipe(source, {
@@ -613,14 +638,8 @@ export const createRunStepWriter = <TInput, TOutput>(
         // completion; a missing step-end on a dying connection is non-impactful.
         try {
           await settle(stepEndReasonFor(result.reason));
-        } catch (error) {
-          // Warn, not error: the block above documents this close as
-          // best-effort and non-impactful — the run terminal is the authority.
-          logger?.warn('RunStepWriter.pipe(); failed to close implicit step', {
-            runId,
-            stepId,
-            error: errorMessage(error),
-          });
+        } catch {
+          logger?.error('RunStepWriter.pipe(); failed to close implicit step', { runId, stepId });
         }
       }
       return result;
@@ -671,12 +690,13 @@ export const createRunStepWriter = <TInput, TOutput>(
     // Close the step exactly once, clearing the active-step latch if this step
     // holds it. Idempotent, so end()-after-end() and run.end's auto-close after
     // an explicit end() are both no-ops.
-    const settle = async (reason: StepEndReason): Promise<void> => {
-      if (state === 'settled') return;
+    const settle = async (reason: StepEndReason): Promise<string | undefined> => {
+      if (state === 'settled') return undefined;
       state = 'settled';
       if (activeStep?.settle === settle) activeStep = undefined;
-      await closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
-      logger?.debug('WriterStep.end(); step closed', { runId, stepId, reason });
+      const serial = await closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
+      logger?.debug('WriterStep.end(); step closed', { runId, stepId, reason, serial });
+      return serial;
     };
 
     return {
@@ -749,14 +769,17 @@ export const createRunStepWriter = <TInput, TOutput>(
           throw error;
         }
       },
-      end: async (params?: StepEndParams): Promise<void> => {
+      end: async (params?: StepEndParams): Promise<StepEndResult> => {
         // Derive the reason from piped output when not given, so a step closed
         // after a stream error settles `failed` with no explicit bookkeeping. A
         // cancel settles `cancelled` — whether the cancelled pipe marked it, or
         // the run's signal aborted with no (or before any) output, so a step
         // cancelled before piping still closes `cancelled`.
         const cancelled = pipeState.cancelled || signal.aborted;
-        await settle(params?.reason ?? (cancelled ? 'cancelled' : pipeState.errored ? 'failed' : 'complete'));
+        const serial = await settle(
+          params?.reason ?? (cancelled ? 'cancelled' : pipeState.errored ? 'failed' : 'complete'),
+        );
+        return { serial };
       },
     };
   };

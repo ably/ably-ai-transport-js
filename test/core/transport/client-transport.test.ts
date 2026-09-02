@@ -1,14 +1,13 @@
 /**
- * createClientTransport unit tests — the client publish, receive, and history
- * surface.
+ * createClientTransport unit tests — the self-contained client transport.
  *
  * The transport owns its receive path: `connect()` subscribes its listener and
  * attaches the channel, live wires classify onto the `subscribe`/`on('event')`
  * stream (typed event before raw `ably-message`; a decode failure drops the
  * one message onto `error`). `publishInput` stamps `user` transport headers,
- * publishes through the codec encoder, and emits an optimistic local echo
- * (serial / versionSerial `undefined`) for fresh content; a wire-only input
- * gets no echo. Its result carries a `runId` promise, resolved from the first
+ * publishes through the codec encoder, and emits nothing locally — the
+ * sender's own input comes back as the ordinary channel delivery, keyed by
+ * the returned `transportMessageId`. Its result carries a `runId` promise, resolved from the first
  * `ai-run-start` whose `input-transport-message-id` matches the publish and
  * rejected on close or continuity loss. `history()` returns older events as chronological batches
  * without emitting them — the batch walk itself is pinned in
@@ -16,7 +15,7 @@
  * wiring: no live emission, a cursor kept across calls, and decode failures
  * routed onto `error`. `cancel` publishes a stateless `ai-cancel` envelope.
  * `steer` publishes a steering user input into an open run: `published`
- * resolves on the steer's own channel echo, `outcome` by membership of the
+ * resolves from the publish acknowledgement's serial, `outcome` by membership of the
  * steer's transport-message-id in the `steer-transport-message-ids` stamps at the
  * run's next lifecycle bracket; close and continuity loss drain in-flight
  * steers. The steer state machine itself is pinned in
@@ -47,6 +46,7 @@ import type { TransportEvent } from '../../../src/core/transport/types/transport
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import { flushMicrotasks } from '../../helper/streams.js';
 import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
 interface TestInput {
@@ -138,20 +138,6 @@ const noiseMsg = (serial: string): Ably.InboundMessage =>
 const flush = async (n = 8): Promise<void> => {
   for (let i = 0; i < n; i += 1) await Promise.resolve();
 };
-
-/**
- * Build the channel echo of a steer's own publish.
- * @param steerId - The transport-message-id the steer publish minted.
- * @param runId - The run the steer targets.
- * @param serial - The Ably-assigned channel serial.
- * @returns The wire message.
- */
-const steerEcho = (steerId: string, runId: string, serial: string): Ably.InboundMessage =>
-  inboundMessage({
-    name: 'ai-input',
-    transport: { [HEADER_TRANSPORT_MESSAGE_ID]: steerId, [HEADER_RUN_ID]: runId, [HEADER_ROLE]: 'user' },
-    serial,
-  });
 
 /**
  * Build a run output stamped with the steers its producing step consumed.
@@ -340,7 +326,7 @@ describe('createClientTransport', () => {
   });
 
   describe('publishInput', () => {
-    it('emits an optimistic local echo then publishes a user input', async () => {
+    it('publishes a user input with its identity headers, emitting nothing locally', async () => {
       const { transport, events, encoderCalls } = await setup({ clientId: 'client-a' });
 
       const result = await transport.publishInput({ kind: 'user-message', content: 'hi' });
@@ -349,19 +335,9 @@ describe('createClientTransport', () => {
       expect(result.eventId).toBeTruthy();
       expect(result.transportMessageId).not.toBe(result.eventId);
 
-      expect(events).toHaveLength(1);
-      const echo = events[0];
-      if (echo?.kind !== 'message') throw new Error('expected message echo');
-      expect(echo).toMatchObject({ kind: 'message', inputs: [{ kind: 'user-message', content: 'hi' }], outputs: [] });
-      // The echo carries no wire-assigned identity, and the same transportMessageId
-      // the publish used, so a consumer reconciles it against the wire echo.
-      expect(echo.meta.serial).toBeUndefined();
-      expect(echo.meta.versionSerial).toBeUndefined();
-      expect(echo.meta.messageName).toBeUndefined();
-      expect(echo.meta.transportMessageId).toBe(result.transportMessageId);
-      expect(echo.meta.role).toBe('user');
-      expect(echo.meta.clientId).toBe('client-a');
-      expect(echo.meta.headers).toEqual({});
+      // No optimistic local echo: the sender's own input reaches it back as
+      // the ordinary channel delivery.
+      expect(events).toHaveLength(0);
 
       // The publish stamped role + transport-message-id + event-id transport headers.
       expect(encoderCalls).toHaveLength(1);
@@ -373,10 +349,10 @@ describe('createClientTransport', () => {
     });
 
     it.each([
-      { label: 'stamps run-client-id and the echo clientId when a clientId is supplied', clientId: 'client-a' },
-      { label: 'omits run-client-id and leaves the echo clientId undefined when anonymous', clientId: undefined },
+      { label: 'stamps run-client-id when a clientId is supplied', clientId: 'client-a' },
+      { label: 'omits run-client-id when anonymous', clientId: undefined },
     ])('$label', async ({ clientId }) => {
-      const { transport, events, encoderCalls } = await setup({ clientId });
+      const { transport, encoderCalls } = await setup({ clientId });
 
       await transport.publishInput({ kind: 'user-message', content: 'hi' });
 
@@ -386,32 +362,19 @@ describe('createClientTransport', () => {
       } else {
         expect(headers[HEADER_RUN_CLIENT_ID]).toBe(clientId);
       }
-      const echo = events[0];
-      if (echo?.kind !== 'message') throw new Error('expected message echo');
-      expect(echo.meta.clientId).toBe(clientId);
     });
 
-    it('honours an explicit transportMessageId, with no echo for the amend', async () => {
-      const { transport, events, encoderCalls } = await setup();
+    it('honours an explicit transportMessageId', async () => {
+      const { transport, encoderCalls } = await setup();
 
       await transport.publishInput({ kind: 'user-message', content: 'hi' }, { transportMessageId: 'cmid-1' });
 
-      // An input naming an existing transportMessageId amends it, so no echo.
-      expect(events).toHaveLength(0);
       const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
       expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('cmid-1');
     });
 
-    it('emits no echo for an input published against an existing transportMessageId', async () => {
-      const { transport, events } = await setup();
-
-      await transport.publishInput({ kind: 'tool-result' }, { transportMessageId: 'assistant-1' });
-
-      expect(events).toHaveLength(0);
-    });
-
     it('stamps user headers into Ably extras.headers, outside the ai envelope', async () => {
-      const { transport, events, stamped } = await setup();
+      const { transport, stamped } = await setup();
 
       await transport.publishInput({ kind: 'user-message', content: 'hi' }, { headers: { 'x-tenant': 'acme' } });
 
@@ -421,10 +384,6 @@ describe('createClientTransport', () => {
       expect(extras.headers).toEqual({ 'x-tenant': 'acme' });
       // The user header does not leak into the ai.transport tier.
       expect(getTransportHeaders(stamped[0] as Ably.InboundMessage)['x-tenant']).toBeUndefined();
-      // The optimistic echo carries the same user headers the wire echo will.
-      const echo = events[0];
-      if (echo?.kind !== 'message') throw new Error('expected message echo');
-      expect(echo.meta.headers).toEqual({ 'x-tenant': 'acme' });
     });
 
     it('wraps a permission publish failure as an InsufficientCapability error', async () => {
@@ -449,6 +408,19 @@ describe('createClientTransport', () => {
   });
 
   describe('publishInput runId', () => {
+    it('resolves immediately with the continuation run-id named in the options', async () => {
+      // A continuation's run answers with ai-run-resume, which names no
+      // triggering input — there is nothing for a watch to match, so the
+      // known id resolves without any lifecycle event.
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'go on' },
+        { transportMessageId: 'm-1', runId: 'run-known' },
+      );
+
+      await expect(sent.runId).resolves.toBe('run-known');
+    });
+
     it('resolves from the first run-start carrying the publish transport-message-id', async () => {
       const fixture = await setup();
       const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });
@@ -457,6 +429,31 @@ describe('createClientTransport', () => {
       fixture.channel.listener?.(runStart('run-9', sent.transportMessageId));
 
       await expect(sent.runId).resolves.toBe('run-9');
+    });
+
+    it('resolves immediately with the caller-supplied runId, watching nothing', async () => {
+      const fixture = await setup();
+      // A continuation names its run, and the agent answers it with
+      // `ai-run-resume`, which no run-start watch would ever match.
+      const sent = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'tool result' },
+        { runId: 'run-continued', transportMessageId: 'm-1' },
+      );
+
+      await expect(sent.runId).resolves.toBe('run-continued');
+    });
+
+    it('leaves no watch behind for a continuation, so close rejects nothing', async () => {
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'tool result' },
+        { runId: 'run-continued' },
+      );
+      fixture.transport.close();
+
+      // Still the supplied id: a leaked watch would have been drained to a
+      // SessionClosed rejection by close().
+      await expect(sent.runId).resolves.toBe('run-continued');
     });
 
     it('stays pending on run-starts attributed to other inputs, or to none', async () => {
@@ -503,8 +500,9 @@ describe('createClientTransport', () => {
       fixture.channel.emitStateChange({ current: 'attached', previous: 'attached', resumed: false });
 
       await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
-      // The drain is watch-scoped: the transport surfaces no error event.
-      expect(fixture.errors).toHaveLength(0);
+      // The loss also surfaces once on the error stream.
+      expect(fixture.errors).toHaveLength(1);
+      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
     });
   });
 
@@ -519,10 +517,48 @@ describe('createClientTransport', () => {
       const headers = getTransportHeaders(msg as Ably.InboundMessage);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
+
+    it('accepts a pending run-id promise and publishes once it resolves', async () => {
+      const { transport, channel } = await setup();
+      const { promise, resolve } = Promise.withResolvers<string>();
+
+      const cancelled = transport.cancel(promise);
+      await flushMicrotasks();
+      expect(channel.publishCalls).toHaveLength(0);
+
+      resolve('run-2');
+      await cancelled;
+
+      expect(channel.publishCalls).toHaveLength(1);
+      const [msg] = channel.publishCalls;
+      expect(getTransportHeaders(msg as Ably.InboundMessage)[HEADER_RUN_ID]).toBe('run-2');
+    });
+
+    it('rejects without publishing when the run-id promise rejects', async () => {
+      const { transport, channel } = await setup();
+
+      await expect(transport.cancel(Promise.reject(new Error('no run')))).rejects.toThrow('no run');
+      expect(channel.publishCalls).toHaveLength(0);
+    });
+
+    it('does not publish a cancel parked on a pending id once the transport closes', async () => {
+      const { transport, channel } = await setup();
+      const { promise, resolve } = Promise.withResolvers<string>();
+
+      const cancelled = transport.cancel(promise);
+      await flushMicrotasks();
+      transport.close();
+      resolve('run-2');
+
+      // The caller has already torn the transport down; publishing from a
+      // closed one is worse than dropping the cancel.
+      await expect(cancelled).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      expect(channel.publishCalls).toHaveLength(0);
+    });
   });
 
   describe('steer', () => {
-    it('publishes a steering user input and resolves published with the echoed serial', async () => {
+    it('publishes a steering user input and resolves published with the acknowledged serial', async () => {
       const fixture = await setup({ clientId: 'client-a' });
       const { result, steerId } = await startSteer(fixture);
 
@@ -532,15 +568,14 @@ describe('createClientTransport', () => {
       expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe(steerId);
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('client-a');
 
-      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
-
-      await expect(result.published).resolves.toEqual({ serial: 's-echo' });
+      // The publish acknowledgement resolves published — no channel echo is
+      // involved, so this works with echoMessages: false too.
+      await expect(result.published).resolves.toEqual({ serial: 'serial-input-1' });
     });
 
     it('resolves the outcome consumed at run-end when the run stamped the steer', async () => {
       const fixture = await setup();
       const { result, steerId } = await startSteer(fixture);
-      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
 
       fixture.channel.listener?.(stampedOutput('run-1', [steerId], 's-out'));
       fixture.channel.listener?.(runBracket(EVENT_RUN_END, 'run-1', 'complete'));
@@ -550,8 +585,7 @@ describe('createClientTransport', () => {
 
     it('resolves the outcome not-consumed at run-end when the run never stamped the steer', async () => {
       const fixture = await setup();
-      const { result, steerId } = await startSteer(fixture);
-      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+      const { result } = await startSteer(fixture);
 
       fixture.channel.listener?.(runBracket(EVENT_RUN_END, 'run-1', 'complete'));
 
@@ -561,7 +595,6 @@ describe('createClientTransport', () => {
     it('leaves an unconsumed outcome pending across run-suspend, resolving at the eventual run-end', async () => {
       const fixture = await setup();
       const { result, steerId } = await startSteer(fixture);
-      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
 
       fixture.channel.listener?.(runBracket(EVENT_RUN_SUSPEND, 'run-1'));
       await flush();
@@ -600,10 +633,8 @@ describe('createClientTransport', () => {
 
       const headers = fixture.encoderCalls[1]?.options?.extras?.headers ?? {};
       expect(headers[HEADER_RUN_ID]).toBe('run-9');
-      const steerId = fixture.encoderCalls[1]?.options?.messageId;
-      if (steerId === undefined) throw new Error('expected the steer to publish');
-      fixture.channel.listener?.(steerEcho(steerId, 'run-9', 's-echo'));
-      await expect(result.published).resolves.toEqual({ serial: 's-echo' });
+      // The steer's own publish acknowledgement resolves published.
+      await expect(result.published).resolves.toEqual({ serial: 'serial-input-2' });
     });
 
     it('rejects both promises when the runId promise rejects, without publishing', async () => {
@@ -619,21 +650,21 @@ describe('createClientTransport', () => {
       expect(fixture.encoderCalls).toHaveLength(0);
     });
 
-    it('drains in-flight steers on continuity loss without emitting a transport error', async () => {
+    it('drains in-flight steers on continuity loss and surfaces the loss on the error stream', async () => {
       const fixture = await setup();
-      const { result, steerId } = await startSteer(fixture);
-      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
-      // A second steer whose echo never lands stays in the pending-echo ledger.
-      const unechoed = fixture.transport.steer('run-1', { kind: 'user-message', content: 'again' });
+      const { result } = await startSteer(fixture);
+      const second = fixture.transport.steer('run-1', { kind: 'user-message', content: 'again' });
       await flush();
 
       fixture.channel.emitStateChange({ current: 'attached', previous: 'attached', resumed: false });
 
       await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
-      await expect(unechoed.published).resolves.toEqual({ serial: undefined });
-      await expect(unechoed.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
-      // The drain is steer-scoped: the transport surfaces no error event.
-      expect(fixture.errors).toHaveLength(0);
+      await expect(second.published).resolves.toEqual({ serial: 'serial-input-2' });
+      await expect(second.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      // The loss itself surfaces once on the error stream, so a consumer that
+      // was not awaiting a drained promise still learns delivery may have gaps.
+      expect(fixture.errors).toHaveLength(1);
+      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
     });
 
     it('ignores channel state changes before the first attach', async () => {
@@ -645,8 +676,7 @@ describe('createClientTransport', () => {
         codec: createMockCodec(encoderCalls, []),
       });
       await transport.connect();
-      const { result, steerId } = await startSteer({ transport, encoderCalls });
-      channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+      const { result } = await startSteer({ transport, encoderCalls });
 
       // A discontinuity before the channel has ever attached is not a loss.
       channel.emitStateChange({ current: 'suspended', previous: 'attaching', resumed: false });
@@ -713,7 +743,7 @@ describe('createClientTransport', () => {
         ErrorCode.OperationCancelled,
       );
 
-      const after = await transport.history();
+      const after = await transport.history({ limit: 2 });
       expect(after.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one', 'two']);
       expect(after.exhausted).toBe(true);
     });
@@ -722,6 +752,7 @@ describe('createClientTransport', () => {
       const { transport } = await setup({ pages: [[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]] });
 
       const result = await transport.history({
+        limit: 2,
         onPage: () => {
           throw new Error('heartbeat exploded');
         },
@@ -767,13 +798,10 @@ describe('createClientTransport', () => {
     });
 
     it('drains an in-flight steer outcome and removes the channel state listener', async () => {
-      const { transport, channel, encoderCalls } = await setup();
+      const { transport, channel } = await setup();
       const result = transport.steer('run-1', { kind: 'user-message', content: 'go' });
       await flush();
-      const steerId = encoderCalls[0]?.options?.messageId;
-      if (steerId === undefined) throw new Error('expected the steer to publish');
-      channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
-      await expect(result.published).resolves.toEqual({ serial: 's-echo' });
+      await expect(result.published).resolves.toEqual({ serial: 'serial-input-1' });
 
       transport.close();
 

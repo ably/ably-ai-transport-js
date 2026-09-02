@@ -1,5 +1,5 @@
 {
-  "include": ["./**/*.ts", "./**/*.tsx"],
+  "include": ["./**/*.ts"],
   "exclude": ["**/vite.config.ts"],
   "compilerOptions": {
     "rootDir": ".",
@@ -18,7 +18,6 @@
     "resolveJsonModule": true,
     "strictNullChecks": true,
     "noUncheckedIndexedAccess": true,
-    "jsx": "react-jsx",
     "lib": ["DOM", "DOM.Iterable", "ESNext"],
     "types": ["node"]
   }

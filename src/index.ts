@@ -8,7 +8,6 @@ export type {
   ClientTransport,
   ClientTransportOptions,
   DeliverEventResult,
-  InvocationData,
   LocatedInput,
   OpenRunHooks,
   OpenRunOptions,
@@ -18,7 +17,6 @@ export type {
   ReceiveTransport,
   RunEndParams,
   RunEndReason,
-  RunIdentity,
   RunLifecycleEvent,
   RunStepTransport,
   SteerOutcome,
@@ -39,7 +37,6 @@ export {
   createAgentTransport,
   createClientTransport,
   createReceiveTransport,
-  Invocation,
 } from './core/transport/index.js';
 
 // Channel modes
@@ -56,7 +53,6 @@ export type {
   Decoder,
   DecoderCore,
   DecoderCoreHooks,
-  DecoderCoreOptions,
   DefineCodecConfig,
   DeltaDecodeContext,
   Encoder,
@@ -109,10 +105,7 @@ export {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,

@@ -137,7 +137,7 @@ export default [
     },
   },
   {
-    files: ['test/**/*.{ts,tsx}'],
+    files: ['test/**/*.ts'],
 
     rules: {
       // ably 2.22 added @deprecated v1-callback overloads to these channel
@@ -154,7 +154,7 @@ export default [
     },
   },
   {
-    files: ['**/*.{ts,tsx}'],
+    files: ['**/*.ts'],
 
     rules: {
       '@typescript-eslint/no-unused-vars': ['error'],

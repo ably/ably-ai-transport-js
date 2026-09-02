@@ -10,7 +10,8 @@ import type { Responses } from 'openai/resources/responses/responses';
 
 import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/index.js';
-import type { OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import { ResponsesCodec } from '../../../src/openai/index.js';
 
 // --- minimal domain objects --------------------------------------------------
 
@@ -518,4 +519,24 @@ export const createBridge = (): { writer: ChannelWriter; inbound: () => Ably.Inb
           }) as unknown as Ably.InboundMessage,
       ),
   };
+};
+
+/**
+ * Decode a whole inbound sequence's output events through a fresh decoder.
+ * @param messages - The inbound wire messages, in order.
+ * @returns The decoded outputs, flattened.
+ */
+export const decodeOutputs = (messages: Ably.InboundMessage[]): OpenAIOutput[] => {
+  const decoder = ResponsesCodec.createDecoder();
+  return messages.flatMap((msg) => decoder.decode(msg).outputs);
+};
+
+/**
+ * Decode a whole inbound sequence's input events through a fresh decoder.
+ * @param messages - The inbound wire messages, in order.
+ * @returns The decoded inputs, flattened.
+ */
+export const decodeInputs = (messages: Ably.InboundMessage[]): OpenAIInput[] => {
+  const decoder = ResponsesCodec.createDecoder();
+  return messages.flatMap((msg) => decoder.decode(msg).inputs);
 };

@@ -129,19 +129,6 @@ describe('OpenAI wire-codec inputs', () => {
     expect(inputs).toEqual([{ kind: 'approval', payload: { call_id: 'call-1', approved: true } }]);
   });
 
-  it('publishes regenerate as a wire-only signal that decodes to nothing', async () => {
-    const writer = createMockWriter();
-    const encoder = ResponsesCodec.createEncoder(writer);
-
-    await encoder.publishInput({ kind: 'regenerate' });
-
-    const wire = firstDiscrete(writer);
-    expect(codecHeadersOf(wire).kind).toBe('regenerate');
-
-    const decoder = ResponsesCodec.createDecoder();
-    expect(decoder.decode(asInbound(wire)).inputs).toEqual([]);
-  });
-
   it('rejects a message turn that is not exactly one message item', async () => {
     const writer = createMockWriter();
     const encoder = ResponsesCodec.createEncoder(writer);

@@ -52,21 +52,6 @@ export type RunLifecycleEvent =
        * sibling runs reads it as the run's start serial.
        */
       serial: string | undefined;
-      /** The codec-message-id of the parent message, if known. Omitted for root runs. */
-      parent?: string;
-      /**
-       * The codec-message-id of the user prompt being forked, when the run is an
-       * edit. Carried verbatim from the `fork-of` wire header.
-       */
-      forkOf?: string;
-      /**
-       * The codec-message-id of the assistant message this run regenerates, when
-       * the run is a regenerate continuation. Carried verbatim from the
-       * `msg-regenerate` wire header. A regenerate is a continuation (no
-       * `forkOf` at the run level); a consumer reconstructing conversation
-       * structure realises the message replacement when materialising messages.
-       */
-      regenerates?: string;
       /**
        * The codec-message-id of the input event that triggered this run — the
        * `input-codec-message-id` wire header the agent stamps on run-start. It
@@ -74,8 +59,9 @@ export type RunLifecycleEvent =
        * `runId`): the client transport resolves `PublishInputResult.runId`
        * from it, and a consumer reconstructing conversation structure can
        * reconcile optimistic state keyed by this same codec-message-id onto
-       * the agent-minted `runId`. Absent on a
-       * fresh-send / regenerate run-start whose trigger backs no reply run.
+       * the agent-minted `runId`. Absent when the run was opened with neither
+       * a located input nor an explicit `inputCodecMessageId` (an `adoptRun`,
+       * or a bare `openRun`).
        */
       inputCodecMessageId?: string;
     })
@@ -129,6 +115,45 @@ export type RunLifecycleEvent =
 // ---------------------------------------------------------------------------
 
 /**
+ * The fields both step-lifecycle arms share: the step's identity, the
+ * invocation correlation, and the three concentric client-identity scopes. A
+ * `step-end`'s values match its corresponding `step-start`'s.
+ */
+interface StepLifecycleBase {
+  /** The run this step belongs to. */
+  runId: string;
+  /** The step's id — stable across retry attempts of the same step. */
+  stepId: string;
+  /**
+   * The invocation-id this step was published under (wire `invocation-id`).
+   * Correlates the step to the invocation that drove it. Empty string if the
+   * wire didn't carry one.
+   */
+  invocationId: string;
+  /**
+   * The run owner's clientId (wire `run-client-id`) — the outermost
+   * client-identity scope, constant for the run's lifetime. Empty string if
+   * the wire didn't carry one.
+   */
+  runClientId: string;
+  /**
+   * The clientId of the input that drove the current invocation (wire
+   * `input-client-id`) — the middle client-identity scope. Empty string if
+   * the wire didn't carry one.
+   */
+  invocationClientId: string;
+  /**
+   * The clientId of the participant whose most-recently-incorporated input
+   * shapes this step (wire `step-client-id`) — the innermost client-identity
+   * scope. Sticky across steps that incorporate no fresh input. Empty string
+   * if the wire didn't carry one.
+   */
+  stepClientId: string;
+  /** Ably server timestamp (epoch ms); absent for an optimistic local event. */
+  timestamp?: number;
+}
+
+/**
  * A structured event describing a step attempt starting or ending within a
  * run. A step is a re-attemptable unit of agent execution; the `type`
  * discriminator (`step-start` / `step-end`) is the in-memory domain
@@ -146,43 +171,15 @@ export type RunLifecycleEvent =
  * three concentric client-identity scopes (`runClientId` ⊃ `invocationClientId`
  * ⊃ `stepClientId`), each an empty string when the wire didn't carry it, for a
  * consumer correlating step events to a run, an invocation, or a participant.
- * The agent transport stamps `runClientId` and, once a step carries an explicit
- * client, `stepClientId`; it has nothing to resolve `invocationClientId` from,
- * so that scope reads as an empty string on the events it publishes.
+ * The agent transport stamps `runClientId` always; `invocationClientId` when
+ * the run was opened with a triggering input's publisher clientId (a located
+ * input, or an explicit `inputClientId`), reading as an empty string
+ * otherwise; and `stepClientId` once a step resolves a client.
  */
 export type StepLifecycleEvent =
-  | {
+  | (StepLifecycleBase & {
       /** A step attempt began. */
       type: 'step-start';
-      /** The run this step belongs to. */
-      runId: string;
-      /** The step's id — stable across retry attempts of the same step. */
-      stepId: string;
-      /**
-       * The invocation-id this step was published under (wire `invocation-id`).
-       * Correlates the step to the invocation that drove it. Empty string if the
-       * wire didn't carry one.
-       */
-      invocationId: string;
-      /**
-       * The run owner's clientId (wire `run-client-id`) — the outermost
-       * client-identity scope, constant for the run's lifetime. Empty string if
-       * the wire didn't carry one.
-       */
-      runClientId: string;
-      /**
-       * The clientId of the input that drove the current invocation (wire
-       * `input-client-id`) — the middle client-identity scope. Empty string if
-       * the wire didn't carry one.
-       */
-      invocationClientId: string;
-      /**
-       * The clientId of the participant whose most-recently-incorporated input
-       * shapes this step (wire `step-client-id`) — the innermost client-identity
-       * scope. Sticky across steps that incorporate no fresh input. Empty string
-       * if the wire didn't carry one.
-       */
-      stepClientId: string;
       /**
        * Ably channel serial of the step-start message — the attempt's identity
        * (its `step-start-serial`) — or `undefined` for an optimistic local event.
@@ -191,16 +188,10 @@ export type StepLifecycleEvent =
        * concrete-serial echo promotes it.
        */
       serial: string | undefined;
-      /** Ably server timestamp (epoch ms); absent for an optimistic local event. */
-      timestamp?: number;
-    }
-  | {
+    })
+  | (StepLifecycleBase & {
       /** A step attempt ended. */
       type: 'step-end';
-      /** The run this step belongs to. */
-      runId: string;
-      /** The step's id, matching the corresponding `step-start`. */
-      stepId: string;
       /**
        * The serial of the `step-start` this end closes (wire
        * `step-start-serial`) — the attempt's identity. Matches that
@@ -208,34 +199,10 @@ export type StepLifecycleEvent =
        */
       stepStartSerial: string;
       /**
-       * The invocation-id this step was published under (wire `invocation-id`).
-       * Matches the corresponding `step-start`. Empty string if the wire didn't
-       * carry one.
-       */
-      invocationId: string;
-      /**
-       * The run owner's clientId (wire `run-client-id`). Matches the
-       * corresponding `step-start`. Empty string if the wire didn't carry one.
-       */
-      runClientId: string;
-      /**
-       * The clientId of the input that drove the current invocation (wire
-       * `input-client-id`). Matches the corresponding `step-start`. Empty string
-       * if the wire didn't carry one.
-       */
-      invocationClientId: string;
-      /**
-       * The step's client (wire `step-client-id`), matching the corresponding
-       * `step-start`. Empty string if the wire didn't carry one.
-       */
-      stepClientId: string;
-      /**
        * Ably channel serial of the step-end message, or `undefined` for an
        * optimistic local event.
        */
       serial: string | undefined;
-      /** Ably server timestamp (epoch ms); absent for an optimistic local event. */
-      timestamp?: number;
       /** Why the step attempt ended. */
       reason: StepEndReason;
-    };
+    });

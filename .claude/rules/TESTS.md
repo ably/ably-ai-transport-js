@@ -18,7 +18,7 @@ Every exported function and every non-trivial internal module gets its own test 
 
 ### Style
 
-- Mock the channel and the writer rather than the Ably SDK; shared mocks live in `test/helper/`
+- Mock the channel and the codec encoder rather than the Ably SDK; shared mocks live in `test/helper/`
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
 - For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain the reader
 
@@ -60,34 +60,58 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 - Clean up clients in `afterEach` via `closeAllClients()`
 - 30s test timeout; individual tests should complete in 2-5s
 - Shared test helpers live in `test/helper/`
+- Stand a transport pair up with `createAgentEndpoint()` / `createClientEndpoint()`
+  from `test/helper/transport-pair.ts`; they register for `closeAllTransports()`,
+  which runs alongside `closeAllClients()` in `afterEach`
+- Await events, never clocks: `recordEvents()` from
+  `test/helper/transport-events.ts` buffers from the moment an endpoint exists
+  and resolves on a predicate. Helpers take no timeout — the 30s test timeout
+  is the only deadline
 
 ### What the tier covers today
 
-Codec level only, in `test/vercel/codec/wire-codec.integration.test.ts`: a text
+**Codec level**, in `test/vercel/codec/wire-codec.integration.test.ts`: a text
 and tool-call roundtrip over a real channel, proving the wire format and Ably's
 message serialization.
 
-**Transport-level integration coverage is outstanding.** The suite that covered
-it was deleted with the session layer it exercised, and no replacement has been
-written. Treat the list below as the work to do, not a description of what
-exists — every row is currently untested over real Ably.
+**Transport level**, in `test/core/transport/transport.integration.test.ts` and
+`test/core/transport/transport-history.integration.test.ts`: three scenarios a
+mock channel cannot stand in for.
 
-1. Full transport: send → stream → receive
-2. Tool call through transport
-3. Cancel chain: client cancel → agent abort → stream closes
-4. Multi-run sequential, and concurrent runs
-5. Steering: a steer lands on an open run and its outcome resolves
-6. History paging: a fresh client pages backwards and receives chronological batches of classified events
-7. Attach boundary: a run streaming across the attach point yields one message's worth of events, not a duplicated prefix
-8. Durable cross-process re-entry: a second transport adopts an open run and ends it
-9. Error propagation: agent error mid-stream, client observes the run's error terminal
-10. Multi-client sync: two clients on the same channel both see the streamed response
+1. **Send → stream → receive.** A client publishes an input, the agent opens a
+   run naming it and streams a response, and the client's event stream carries
+   the optimistic echo, the wire echo, the run and step brackets, and the
+   streamed output — plus the run-id the client learns from the `ai-run-start`
+   its own input triggered.
+2. **History paging.** A fresh client pages backwards from its attach point
+   and receives chronological batches of classified events, each call
+   returning a strictly older slice, with a completed stream folded into one
+   message's worth of output. Messages published after the attach point stay
+   outside the window.
+3. **Attach boundary.** A run streaming across a client's attach point yields
+   one message's worth of events. The live fold and the history walk share a
+   decoder, so the accumulated prefix is delivered once, not twice — the
+   spanning message, when the window includes it, comes back from history
+   carrying its metadata and no events.
 
-Until those land, the transport's contract rests on the unit tier, which drives
-both transports against a mock channel. `test/core/transport/codec-transport.test.ts`
-is the one unit test that composes a real codec with both real transports, so
-the encoder/decoder-to-transport seam has at least one guard that is not a
-double.
+These three need real Ably: message appends, the platform's conversion of the
+first post-attach append into a full-contents update, `untilAttach` paging and
+serial allocation have no mock equivalent.
+
+Seven scenarios are outstanding. Each rests on the unit tier alone and is
+untested over real Ably:
+
+1. Tool call through the transport
+2. Cancel chain: client cancel → agent abort → stream closes
+3. Multi-run sequential, and concurrent runs
+4. Steering: a steer lands on an open run and its outcome resolves
+5. Durable cross-process re-entry: a second transport adopts an open run and ends it
+6. Error propagation: agent error mid-stream, client observes the run's error terminal
+7. Multi-client sync: two clients on the same channel both see the streamed response
+
+`test/core/transport/codec-transport.test.ts` is the unit test that composes a
+real codec with both real transports against a mock channel, so the
+encoder/decoder-to-transport seam is guarded in the fast tier as well.
 
 ### What NOT to integration test
 

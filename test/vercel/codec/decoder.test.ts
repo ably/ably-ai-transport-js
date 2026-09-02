@@ -10,11 +10,8 @@ import {
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -24,6 +21,7 @@ import {
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
 
 const UIMessageCodec = createUIMessageCodec();
 
@@ -50,9 +48,6 @@ const TRANSPORT_HEADER_KEYS = new Set<string>([
   HEADER_RUN_CLIENT_ID,
   HEADER_INPUT_CLIENT_ID,
   HEADER_ROLE,
-  HEADER_PARENT,
-  HEADER_FORK_OF,
-  HEADER_MSG_REGENERATE,
   HEADER_RUN_REASON,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -1083,6 +1078,74 @@ describe('Vercel decoder', () => {
 
       const deltaEvent = outputs.find((e) => e.type === 'text-delta');
       expect(deltaEvent).toEqual(expect.objectContaining({ type: 'text-delta', delta: 'hello world' }));
+    });
+  });
+
+  // -- stream replacement (non-prefix update) -------------------------------
+
+  describe('stream replacement', () => {
+    it('folds a terminal diverged update through the provider reducer, leaving no part streaming', async () => {
+      // A recovery update whose data does not extend what this decoder
+      // accumulated delivers no content (the wire is the authority a refold
+      // reads), and its terminal closes the open group. Folding through the
+      // real reducer proves the sequence is one it accepts: no throw, and no
+      // part left at state 'streaming'.
+      const decoder = createDecoder();
+      const chunks: AI.UIMessageChunk[] = [];
+
+      const collect = (outputs: AI.UIMessageChunk[]): void => {
+        chunks.push(...outputs);
+      };
+
+      collect(
+        decoder.decode(
+          withHeaders(
+            { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
+            {
+              [HEADER_STREAM]: 'true',
+              [HEADER_STATUS]: 'streaming',
+              [HEADER_STREAM_ID]: 'txt-1',
+              [HEADER_RUN_ID]: 'run-1',
+              kind: 'text',
+              id: 'txt-1',
+            },
+          ),
+        ).outputs,
+      );
+      collect(
+        decoder.decode(withHeaders({ action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: 'Hel' }, {}))
+          .outputs,
+      );
+      // The diverged terminal update: not an extension of 'Hel'.
+      collect(
+        decoder.decode(
+          withHeaders(
+            {
+              action: 'message.update',
+              serial: 's1',
+              name: EVENT_AI_OUTPUT,
+              data: 'Completely different',
+              version: { serial: 'v2' },
+            },
+            { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'complete' },
+          ),
+        ).outputs,
+      );
+      // Close the run scope so the fold's message settles.
+      collect(
+        decoder.decode(
+          withHeaders(
+            { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
+            { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', kind: 'finish' },
+          ),
+        ).outputs,
+      );
+
+      const message = await foldWithProviderReducer(chunks);
+
+      expect(message).toBeDefined();
+      const streaming = (message?.parts ?? []).filter((part) => 'state' in part && part.state === 'streaming');
+      expect(streaming).toEqual([]);
     });
   });
 

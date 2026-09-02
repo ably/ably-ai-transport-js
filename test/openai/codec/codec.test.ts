@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EVENT_AI_INPUT, HEADER_ROLE, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import { ErrorCode } from '../../../src/errors.js';
-import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import type { OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { ResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
@@ -25,6 +25,8 @@ import {
   contentPartDone,
   createBridge,
   created,
+  decodeInputs,
+  decodeOutputs,
   eventsOfType,
   failed,
   firstInputText,
@@ -86,21 +88,7 @@ const roundtrip = async (
   for (const event of events) await encoder.publishOutput(event);
   await encoder.close();
   const messages = inbound();
-  const decoder = ResponsesCodec.createDecoder();
-  const outputs = messages.flatMap((msg) => decoder.decode(msg).outputs);
-  return { inbound: messages, outputs };
-};
-
-// Decode a whole inbound sequence's output events through a fresh decoder.
-const decodeOutputs = (messages: Ably.InboundMessage[]): OpenAIOutput[] => {
-  const decoder = ResponsesCodec.createDecoder();
-  return messages.flatMap((msg) => decoder.decode(msg).outputs);
-};
-
-// Decode a whole inbound sequence's input events through a fresh decoder.
-const decodeInputs = (messages: Ably.InboundMessage[]): OpenAIInput[] => {
-  const decoder = ResponsesCodec.createDecoder();
-  return messages.flatMap((msg) => decoder.decode(msg).inputs);
+  return { inbound: messages, outputs: decodeOutputs(messages) };
 };
 
 // The first decoded message-turn payload of a wire sequence, or undefined
@@ -488,22 +476,6 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(decodeInputs(messages)).toEqual([{ kind: 'message', payload: userTurn('Hi there') }]);
   });
 
-  it('publishes a regenerate signal as a wire-only input that decodes to no events', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
-    await encoder.publishInput({ kind: 'regenerate' });
-    await encoder.close();
-
-    const messages = inbound();
-    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
-    expect(input).toBeDefined();
-    expect(input && getCodecHeaders(input).kind).toBe('regenerate');
-
-    // Wire-only: the signal carries no message state, so the decoder emits no
-    // input events for it — the agent reads its targeting off the wire headers.
-    expect(decodeInputs(messages)).toEqual([]);
-  });
-
   it('round-trips an empty prompt as a single empty text part', async () => {
     const { writer, inbound } = createBridge();
     const encoder = ResponsesCodec.createEncoder(writer);
@@ -626,7 +598,7 @@ const foreignMessage = (serial: string, overrides: Partial<Ably.InboundMessage> 
   }) as unknown as Ably.InboundMessage;
 
 // An application may publish its own messages on a channel it shares with a
-// session. They carry neither the SDK's wire names nor its `extras.ai`
+// transport. They carry neither the SDK's wire names nor its `extras.ai`
 // envelope; interleaving them through the decode path must leave the decoded
 // event sequence identical to the clean sequence.
 describe('OpenAI codec foreign messages (offline)', () => {

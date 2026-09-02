@@ -55,49 +55,49 @@ const asDelivery = (msg: Ably.Message, serial: string, clientId: string): Ably.I
   }) as unknown as Ably.InboundMessage;
 
 /**
- * Relay every message published on `from` that has not been relayed yet into
- * `into`'s subscribed listener, oldest first.
+ * Relay every message published on `from` into `into`'s subscribed listener,
+ * oldest first.
  * @param from - The channel whose publishes to drain.
  * @param into - The channel whose listener receives them.
  * @param clientId - The publisher's clientId to stamp on each delivery.
- * @param cursor - How many of `from`'s publishes were already relayed.
- * @returns The new cursor.
  */
-const relay = (from: MockChannel, into: MockChannel, clientId: string, cursor: number): number => {
-  let serial = cursor;
-  for (let i = cursor; i < from.publishCalls.length; i++) {
-    const call = from.publishCalls[i];
-    if (!call) continue;
-    // A batch publish (the Vercel `message` input fans one UIMessage out into
-    // one wire message per part) reaches the channel as an array, and the mock
-    // records the call rather than the messages. Flatten it.
-    // CAST: MockChannel.publishCalls is typed per-message; a batch call lands as an array.
-    const msgs = Array.isArray(call) ? (call as Ably.Message[]) : [call];
-    for (const msg of msgs) {
-      serial += 1;
-      into.listener?.(asDelivery(msg, `serial-${String(serial)}`, clientId));
-    }
+const relay = (from: MockChannel, into: MockChannel, clientId: string): void => {
+  for (const [i, msg] of from.publishCalls.entries()) {
+    into.listener?.(asDelivery(msg, `serial-${String(i + 1)}`, clientId));
   }
-  return from.publishCalls.length;
+};
+
+/**
+ * Stand up a connected agent + client pair over the real Vercel codec, each on
+ * its own mock channel (the relay carries publishes across).
+ * @returns The connected transports and their channels.
+ */
+const connectedPair = async (): Promise<{
+  agent: ReturnType<typeof createAgentTransport<VercelInput, VercelOutput>>;
+  client: ReturnType<typeof createClientTransport<VercelInput, VercelOutput>>;
+  agentChannel: MockChannel & Ably.RealtimeChannel;
+  clientChannel: MockChannel & Ably.RealtimeChannel;
+}> => {
+  const agentChannel = createMockChannel();
+  const clientChannel = createMockChannel();
+  const agent = createAgentTransport<VercelInput, VercelOutput>({
+    channel: agentChannel,
+    codec: createUIMessageCodec(),
+    clientId: 'agent-1',
+  });
+  const client = createClientTransport<VercelInput, VercelOutput>({
+    channel: clientChannel,
+    codec: createUIMessageCodec(),
+    clientId: 'user-1',
+  });
+  await agent.connect();
+  await client.connect();
+  return { agent, client, agentChannel, clientChannel };
 };
 
 describe('codec and transport composed', () => {
   it('carries an agent output through the real codec onto the client event stream', async () => {
-    const agentChannel = createMockChannel();
-    const clientChannel = createMockChannel();
-
-    const agent = createAgentTransport<VercelInput, VercelOutput>({
-      channel: agentChannel,
-      codec: createUIMessageCodec(),
-      clientId: 'agent-1',
-    });
-    const client = createClientTransport<VercelInput, VercelOutput>({
-      channel: clientChannel,
-      codec: createUIMessageCodec(),
-      clientId: 'user-1',
-    });
-    await agent.connect();
-    await client.connect();
+    const { agent, client, agentChannel, clientChannel } = await connectedPair();
 
     const seen: Event[] = [];
     client.subscribe((event) => seen.push(event));
@@ -113,7 +113,7 @@ describe('codec and transport composed', () => {
     await run.end({ reason: 'complete' });
     await flushMicrotasks();
 
-    relay(agentChannel, clientChannel, 'agent-1', 0);
+    relay(agentChannel, clientChannel, 'agent-1');
 
     // The chunks arrive as the agent published them, through a codec the client
     // built independently — nothing in either transport reads the payload.
@@ -151,27 +151,14 @@ describe('codec and transport composed', () => {
     // present and non-empty, and the run-id is NOT in it.
     // CAST: `extras` is `any` on Ably.Message; the shape is asserted below.
     const extras = output.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } };
+    // CAST: getTransportHeaders reads only `extras`, which the published message carries.
     expect(getTransportHeaders(output as unknown as Ably.InboundMessage)[HEADER_RUN_ID]).toBe(run.runId);
     expect(extras.ai?.codec).toBeDefined();
     expect(extras.ai?.codec?.[HEADER_RUN_ID]).toBeUndefined();
   });
 
   it('resolves the client publish runId from the run the agent opened for it', async () => {
-    const agentChannel = createMockChannel();
-    const clientChannel = createMockChannel();
-
-    const agent = createAgentTransport<VercelInput, VercelOutput>({
-      channel: agentChannel,
-      codec: createUIMessageCodec(),
-      clientId: 'agent-1',
-    });
-    const client = createClientTransport<VercelInput, VercelOutput>({
-      channel: clientChannel,
-      codec: createUIMessageCodec(),
-      clientId: 'user-1',
-    });
-    await agent.connect();
-    await client.connect();
+    const { agent, client, agentChannel, clientChannel } = await connectedPair();
 
     const sent = await client.publishInput({
       kind: 'message',
@@ -182,16 +169,17 @@ describe('codec and transport composed', () => {
     // only thing that lets the client learn its run-id. `runId` is deliberately
     // not pinned: without a located input, pinning it means "continue this run"
     // and publishes `ai-run-resume`, which carries no input correlation.
-    relay(clientChannel, agentChannel, 'user-1', 0);
+    relay(clientChannel, agentChannel, 'user-1');
     const run = agent.openRun({ inputCodecMessageId: sent.codecMessageId });
     await flushMicrotasks();
-    relay(agentChannel, clientChannel, 'agent-1', 0);
+    relay(agentChannel, clientChannel, 'agent-1');
 
     await expect(sent.runId).resolves.toBe(run.runId);
 
     // The correlation rides the header the client matches on, not the body.
     const start = agentChannel.publishCalls.find((m) => m.name === 'ai-run-start');
     if (!start) throw new Error('no run-start published');
+    // CAST: getTransportHeaders reads only `extras`, which the published message carries.
     expect(getTransportHeaders(start as unknown as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(
       sent.codecMessageId,
     );

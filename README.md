@@ -183,8 +183,7 @@ stopButton?.addEventListener('click', () => void transport.cancel(runId));
 ```
 
 To rebuild a conversation on load, page backwards from the attach point with
-`transport.history()` and fold the batches oldest-first. `readSince`-style
-hydration, a `useChat` adapter, and React bindings are not in this release.
+`transport.history()` and fold the batches oldest-first.
 
 ---
 

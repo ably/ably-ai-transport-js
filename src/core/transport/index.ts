@@ -13,7 +13,6 @@ export type {
   PublishInputResult,
   RunEndParams,
   RunEndReason,
-  RunIdentity,
   RunLifecycleEvent,
   RunStepTransport,
   SteerOutcome,
@@ -29,10 +28,6 @@ export type {
   TransportReceiver,
   WireMeta,
 } from './types.js';
-
-// Invocation
-export type { InvocationData } from './invocation.js';
-export { Invocation } from './invocation.js';
 
 // Transports
 export type { AgentTransportOptions } from './agent-transport.js';

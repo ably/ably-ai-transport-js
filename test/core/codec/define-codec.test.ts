@@ -113,7 +113,7 @@ describe('defineCodec — decoder direction routing', () => {
 // Foreign messages
 //
 // An application may publish its own messages on a channel it shares with a
-// session — a chat message, a presence-adjacent notification, its own streamed
+// transport — a chat message, a presence-adjacent notification, its own streamed
 // content. None of it carries the SDK's wire names or `extras.ai` envelope, and
 // every action it can arrive under must decode to nothing.
 // ---------------------------------------------------------------------------

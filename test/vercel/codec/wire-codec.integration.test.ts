@@ -19,6 +19,7 @@ import { getTransportHeaders } from '../../../src/utils.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
+import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
 
 const codec = createUIMessageCodec();
 
@@ -36,26 +37,6 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
     transport[HEADER_RUN_ID] = runId;
     transport[HEADER_CODEC_MESSAGE_ID] = messageId;
   }
-};
-
-/**
- * Fold one bucket of chunks through the provider's own reducer and return the
- * final message state.
- * @param chunks - The bucket's chunks, in wire order.
- * @returns The last message state `readUIMessageStream` yields.
- */
-const foldWithProviderReducer = async (chunks: AI.UIMessageChunk[]): Promise<AI.UIMessage | undefined> => {
-  const stream = new ReadableStream<AI.UIMessageChunk>({
-    start: (controller) => {
-      for (const chunk of chunks) controller.enqueue(chunk);
-      controller.close();
-    },
-  });
-  let last: AI.UIMessage | undefined;
-  for await (const message of AI.readUIMessageStream({ stream })) {
-    last = message;
-  }
-  return last;
 };
 
 describe('Vercel wire-codec provider-reducer roundtrip', () => {

@@ -14,8 +14,9 @@
  *   provider-typed body, so the codec defines a small body of its own.
  *
  * Addressing never rides an input: the transport's publish options carry the
- * `codecMessageId` / `parent` / `regenerates` structure, and `WireMeta`
- * reports them on the way back.
+ * `codecMessageId`, and `WireMeta` reports it on the way back. Domain data —
+ * `regenerate` carries the id it redoes — but the transport does not
+ * interpret it.
  */
 
 import type * as AI from 'ai';
@@ -68,13 +69,22 @@ export interface VercelMessageInput<
 }
 
 /**
- * A regeneration signal. Carries no body: the `regenerates` and `parent`
- * structure ride the transport's publish options, and `WireMeta` reports them
- * on the way back.
+ * A regeneration signal, naming the message useChat is regenerating from.
+ * The id is domain data the agent interprets; it describes no conversation
+ * structure and the transport does not read it.
  */
 export interface VercelRegenerateInput {
   /** Discriminator. */
   kind: 'regenerate';
+  /** Which message is being regenerated. */
+  payload: {
+    /**
+     * The `UIMessage.id` useChat is regenerating from. The transport carries
+     * the field and never reads it; what the agent does with it — typically
+     * truncating its stored conversation there — is the application's choice.
+     */
+    messageId: string;
+  };
 }
 
 /**

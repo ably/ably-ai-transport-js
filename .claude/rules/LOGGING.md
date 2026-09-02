@@ -47,8 +47,9 @@ this._runManager = createRunManager(channel, this._logger);
 // Child adds its own context
 this._logger = logger?.withContext({ component: 'RunManager' });
 
-// The agent transport does the same — a top-level transport never takes an
-// optional logger. Only sub-components take `logger?` and pass it down.
+// The agent transport does the same — a top-level transport accepts
+// `logger?` but never STORES an unresolved one: it resolves to the Silent
+// default at construction. Only sub-components take `logger?` and pass it down.
 const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
   component: 'AgentTransport',
 });
@@ -77,7 +78,11 @@ The default console logger formats as:
 
 ## Message Format
 
-Log messages follow the pattern `ClassName.methodName(); <description>`:
+Log messages follow the pattern `ClassName.methodName(); <description>`.
+Prefix with the component a reader would name: the class where one backs the
+component (`DefaultRunManager.`), the public component name where a factory
+composes an object literal (`AgentTransport.`, `RunStepWriter.`), and the bare
+function name for a standalone helper (`pipeStream`, `walkHistoryBatch`).
 
 ```ts
 // Method entry (trace)

@@ -21,7 +21,7 @@ import * as Ably from 'ably';
 import { HEADER_STEER_CODEC_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause } from '../../utils.js';
+import { errorCause, errorMessage } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
@@ -78,19 +78,13 @@ interface SteerIdsRef {
 }
 
 /**
- * The run's resolved structural anchors, read by every output publish. They are
+ * The run's resolved input anchor, read by every output publish. It is
  * resolved lazily when the run opens (undefined until then), so the writer reads
- * them live through {@link RunStepWriterContext.getAnchors} rather than capturing
- * them at construction.
+ * it live through {@link RunStepWriterContext.getAnchors} rather than capturing
+ * it at construction.
  */
 export interface StepWriterAnchors {
-  /** The reply run's structural-parent fallback (the codec-message-id of the input that triggered it), or undefined before the run resolves. */
-  parentFallback: string | undefined;
-  /** The run's `forkOf` anchor (an edit run's source), stamped on every output. */
-  forkOf: string | undefined;
-  /** The run's `msg-regenerate` anchor, echoed on every output so an early reader can populate the regenerate link. */
-  regenerates: string | undefined;
-  /** The triggering input's publisher client-id, re-stamped as `input-client-id` on the agent's own publishes. */
+  /** The triggering input's publisher clientId, re-stamped as `input-client-id` on the agent's own publishes. */
   inputClientId: string | undefined;
   /** The triggering input's codec-message-id, stamped as `input-codec-message-id`. */
   inputCodecMessageId: string | undefined;
@@ -121,16 +115,6 @@ export interface RunStepWriterContext<TInput, TOutput> {
    * @param event - The optimistic step-start / step-end event (its `serial` is `undefined`).
    */
   emitStepLifecycle(event: StepLifecycleEvent): void;
-  /**
-   * The sticky `stepClientId` to inherit for a run's next step: the
-   * `step-client-id` of the run's latest preceding step, re-derived from durable
-   * channel state. Backs the second rung of {@link resolveStepClientId}'s ladder
-   * so a fresh adopting process (whose in-process cursor is empty) still inherits
-   * the run's prior step's client rather than resetting to the default.
-   * @param runId - The run whose prior step's client to read.
-   * @returns The latest preceding step's client, or `undefined` when the run has no prior step yet.
-   */
-  getPriorStepClientId(runId: string): string | undefined;
   /** The run's callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
   hooks: OpenRunHooks<TOutput>;
   /** The run's composite abort signal (internal controller composed with any external signal). */
@@ -227,11 +211,11 @@ export const createRunStepWriter = <TInput, TOutput>(
   // resolveStepClientId). Set each time a step resolves its client.
   let lastStepClientId: string | undefined;
 
-  // At most one step may be open on a run at a time. The handle has no lexical
-  // bracket, so the writer tracks the open step
-  // explicitly: run.end auto-closes it (closeActiveStep) and run.suspend rejects
-  // while it is open (hasActiveStep). Holds the active step's settle fn, or
-  // undefined when no step is open.
+  // At most one step may be open on a run at a time. The handle has no
+  // lexical bracket, so the writer tracks the open step explicitly: run.end
+  // auto-closes it (closeActiveStep) and run.suspend rejects while it is open
+  // (hasActiveStep). Holds the active step's settle fn, or undefined when no
+  // step is open.
   let activeStep: { settle: (reason: StepEndReason) => Promise<void> } | undefined;
   // Set synchronously while a step is opening but `activeStep` is not yet
   // latched: start()'s mid-publish window, and a run.pipe's whole duration (its
@@ -279,11 +263,7 @@ export const createRunStepWriter = <TInput, TOutput>(
    * cursor:
    *   1. an explicit {@link StepOptions.stepClientId} (the steer seam populates) wins;
    *   2. else inherit the prior step's client — STICKY — from the in-process
-   *      cursor (the provisioned/serverless fast-path), falling back to
-   *      re-deriving it from durable channel state
-   *      ({@link RunStepWriterContext.getPriorStepClientId}) so a fresh-process
-   *      step with no cursor still inherits the run's prior step's client rather
-   *      than resetting to the default;
+   *      cursor;
    *   3. else (no prior step — the run's FIRST step) default to the triggering
    *      input's publisher (`input-client-id`), NOT the run owner: the two coincide
    *      on a fresh turn but diverge on a non-owner continuation, and the input's
@@ -292,8 +272,7 @@ export const createRunStepWriter = <TInput, TOutput>(
    * @returns The resolved step client (empty string when nothing resolves a value).
    */
   const resolveStepClientId = (explicit?: string): string => {
-    const resolved =
-      explicit ?? lastStepClientId ?? ctx.getPriorStepClientId(ctx.getRunId()) ?? ctx.getAnchors().inputClientId ?? '';
+    const resolved = explicit ?? lastStepClientId ?? ctx.getAnchors().inputClientId ?? '';
     lastStepClientId = resolved;
     return resolved;
   };
@@ -425,18 +404,9 @@ export const createRunStepWriter = <TInput, TOutput>(
       runId,
       codecMessageId,
       runClientId: runOwnerClientId,
-      // Resolved from the triggering input once at run-start. Owning it here
-      // means agent routes don't have to thread the parent to keep
-      // conversation threading correct.
-      parent: anchors.parentFallback,
-      forkOf: anchors.forkOf,
       invocationId,
       inputClientId: anchors.inputClientId,
       inputCodecMessageId: anchors.inputCodecMessageId,
-      // Echo `msg-regenerate` on the assistant message so a client receiving
-      // the assistant chunk before `ai-run-start` can still resolve the
-      // regenerate link from headers.
-      regenerates: anchors.regenerates,
       stepId: step.stepId,
       stepClientId: step.stepClientId,
     });
@@ -522,7 +492,7 @@ export const createRunStepWriter = <TInput, TOutput>(
         500,
         errorCause(result.error),
       );
-      logger?.error('RunStepWriter.pipe(); stream error', { runId });
+      logger?.error('RunStepWriter.pipe(); stream error', { runId, error: result.error.message });
       runOnError?.(errInfo);
     }
 
@@ -643,8 +613,14 @@ export const createRunStepWriter = <TInput, TOutput>(
         // completion; a missing step-end on a dying connection is non-impactful.
         try {
           await settle(stepEndReasonFor(result.reason));
-        } catch {
-          logger?.error('RunStepWriter.pipe(); failed to close implicit step', { runId, stepId });
+        } catch (error) {
+          // Warn, not error: the block above documents this close as
+          // best-effort and non-impactful — the run terminal is the authority.
+          logger?.warn('RunStepWriter.pipe(); failed to close implicit step', {
+            runId,
+            stepId,
+            error: errorMessage(error),
+          });
         }
       }
       return result;

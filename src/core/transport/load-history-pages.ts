@@ -120,10 +120,11 @@ const fetchPageWithRetry = async (
       lastError = error;
       if (attempt === maxRetries) break;
       const backoff = initialBackoffMs * 2 ** attempt;
-      logger?.debug('loadHistoryPages.fetchPageWithRetry(); page fetch failed, retrying', {
+      logger?.warn('loadHistoryPages.fetchPageWithRetry(); page fetch failed, retrying', {
         attempt: attempt + 1,
         maxRetries,
         backoff,
+        error: errorMessage(error),
       });
       await sleep(backoff, signal);
     }

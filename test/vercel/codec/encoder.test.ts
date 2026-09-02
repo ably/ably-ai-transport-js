@@ -617,7 +617,7 @@ describe('Vercel encoder', () => {
         kind: 'chunk',
         payload: { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'x' },
       });
-      await encoder.publishInput({ kind: 'regenerate' });
+      await encoder.publishInput({ kind: 'regenerate', payload: { messageId: 'asst-1' } });
 
       const allMessages: Ably.Message[] = [];
       for (const call of writer.publishCalls) {

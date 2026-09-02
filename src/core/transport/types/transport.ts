@@ -23,9 +23,8 @@ import type { SteerResult } from './steer.js';
  * a receive-stream consumer alongside the decoded events.
  *
  * The transport reads these fields off the `extras.ai.transport` header tier
- * (and the message's own Ably fields) but never interprets the structure
- * fields (`parent` / `forkOf` / `regenerates` / `inputCodecMessageId`) — those
- * are carried verbatim for a consumer that reconstructs branching. Every typed
+ * (and the message's own Ably fields) but never interprets
+ * `inputCodecMessageId` — it is carried verbatim for the consumer. Every typed
  * field is optional: a given wire message populates only the fields its message
  * name and headers carry.
  *
@@ -89,13 +88,7 @@ export interface WireMeta {
   versionSerial: string | undefined;
   /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for an optimistic local echo. */
   versionTimestamp: number | undefined;
-  /** Structure header `parent` — the codec-message-id of the preceding message in this branch. Carried verbatim; the consumer interprets it. */
-  parent: string | undefined;
-  /** Structure header `fork-of` — the codec-message-id this message replaces. Carried verbatim; the consumer interprets it. */
-  forkOf: string | undefined;
-  /** Structure header `msg-regenerate` — the codec-message-id this run regenerates. Carried verbatim; the consumer interprets it. */
-  regenerates: string | undefined;
-  /** Structure header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; the consumer interprets it. */
+  /** Header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; the consumer interprets it. */
   inputCodecMessageId: string | undefined;
   /**
    * The parsed `input-codec-message-ids` bracket receipt — on an
@@ -201,12 +194,6 @@ export interface TransportReceiver<TInput, TOutput> {
 export interface PublishInputOptions {
   /** The codec-message-id to publish under. Defaults to a fresh id when omitted. */
   codecMessageId?: string;
-  /** Structure: the codec-message-id of the preceding message in this branch. Omit for linear chat. Carried verbatim; the consumer interprets it. */
-  parent?: string;
-  /** Structure: the codec-message-id this input replaces (an edit fork). Omit for linear chat. Carried verbatim; the consumer interprets it. */
-  forkOf?: string;
-  /** Structure: the codec-message-id this input regenerates. Omit for linear chat. Carried verbatim; the consumer interprets it. */
-  regenerates?: string;
   /** Reuse a known run-id (a continuation of an existing run). Omit for a fresh send; the agent mints the run-id at run-start. */
   runId?: string;
   /** Arbitrary user-provided headers, published in Ably's own `extras.headers` slot (outside the SDK's `extras.ai` envelope) and surfaced back on {@link WireMeta.headers} — on the wire echo and the optimistic local echo alike. */
@@ -418,7 +405,7 @@ export interface StepOptions {
    * in-memory step history to reuse. Use the framework's own stable step
    * identity: a Vercel Workflow DevKit `getStepMetadata().stepId` (stable
    * across retries) or a Temporal activity id, and supply a matching stable
-   * {@link RunIdentity.runId} so the retry re-attempts the same run. **Omit it
+   * {@link OpenRunOptions.runId} so the retry re-attempts the same run. **Omit it
    * on a cross-process retry and the SDK mints a fresh id, so the retry's
    * output is appended beside the failed attempt's instead of superseding it —
    * a silent double-output.**
@@ -444,9 +431,11 @@ export interface StepOptions {
 /** Parameters for {@link RunStepTransport.end}. */
 export interface StepEndParams {
   /**
-   * The terminal reason. Omit to derive it from the step's piped output —
-   * `failed` if any {@link RunStepTransport.pipe} errored, else `complete` — so
-   * the common "compute an outcome, then end" flow needs no `try`/`catch`.
+   * The terminal reason. Omit to derive it from the step's piped output, in
+   * priority order: `cancelled` when the pipe was cancelled or the run's
+   * signal aborted, else `failed` if any {@link RunStepTransport.pipe} errored,
+   * else `complete` — so the common "compute an outcome, then end" flow needs
+   * no `try`/`catch`.
    * Pass an explicit reason to override.
    */
   reason?: StepEndReason;
@@ -464,39 +453,6 @@ export interface StreamResult {
    * `Ably.ErrorInfo` (code `RunResponseStreamFailed`) for standardized observability.
    */
   error?: Error;
-}
-
-/**
- * A run's identity — which run this is, and which invocation of it is
- * publishing.
- *
- * Both fields are plain data, so an orchestration that opens a run in one
- * process can thread its identity to another that re-enters it (an
- * `openRun` naming the same `runId`); the run handle itself does not cross
- * processes. Neither field accepts the empty string; omit a field to have it
- * minted.
- */
-export interface RunIdentity {
-  /**
-   * The run's id — the conversation turn's identity, and the durable key a
-   * continuing process re-enters the run by ({@link OpenRunOptions.runId}).
-   *
-   * Supply a stable value under durable execution so a fresh-process retry
-   * re-enters the run instead of minting a new UUID and opening a parallel
-   * one. This is independent of {@link StepOptions.stepId}: a run id is the
-   * turn's identity, a step id is one re-attemptable unit within the turn.
-   * Both want a stable source on retry, but they are distinct ids — do not
-   * treat the framework's step id as a run id across turns.
-   */
-  runId: string;
-
-  /**
-   * The id of the invocation publishing for the run — one per HTTP request on
-   * the normal path, or one per activity of a durable turn, stamped on every
-   * event that process publishes for the run. Independent of the run's owner
-   * identity: a continuing activity stamps its own id, not the opener's.
-   */
-  invocationId: string;
 }
 
 /**
@@ -534,10 +490,9 @@ export interface OpenRunOptions {
    *   continuation) selects the opening event — present means the open
    *   re-enters that run with `ai-run-resume`; absent means a fresh
    *   `ai-run-start` (under {@link runId} when pinned, else a minted id).
-   * - `meta.codecMessageId` defaults {@link inputCodecMessageId}, and — on a
-   *   fresh open only — `meta.parent` / `meta.forkOf` / `meta.regenerates`
-   *   default the structure options. An explicitly supplied option wins over
-   *   the input's value.
+   * - `meta.codecMessageId` defaults {@link inputCodecMessageId}, and
+   *   `meta.clientId` defaults {@link inputClientId}. An explicitly supplied
+   *   option wins over the input's value.
    */
   input?: LocatedInput<unknown>;
   /**
@@ -549,12 +504,6 @@ export interface OpenRunOptions {
   runId?: string;
   /** Reuse a fixed invocation-id. Omit to mint a fresh one (one per HTTP request). */
   invocationId?: string;
-  /** Structure: the codec-message-id of the parent message. Omit for a root run. */
-  parent?: string;
-  /** Structure: the codec-message-id being forked (an edit). Omit unless forking. */
-  forkOf?: string;
-  /** Structure: the codec-message-id this run regenerates. Omit unless regenerating. */
-  regenerates?: string;
   /**
    * The triggering input's codec-message-id (thread it from
    * {@link AgentTransport.locateInput}'s `meta.codecMessageId`, or the trigger
@@ -565,6 +514,15 @@ export interface OpenRunOptions {
    * cancels naming the run-id route here.
    */
   inputCodecMessageId?: string;
+  /**
+   * The triggering input's publisher clientId — the Ably `clientId` the
+   * platform stamped on the input's wire message from the publisher's
+   * realtime client (thread it from {@link AgentTransport.locateInput}'s
+   * `meta.clientId`). The agent re-stamps it as `input-client-id` on the
+   * run's lifecycle events and outputs, and it seeds the first step's
+   * `stepClientId`. Defaulted from {@link input} when supplied.
+   */
+  inputClientId?: string;
 }
 
 /** Options for {@link AgentTransport.adoptRun}. */
@@ -572,7 +530,9 @@ export interface AdoptRunOptions {
   /**
    * Reuse a fixed invocation-id, so the adopted handle publishes under the
    * invocation that owns the run — thread it from the orchestration's own
-   * state (see {@link RunIdentity.invocationId}). Omit to mint a fresh one.
+   * state — one invocation id per HTTP request or per activity of a durable
+   * turn, stamped on every event that process publishes for the run. Omit to
+   * mint a fresh one.
    */
   invocationId?: string;
 }
@@ -881,7 +841,9 @@ export interface RunStepTransport<TOutput> {
   /**
    * Publish `ai-step-end`, closing the step. Idempotent.
    * @param params - Optional {@link StepEndParams}; the reason is derived from
-   *   piped output when omitted (`failed` if any pipe errored, else `complete`).
+   *   piped output when omitted — `cancelled` when the pipe was cancelled or
+   *   the run's signal aborted, else `failed` if any pipe errored, else
+   *   `complete`.
    */
   end(params?: StepEndParams): Promise<void>;
 }

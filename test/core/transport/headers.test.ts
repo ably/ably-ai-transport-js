@@ -11,13 +11,10 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INPUT_CODEC_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -64,28 +61,6 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
   });
 
-  it('includes parent when provided', () => {
-    const headers = buildTransportHeaders({
-      role: 'user',
-      runId: 'run-1',
-      codecMessageId: 'msg-1',
-      parent: 'parent-msg',
-    });
-
-    expect(headers[HEADER_PARENT]).toBe('parent-msg');
-  });
-
-  it('includes forkOf when provided', () => {
-    const headers = buildTransportHeaders({
-      role: 'user',
-      runId: 'run-1',
-      codecMessageId: 'msg-1',
-      forkOf: 'fork-msg',
-    });
-
-    expect(headers[HEADER_FORK_OF]).toBe('fork-msg');
-  });
-
   it('includes inputClientId when provided', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
@@ -122,17 +97,6 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
   });
 
-  it('includes regenerates as msg-regenerate when provided', () => {
-    const headers = buildTransportHeaders({
-      role: 'user',
-      runId: 'run-1',
-      codecMessageId: 'msg-1',
-      regenerates: 'asst-original',
-    });
-
-    expect(headers[HEADER_MSG_REGENERATE]).toBe('asst-original');
-  });
-
   it('includes step-id, step-start-serial, and step-client-id when provided (step output)', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
@@ -156,11 +120,8 @@ describe('buildTransportHeaders', () => {
     });
 
     expect(headers).not.toHaveProperty(HEADER_RUN_CLIENT_ID);
-    expect(headers).not.toHaveProperty(HEADER_PARENT);
-    expect(headers).not.toHaveProperty(HEADER_FORK_OF);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
-    expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
     expect(headers).not.toHaveProperty(HEADER_STEP_ID);
     expect(headers).not.toHaveProperty(HEADER_STEP_START_SERIAL);
     expect(headers).not.toHaveProperty(HEADER_STEP_CLIENT_ID);
@@ -207,20 +168,14 @@ describe('buildLifecycleHeaders', () => {
     expect(buildLifecycleHeaders({ runId: 'r', runClientId: '' })).not.toHaveProperty(HEADER_RUN_REASON);
   });
 
-  it('stamps structural and correlation headers when provided', () => {
+  it('stamps correlation headers when provided', () => {
     const headers = buildLifecycleHeaders({
       runId: 'run-1',
       runClientId: 'user-a',
-      parent: 'p',
-      forkOf: 'f',
-      regenerates: 'g',
       invocationId: 'inv-1',
       inputClientId: 'user-b',
       inputCodecMessageId: 'trigger',
     });
-    expect(headers[HEADER_PARENT]).toBe('p');
-    expect(headers[HEADER_FORK_OF]).toBe('f');
-    expect(headers[HEADER_MSG_REGENERATE]).toBe('g');
     expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger');
@@ -229,18 +184,14 @@ describe('buildLifecycleHeaders', () => {
   it('omits every optional header when not provided', () => {
     const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: 'user-a' });
     expect(headers).not.toHaveProperty(HEADER_RUN_REASON);
-    expect(headers).not.toHaveProperty(HEADER_PARENT);
-    expect(headers).not.toHaveProperty(HEADER_FORK_OF);
-    expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
     expect(headers).not.toHaveProperty(HEADER_INVOCATION_ID);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
   });
 
-  it('stamps empty-string correlation values (distinguished from omitted)', () => {
-    const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: '', inputClientId: '' });
+  it('stamps an empty-string runClientId (distinguished from omitted)', () => {
+    const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: '' });
     expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
-    expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
   });
 
   it('stamps the input receipt as a JSON array when non-empty, omitting it otherwise', () => {
@@ -325,9 +276,6 @@ describe('parseRunLifecycle', () => {
         [HEADER_RUN_ID]: 'run-1',
         [HEADER_RUN_CLIENT_ID]: 'user-a',
         [HEADER_INVOCATION_ID]: 'inv-1',
-        [HEADER_PARENT]: 'parent-msg',
-        [HEADER_FORK_OF]: 'fork-msg',
-        [HEADER_MSG_REGENERATE]: 'asst-original',
       },
       's2',
       2000,
@@ -340,9 +288,6 @@ describe('parseRunLifecycle', () => {
       serial: 's2',
       invocationId: 'inv-1',
       timestamp: 2000,
-      parent: 'parent-msg',
-      forkOf: 'fork-msg',
-      regenerates: 'asst-original',
     });
   });
 

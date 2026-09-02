@@ -1099,8 +1099,8 @@ class DefaultChatTransport<
         controller?.error(
           new Ably.ErrorInfo(
             `unable to continue the stream; step ${event.event.stepId} was superseded by a later attempt`,
-            ErrorCode.RunAttemptSuperseded,
-            500,
+            ErrorCode.Conflict,
+            409,
           ),
         );
         return;

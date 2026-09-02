@@ -360,7 +360,7 @@ describe('ChatTransport', () => {
       fake.emit(messageEvent({ runId: 'run-1', transportMessageId: 'wire-a1', stepId: 's1' }, { outputs: [] }));
       fake.emit(stepStartEvent('run-1', 's1', 'serial-200'));
 
-      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.RunAttemptSuperseded);
+      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.Conflict);
       expect(chat.streaming).toBe(false);
     });
 
@@ -1195,7 +1195,7 @@ describe('ChatTransport', () => {
         ),
       );
       fake.emit(stepStartEvent('run-1', 's1', 'serial-103'));
-      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.RunAttemptSuperseded);
+      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.Conflict);
 
       // The consumer drops the damaged message and resumes; the replay must
       // carry the winning attempt only.

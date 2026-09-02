@@ -35,6 +35,21 @@ export enum ErrorCode {
   InsufficientCapability = 40160,
 
   /**
+   * The operation conflicted with the current state of what it addressed
+   * (Ably 40900), so it could not be completed.
+   *
+   * One situation raises it: a step attempt a stream had already forwarded
+   * output for started again, so what the consumer has accumulated belongs to
+   * a superseded attempt and conflicts with the run as it now stands. The
+   * stream is errored rather than continued, because accumulated parts cannot
+   * be un-written in place.
+   *
+   * Recovery is specific to this code: drop the damaged assistant message and
+   * resume, and the replay delivers only the canonical attempt's output.
+   */
+  Conflict = 40900,
+
+  /**
    * An internal invariant failed (Ably 50000) — the SDK or the Ably service
    * behaved in a way the SDK cannot recover from or explain (e.g. a publish
    * succeeded but returned no serial). Not caused by caller input.
@@ -125,17 +140,6 @@ export enum ErrorCode {
    * failed.
    */
   RunSteerHandlerFailed = 104012,
-
-  /**
-   * A step attempt this stream had already forwarded output for started again,
-   * so the output already delivered belongs to a superseded attempt and the
-   * stream's content is stale. The stream is errored rather than continued,
-   * because the consumer's accumulated parts cannot be un-written in place.
-   *
-   * Recovery is specific to this code: drop the damaged assistant message and
-   * resume, and the replay delivers only the canonical attempt's output.
-   */
-  RunAttemptSuperseded = 104014,
 }
 
 /**

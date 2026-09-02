@@ -3,6 +3,21 @@
  * work as its own message and suspending the run when a tool call needs the
  * client.
  *
+ * The loop itself is the ordinary shape:
+ *
+ * 1. call the model, streaming its parts into the run as they arrive;
+ * 2. collect the tool calls the turn emitted;
+ * 3. no calls → the reply is final, finish;
+ * 4. run the calls this process can run, publish their outputs, feed them back;
+ * 5. loop.
+ *
+ * Two things this demo exists to show are what the rest is for. Not every tool
+ * can be run here — `getLocation` needs the browser and `getWeatherForecast`
+ * needs a human — so step 4 splits, and a call the server cannot resolve
+ * suspends the run instead of looping. And every unit of work is published
+ * under its own `run.pipe`, because that is what gives each one a distinct
+ * message on the channel.
+ *
  * Server-executed tools (getWeather) don't suspend: the agent calls
  * `/responses`, and if the model emits function calls it runs them, appends the
  * model's output items (reasoning items and the calls, in order) followed by the
@@ -90,58 +105,75 @@ interface ModelTurn {
 }
 
 /**
- * The output source for one model `/responses` turn, collecting its completed
- * output items into `turn` as it drains so the loop can decide whether to run
- * tools and continue. `run.pipe` consumes this async-iterable directly.
+ * Adapt an already-complete batch of events into something `run.pipe` accepts.
+ *
+ * `pipe` takes a `ReadableStream` or an `AsyncIterable` because its usual
+ * source is a live model stream. A tool-output batch is neither — it is a
+ * finished array — so it needs one adapter on the way in. Nothing here is
+ * streamed or awaited; the whole batch is enqueued at once.
+ * @param events - The finished events to publish as one message.
+ * @returns The batch as a stream.
  */
-async function* modelTurnStream(
-  input: Responses.ResponseInputItem[],
-  signal: AbortSignal,
-  turn: ModelTurn,
-): AsyncGenerator<OpenAIOutput> {
-  try {
-    for await (const value of await createResponseStream({ input, signal })) {
-      yield value;
-      if (value.type === 'response.output_item.done') {
-        turn.outputItems.push(value.item);
-        if (value.item.type === 'function_call') turn.calls.push(value.item);
-      }
-    }
-  } catch (error) {
-    // An abort surfaces as a stream error from the model SDK; treat it as a
-    // clean end (the run-end is published by the route's cancel path).
-    if (!signal.aborted) throw error;
-  }
-}
-
-/** The output source that publishes the given events as one message. */
-async function* outputStream(outputs: OpenAIOutput[]): AsyncGenerator<OpenAIOutput> {
-  for (const output of outputs) yield output;
+function asStream(events: OpenAIOutput[]): ReadableStream<OpenAIOutput> {
+  return new ReadableStream<OpenAIOutput>({
+    start: (controller) => {
+      for (const event of events) controller.enqueue(event);
+      controller.close();
+    },
+  });
 }
 
 /**
- * The model turn followed by a `tool-approval-request` for each gated call it
- * emitted, all on one pipe. Emitting the request as the tail of the model turn's
- * own pipe puts it on the SAME `transport-message-id` as the `function_call` it
- * gates, so the request's `approval: 'pending'` state, the client's
- * `tool-approval-response` decision (addressed to that message), and the
- * `function_call` itself all merge onto one message. Publishing the request as a
- * separate message would strand the pending state on a message the response
- * never amends — the approval card would never resolve, and the resume-side
- * {@link approvedUnexecutedCalls} (which pairs a call with its approval on one
- * message) would never see an approved call.
+ * Stream one model `/responses` turn to the channel and report what it
+ * produced.
+ *
+ * A generator is what makes this stream: `/responses` events are yielded as
+ * the model emits them, so tokens reach the channel while it is still
+ * generating. The turn's completed output items are collected on the way past,
+ * because the loop can only decide what to do next once the turn has finished.
+ *
+ * A gated call's `tool-approval-request` is emitted as the tail of this same
+ * pipe, which puts it on the SAME `transport-message-id` as the
+ * `function_call` it gates — so the request's `approval: 'pending'` state, the
+ * client's decision (addressed to that message), and the `function_call`
+ * itself all merge onto one message. Published as a separate message it would
+ * strand the pending state on a message the decision never amends: the
+ * approval card would never resolve, and {@link approvedUnexecutedCalls}
+ * (which pairs a call with its approval on one message) would never see an
+ * approved call.
+ * @param run - The run to publish the turn under.
+ * @param input - The conversation so far, as `/responses` input.
+ * @param signal - The run's abort signal.
+ * @returns The pipe's result and what the turn produced.
  */
-async function* modelTurnWithGateRequests(
+async function pipeModelTurn(
+  run: AgentLoopRun,
   input: Responses.ResponseInputItem[],
   signal: AbortSignal,
-  turn: ModelTurn,
-): AsyncGenerator<OpenAIOutput> {
-  yield* modelTurnStream(input, signal, turn);
-  for (const call of turn.calls) {
-    if (needsApproval(call.name)) {
+): Promise<{ result: StreamResult; turn: ModelTurn }> {
+  const turn: ModelTurn = { outputItems: [], calls: [] };
+
+  async function* stream(): AsyncGenerator<OpenAIOutput> {
+    try {
+      for await (const value of await createResponseStream({ input, signal })) {
+        yield value;
+        if (value.type !== 'response.output_item.done') continue;
+        turn.outputItems.push(value.item);
+        if (value.item.type === 'function_call') turn.calls.push(value.item);
+      }
+    } catch (error) {
+      // An abort surfaces as a stream error from the model SDK; treat it as a
+      // clean end (the run-end is published by the route's cancel path).
+      if (!signal.aborted) throw error;
+    }
+    for (const call of turn.calls) {
+      if (!needsApproval(call.name)) continue;
       yield { type: 'tool-approval-request', call_id: call.call_id, name: call.name, arguments: call.arguments };
     }
   }
+
+  const result = await run.pipe(stream());
+  return { result, turn };
 }
 
 /** Run a batch of server tool calls and wrap each result as a `function_call_output` event. */
@@ -188,7 +220,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
   const approved = approvedUnexecutedCalls(req.priorMessages);
   if (approved.length > 0) {
     const { items, events } = runToolCalls(approved);
-    fail(await run.pipe(outputStream(events)));
+    fail(await run.pipe(asStream(events)));
     input.push(...items);
   }
 
@@ -196,9 +228,9 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
     if (run.abortSignal.aborted) break;
 
     // One model /responses turn = one assistant message. A gated call's
-    // approval request rides this same message (see modelTurnWithGateRequests).
-    const turn: ModelTurn = { outputItems: [], calls: [] };
-    fail(await run.pipe(modelTurnWithGateRequests(input, run.abortSignal, turn)));
+    // approval request rides this same message (see pipeModelTurn).
+    const { result, turn } = await pipeModelTurn(run, input, run.abortSignal);
+    fail(result);
 
     // No tool calls (or aborted) → the model's reply is final. Done.
     if (turn.calls.length === 0 || run.abortSignal.aborted) break;
@@ -219,7 +251,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
     // Server-executable tools run inline and their outputs feed the next turn.
     if (serverCalls.length > 0) {
       const { items, events } = runToolCalls(serverCalls);
-      fail(await run.pipe(outputStream(events)));
+      fail(await run.pipe(asStream(events)));
       input.push(...items);
     }
 

@@ -24,12 +24,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import { getToolName, isToolUIPart, type UIMessage } from 'ai';
-import {
-  EVENT_CANCEL,
-  EVENT_RUN_START,
-  getTransportHeaders,
-  HEADER_RUN_CLIENT_ID,
-} from '@ably/ai-transport';
+import { EVENT_CANCEL, EVENT_RUN_START, getTransportHeaders, HEADER_RUN_CLIENT_ID } from '@ably/ai-transport';
 import type { DemoStepId, Scenario } from '../lib/progress-steps';
 
 /**

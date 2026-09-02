@@ -190,7 +190,7 @@ describe('@ably/ai-transport/vercel/react', () => {
     expect(useChatTransport).toBeTypeOf('function');
   });
 
-  it('publishes the types a caller needs to name the hook\'s options and handle', () => {
+  it("publishes the types a caller needs to name the hook's options and handle", () => {
     const options: UseChatTransportOptions = {};
     const handle: ChatTransportHandle = { transport: undefined, chatTransport: undefined, error: undefined };
 

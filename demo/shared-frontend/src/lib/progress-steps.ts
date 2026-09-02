@@ -10,13 +10,7 @@ import type { ReactNode } from 'react';
 
 /** A trackable scenario's stable id — maps to a built-in completion detector. */
 export type DemoStepId =
-  | 'server-weather'
-  | 'client-weather'
-  | 'approval-forecast'
-  | 'retry-stock'
-  | 'checklist'
-  | 'multi-tab'
-  | 'cancel';
+  'server-weather' | 'client-weather' | 'approval-forecast' | 'retry-stock' | 'checklist' | 'multi-tab' | 'cancel';
 
 /**
  * One demo scenario, feeding both the intro-card walkthrough and the suggestion

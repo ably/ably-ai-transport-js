@@ -42,9 +42,15 @@ export default defineConfig({
       // would give the provider and the hooks different context objects, and
       // a component under ChatTransportProvider could never resolve the
       // transport registered by it.
+      // `ai` is a peer too: the provider reaches `readUIMessageStream`
+      // transitively through the chat transport, so leaving it in bundles the
+      // peer dependency (and zod under it) and hands a consumer two `ai`
+      // instances. The sibling entry points externalise it for the same
+      // reason.
       external: [
         'ably',
         'ably/react',
+        'ai',
         'react',
         'react/jsx-runtime',
         'react/jsx-dev-runtime',
@@ -54,6 +60,7 @@ export default defineConfig({
         globals: {
           ably: 'Ably',
           'ably/react': 'AblyReact',
+          ai: 'AI',
           react: 'React',
           'react/jsx-runtime': 'ReactJsxRuntime',
           'react/jsx-dev-runtime': 'ReactJsxDevRuntime',

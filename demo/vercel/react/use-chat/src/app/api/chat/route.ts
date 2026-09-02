@@ -35,6 +35,7 @@
 
 import { after } from 'next/server';
 import { streamText, convertToModelMessages, stepCountIs, toUIMessageStream } from 'ai';
+import type { UIMessage } from 'ai';
 import Ably from 'ably';
 import { LiveObjects } from 'ably/liveobjects';
 import { createAgentTransport, vercelRunOutcome } from '@ably/ai-transport/vercel';
@@ -171,14 +172,17 @@ export async function POST(req: Request) {
 
       // `originalMessages` puts the AI SDK in its own persistence mode: `onEnd`
       // hands back the whole updated conversation, assistant message included,
-      // so the store write needs no merge of our own.
+      // so the store write needs no merge of our own. The messages are kept
+      // here rather than written from the callback, because the watermark that
+      // goes with them is not known until the run's terminal is acknowledged.
+      let finished: UIMessage[] | undefined;
       const pipeResult = await openedRun.pipe(
         toUIMessageStream({
           stream: result.fullStream,
           originalMessages: messages,
           generateMessageId: () => crypto.randomUUID(),
           onEnd: ({ messages: updated }) => {
-            void saveMessages(channelName, updated, storedUpTo);
+            finished = updated;
           },
         }),
       );
@@ -191,7 +195,13 @@ export async function POST(req: Request) {
       // We choose to forward the run's terminal error so clients can show why
       // the run failed; a server could omit it to avoid exposing internal
       // failure detail.
-      await openedRun.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
+      const ended = await openedRun.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
+      // The terminal's own serial is the watermark for what this turn stored.
+      // A run publishes nothing after its end and the end serializes after its
+      // outputs, so everything this run put on the channel is at or before it.
+      // Falling back to the trigger's serial keeps the write conservative when
+      // the acknowledgement reported none.
+      if (finished) await saveMessages(channelName, finished, ended.serial ?? storedUpTo);
     } catch (error) {
       // The run has already opened on the channel; end it so clients don't see
       // a permanently active run.

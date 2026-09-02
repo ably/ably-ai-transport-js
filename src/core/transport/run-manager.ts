@@ -114,6 +114,7 @@ export interface RunManager {
    * When `consideredInputIds` is supplied and non-empty, it is stamped as the
    * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output considered.
+   * @returns The `ai-run-end`'s own channel serial, or `undefined` when the publish reported none. Everything the run published is at or before it.
    */
   endRun(
     runId: string,
@@ -123,7 +124,7 @@ export interface RunManager {
     inputTransportMessageId?: string,
     error?: Ably.ErrorInfo,
     consideredInputIds?: string[],
-  ): Promise<void>;
+  ): Promise<string | undefined>;
   /**
    * Publish `ai-step-start` to open a step attempt within a run. Carries
    * `step-id` plus the step's invocation correlation and the three concentric
@@ -149,6 +150,7 @@ export interface RunManager {
    * @param stepStartSerial - The attempt's `step-start-serial` (its `ai-step-start`'s serial).
    * @param reason - Why the step attempt ended.
    * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
+   * @returns The `ai-step-end`'s own channel serial, or `undefined` when the publish reported none.
    */
   endStep(
     runId: string,
@@ -156,7 +158,7 @@ export interface RunManager {
     stepStartSerial: string,
     reason: StepEndReason,
     scopes?: StepClientScopes,
-  ): Promise<void>;
+  ): Promise<string | undefined>;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
 }
@@ -243,13 +245,13 @@ class DefaultRunManager implements RunManager {
     inputTransportMessageId?: string,
     error?: Ably.ErrorInfo,
     consideredInputIds?: string[],
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
     // Stamp error detail only for a terminal error the agent chose to surface
     // (AIT-ST6b4: explicit, never automatic). error-code / error-message are
     // generic transport headers, so any codec or consumer can read them.
     const errorAttribution = reason === 'error' && error ? { errorCode: error.code, errorMessage: error.message } : {};
-    await this._publishTerminal(EVENT_RUN_END, runId, {
+    const serial = await this._publishTerminal(EVENT_RUN_END, runId, {
       reason,
       invocationId,
       inputClientId,
@@ -257,7 +259,8 @@ class DefaultRunManager implements RunManager {
       consideredInputIds,
       ...errorAttribution,
     });
-    this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
+    this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason, serial });
+    return serial;
   }
 
   /**
@@ -278,6 +281,7 @@ class DefaultRunManager implements RunManager {
    *   receipt. Omitted when absent or empty.
    * @param attribution.errorCode - Numeric error code; set for run-end only when a terminal error is surfaced.
    * @param attribution.errorMessage - Error message; paired with errorCode.
+   * @returns The terminal's own channel serial, or `undefined` when the publish reported none.
    */
   private async _publishTerminal(
     eventName: string,
@@ -291,11 +295,15 @@ class DefaultRunManager implements RunManager {
       errorCode?: number;
       errorMessage?: string;
     },
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const resolvedClientId = this._activeRuns.get(runId)?.clientId ?? '';
     const headers = buildLifecycleHeaders({ runId, runClientId: resolvedClientId, ...attribution });
-    await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
+    const result = await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
     this._activeRuns.delete(runId);
+    // The terminal's own channel serial, which an application records as the
+    // watermark for what it stored. May be undefined if the publish reported
+    // no serial.
+    return result.serials[0] ?? undefined;
   }
 
   async startStep(runId: string, stepId: string, scopes?: StepClientScopes): Promise<string | undefined> {
@@ -316,11 +324,21 @@ class DefaultRunManager implements RunManager {
     stepStartSerial: string,
     reason: StepEndReason,
     scopes?: StepClientScopes,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     this._logger?.trace('DefaultRunManager.endStep();', { runId, stepId, stepStartSerial, reason });
     const headers = buildStepHeaders({ runId, stepId, stepStartSerial, reason, ...scopes });
-    await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
-    this._logger?.debug('DefaultRunManager.endStep(); step ended', { runId, stepId, stepStartSerial, reason });
+    const result = await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
+    // The step-end's own channel serial: everything this attempt published is
+    // at or before it. May be undefined if the publish reported no serial.
+    const serial = result.serials[0] ?? undefined;
+    this._logger?.debug('DefaultRunManager.endStep(); step ended', {
+      runId,
+      stepId,
+      stepStartSerial,
+      reason,
+      serial,
+    });
+    return serial;
   }
 
   getClientId(runId: string): string | undefined {

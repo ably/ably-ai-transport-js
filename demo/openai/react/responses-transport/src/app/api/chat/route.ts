@@ -121,10 +121,14 @@ export async function POST(req: Request) {
       // reported; otherwise the loop's own outcome is the terminal, including
       // when it stopped because a tool needs the client — that answer wakes a
       // new run rather than resuming this one.
-      await run.end(run.abortSignal.aborted ? { reason: 'cancelled' } : outcome);
+      const ended = await run.end(run.abortSignal.aborted ? { reason: 'cancelled' } : outcome);
       // The turn is over: store what it produced. Everything the loop published
       // is in the conversation by now, recorded batch by batch as it went.
-      await conversation.save();
+      // The terminal's own serial is the watermark for what this turn stored:
+      // a run publishes nothing after its end, and the end serializes after
+      // its outputs, so everything this run put on the channel is at or before
+      // it. With no serial acknowledged, `save` falls back to the trigger's.
+      await conversation.save(ended.serial);
     } catch (error) {
       // Fire-and-forget background work: no active caller to surface this to, so
       // log it for local-demo visibility.

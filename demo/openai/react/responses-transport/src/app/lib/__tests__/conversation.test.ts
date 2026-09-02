@@ -126,17 +126,24 @@ describe('openConversation', () => {
     expect(conversation.messages()).toHaveLength(1);
   });
 
-  it('writes the conversation to the store under the trigger serial', async () => {
+  it('falls back to the trigger serial when no watermark is given', async () => {
     const conversation = openConversation('ai:conv-save', 'run-1', locatedPrompt('cm-u1', 'hello'));
 
     await conversation.save();
 
     const stored = loadConversation('ai:conv-save');
     expect(stored.messages.map((message) => message.transportMessageId)).toEqual(['cm-u1']);
-    // Deliberately the trigger's serial, not the run's newest: a client's walk
-    // re-reads this turn's own output rather than risk skipping a message
-    // another participant published that this turn never saw.
+    // The write as the run opens has no terminal to take a serial from, so the
+    // trigger's is the conservative stand-in.
     expect(stored.latestSerial).toBe('s-1');
+  });
+
+  it("stores the watermark it is given, which is the run terminal's serial", async () => {
+    const conversation = openConversation('ai:conv-watermark', 'run-1', locatedPrompt('cm-u1', 'hello'));
+
+    await conversation.save('s-9');
+
+    expect(loadConversation('ai:conv-watermark').latestSerial).toBe('s-9');
   });
 
   it('stamps the run on what it records, so a client knows which runs are covered', async () => {

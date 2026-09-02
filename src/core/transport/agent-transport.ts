@@ -62,8 +62,10 @@ import type {
   OpenRunOptions,
   PipeSource,
   RunEndParams,
+  RunEndResult,
   RunStepTransport,
   StepEndParams,
+  StepEndResult,
   StepOptions,
   StreamResult,
   TransportEvent,
@@ -644,9 +646,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           await ensureStarted();
           await step.send(event);
         },
-        end: async (params: StepEndParams): Promise<void> => {
-          await step.end(params);
-        },
+        end: async (params: StepEndParams): Promise<StepEndResult> => step.end(params),
       };
     };
 
@@ -705,9 +705,11 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         await this._runManager.startRun(runId, this._clientId, { invocationId, continuation: true });
         state = 'open';
       },
-      end: async (params: RunEndParams): Promise<void> => {
+      end: async (params: RunEndParams): Promise<RunEndResult> => {
         this._logger.trace('AgentRunTransport.end();', { runId, reason: params.reason });
-        if (state === 'ended') return;
+        // Terminal and idempotent: a second call publishes nothing, so it has
+        // no acknowledgement to report.
+        if (state === 'ended') return { serial: undefined };
         state = 'ended';
         // The run stops receiving signals the moment it is terminal, even if
         // the terminal publish below is still in flight.
@@ -721,7 +723,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           this._logger.error('AgentRunTransport.end(); failed to auto-close active step', { runId });
         }
         const error = params.reason === 'error' ? params.error : undefined;
-        await this._runManager.endRun(
+        const serial = await this._runManager.endRun(
           runId,
           params.reason,
           invocationId,
@@ -730,6 +732,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           error,
           consideredInputIds(),
         );
+        return { serial };
       },
     };
   }

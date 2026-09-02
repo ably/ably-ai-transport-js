@@ -1051,6 +1051,30 @@ describe('createAgentTransport', () => {
       expect(retry.abortSignal.aborted).toBe(true);
     });
 
+    it('reports the ai-run-end serial from its publish acknowledgement', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      const result = await run.end({ reason: 'complete' });
+
+      // The end serializes after the run's outputs, so everything the run
+      // published is at or before this serial — which is what an application
+      // records as the watermark for the conversation it just stored.
+      const endIndex = channel.publishNames().indexOf('ai-run-end');
+      expect(result.serial).toBe(`serial-${String(endIndex + 1)}`);
+    });
+
+    it('reports no serial from a second end, having published nothing', async () => {
+      const { transport } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      await run.end({ reason: 'complete' });
+
+      const again = await run.end({ reason: 'complete' });
+
+      expect(again.serial).toBeUndefined();
+    });
+
     it('publishes ai-run-start with a minted run-id and returns the run handle', async () => {
       const { transport, channel } = await setup({ clientId: 'agent-a' });
 
@@ -1298,6 +1322,35 @@ describe('createAgentTransport', () => {
       // The step bracket sits between the open and the run terminal.
       expect(names.indexOf('ai-step-start')).toBeLessThan(names.indexOf('ai-step-end'));
       expect(names.indexOf('ai-step-end')).toBeLessThan(names.indexOf('ai-run-end'));
+    });
+
+    it('reports the ai-step-end serial from its publish acknowledgement', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      const step = run.createStep();
+      await step.send({ type: 'text', text: 'hi' });
+
+      const result = await step.end({});
+
+      // Everything the attempt published is at or before it, so an application
+      // records it as the watermark for what it just stored.
+      const endIndex = channel.publishNames().indexOf('ai-step-end');
+      expect(result.serial).toBe(`serial-${String(endIndex + 1)}`);
+    });
+
+    it('reports no serial for a step that closed without opening', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      const step = run.createStep();
+
+      // Nothing was published under it, so there is no ai-step-end and
+      // nothing to report.
+      const result = await step.end({});
+
+      expect(result.serial).toBeUndefined();
+      expect(channel.publishNames()).not.toContain('ai-step-end');
     });
 
     it('does not open a step until the first send on a createStep handle', async () => {

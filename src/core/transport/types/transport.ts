@@ -440,6 +440,47 @@ export interface StepEndParams {
   reason?: StepEndReason;
 }
 
+/**
+ * The result of ending a run — what the terminal publish's acknowledgement
+ * reported.
+ */
+export interface RunEndResult {
+  /**
+   * The `ai-run-end` message's own channel serial, from the publish
+   * acknowledgement.
+   *
+   * A run publishes nothing after its end, and the end serializes after the
+   * run's outputs, so every message this run put on the channel is at or
+   * before this serial. That is what an application needs to record a
+   * watermark for the conversation it just stored: a later reader walks the
+   * channel back only as far as it. Note the bound covers *this* run's
+   * messages, not another participant's — a store on a shared channel is
+   * complete up to this serial only if it accounts for everything else below
+   * it too.
+   *
+   * `undefined` when the acknowledgement reported no serial, which is what a
+   * conflated publish does.
+   */
+  serial: string | undefined;
+}
+
+/**
+ * The result of ending a step — what the terminal publish's acknowledgement
+ * reported.
+ */
+export interface StepEndResult {
+  /**
+   * The `ai-step-end` message's own channel serial, from the publish
+   * acknowledgement. Every message this step attempt published is at or before
+   * it.
+   *
+   * `undefined` when the acknowledgement reported no serial, and also when the
+   * step closed without ever opening — an `end()` on a step that published
+   * nothing puts no `ai-step-end` on the wire.
+   */
+  serial: string | undefined;
+}
+
 /** The result of streaming a response through the encoder. */
 export interface StreamResult {
   /** Why the stream ended. */
@@ -859,8 +900,9 @@ export interface AgentRunTransport<TOutput> {
    * steers, accumulated across suspend/resume). A client resolves whether a
    * steering message was processed by id membership in this receipt.
    * @param params - How the run ended; see {@link RunEndParams}.
+   * @returns The terminal publish's acknowledgement; see {@link RunEndResult}.
    */
-  end(params: RunEndParams): Promise<void>;
+  end(params: RunEndParams): Promise<RunEndResult>;
 }
 
 /**
@@ -888,9 +930,11 @@ export interface RunStepTransport<TOutput> {
    */
   send(event: TOutput): Promise<void>;
   /**
-   * Publish `ai-step-end`, closing the step. Idempotent.
+   * Publish `ai-step-end`, closing the step. Idempotent — a second call
+   * reports no serial, having published nothing.
    * @param params - Optional {@link StepEndParams}; the reason is derived from
    *   piped output when omitted.
+   * @returns The terminal publish's acknowledgement; see {@link StepEndResult}.
    */
-  end(params: StepEndParams): Promise<void>;
+  end(params: StepEndParams): Promise<StepEndResult>;
 }

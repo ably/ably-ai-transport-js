@@ -19,11 +19,10 @@
  * turn is over, by which point the assistant's messages are in.
  *
  * What it stores is the messages plus the channel serial they are complete up
- * to — the trigger's own serial, which is deliberately conservative. The store
- * also holds the messages this run publishes, whose serials are higher, so a
- * client's walk re-reads them and the merge folds them into the same buckets.
- * Claiming a higher watermark would risk skipping a message another
- * participant published that this turn never saw.
+ * to. {@link Conversation.save} takes that serial: the run's own terminal
+ * serial once the run has ended (everything the run published is at or before
+ * it), and the trigger's serial before then, which is conservative enough for
+ * the write that lands as the run opens.
  *
  * No run state. A run is not conversation content, and this demo has no
  * suspended runs to remember either: a turn that needs the client ends, and
@@ -78,9 +77,10 @@ export interface Conversation {
   record(events: OpenAIOutput[]): void;
   /**
    * Write the conversation to the store, replacing what is there.
+   * @param latestSerial - The channel serial the messages are complete up to. Omit to fall back to the trigger's own serial, which is what the write as the run opens uses.
    * @returns A promise that resolves once the write is durable.
    */
-  save(): Promise<void>;
+  save(latestSerial?: string): Promise<void>;
 }
 
 /**
@@ -114,10 +114,11 @@ export const openConversation = (
         outputs: events,
       });
     },
-    async save() {
+    async save(latestSerial) {
+      const watermark = latestSerial ?? located.meta.serial;
       await saveConversation(channelName, {
         messages: merge.messages(),
-        ...(located.meta.serial === undefined ? {} : { latestSerial: located.meta.serial }),
+        ...(watermark === undefined ? {} : { latestSerial: watermark }),
       });
     },
   };

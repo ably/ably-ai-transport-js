@@ -75,7 +75,7 @@ How it works:
 
 `src/app/lib/message-store.ts` is an in-memory stand-in for the database an app would keep conversations in, keyed by channel name and lost on restart. It holds the messages and the channel serial they are complete up to. `GET /api/messages` (`src/app/api/messages/route.ts`) serves it and touches no Ably connection, because it stands in for a query against the app's own database. There is no write side on that route — the agent route owns every write.
 
-The watermark the route reports is the trigger's own serial, deliberately conservative. The store also holds the messages the run then publishes, whose serials are higher, so a client's walk re-reads them and dedupes by message id. Claiming a higher watermark would risk skipping a message another participant published that this turn never saw.
+The watermark the route reports comes from `run.end()`, which resolves with the `ai-run-end` message's own channel serial. A run publishes nothing after its end and the end serializes after its outputs, so everything the run put on the channel is at or before it. The write that lands as the run opens has no terminal yet, so it uses the trigger's serial instead.
 
 `src/app/lib/apply-input.ts` is the one thing the store cannot supply: the input that woke the agent, which is still only on the channel. A user turn replaces or appends a message; a tool resolution and an approval decision both replay through the AI SDK's own reducer (`readUIMessageStream`) — the decision as a `tool-approval-response` chunk — so the SDK owns every state transition. What is left is the part no reducer can do for itself: deciding which stored message a body addresses, and putting a message into the list.
 

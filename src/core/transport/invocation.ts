@@ -61,7 +61,6 @@ export interface InvocationData {
  * {@link Invocation.fromJSON}. Read-only; carries no behaviour beyond
  * exposing its fields.
  */
-// Spec: AIT-ST13
 export class Invocation {
   /**
    * Identifier for the specific input event on the channel that triggered

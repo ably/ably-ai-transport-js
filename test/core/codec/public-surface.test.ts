@@ -1,7 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type {
-  AdoptedRun,
   BatchSpec,
   DataCodec,
   HeaderField,
@@ -9,16 +8,13 @@ import type {
   InputDescriptor,
   InputEventSpec,
   LifecyclePolicy,
-  OpenableRun,
   OutputBuilder,
   OutputDescriptor,
   OutputEventSpec,
   OutputStreamSpec,
   RunIdentity,
-  RunStep,
   StepEndParams,
   StepEndReason,
-  StepInfo,
   StepOptions,
 } from '../../../src/index.js';
 import * as pkg from '../../../src/index.js';
@@ -59,38 +55,22 @@ describe('public codec-authoring surface', () => {
     expectTypeOf<LifecyclePolicy<Output>>().not.toBeNever();
   });
 
-  // The step vocabulary is reachable on the public `Run.createStep` /
-  // `RunNode.steps` surface, so its supporting types must be importable from the
-  // entry point — a consumer cannot deep-import internal modules of a published
-  // package.
+  // The step vocabulary is reachable on the public `AgentRunTransport.createStep`
+  // surface, so its supporting types must be importable from the entry point —
+  // a consumer cannot deep-import internal modules of a published package.
   it('exports the step types', () => {
-    interface Output {
-      type: 'note';
-      text: string;
-    }
-    expectTypeOf<RunStep<Output>>().not.toBeNever();
     expectTypeOf<StepOptions>().not.toBeNever();
     expectTypeOf<StepEndParams>().not.toBeNever();
-    expectTypeOf<StepInfo>().not.toBeNever();
     expectTypeOf<StepEndReason>().toEqualTypeOf<'complete' | 'failed' | 'cancelled'>();
-    // The client-identity scope is part of the read-model and the step-options
-    // seam, so both must carry it on the public surface.
-    expectTypeOf<StepInfo>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
+    // The client-identity scope is part of the step-options seam, so it must
+    // be carried on the public surface.
     expectTypeOf<StepOptions>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
   });
 
-  // The run-adoption surface (durable cross-process execution) is public too:
-  // adoptRun returns an AdoptedRun, createRun an OpenableRun, and both take a
-  // RunIdentity. All must be importable from the entry point, like the step
-  // vocabulary above — an orchestration threading a run's identity across
-  // processes must never have to redeclare the shape.
-  it('exports the run-adoption types', () => {
-    interface Output {
-      type: 'note';
-      text: string;
-    }
+  // The run identity (durable cross-process execution) is public too: an
+  // orchestration threading a run's identity across processes must never have
+  // to redeclare the shape.
+  it('exports the run identity', () => {
     expectTypeOf<RunIdentity>().toEqualTypeOf<{ runId: string; invocationId: string }>();
-    expectTypeOf<AdoptedRun<Output, unknown, unknown>>().not.toBeNever();
-    expectTypeOf<OpenableRun<Output, unknown, unknown>>().not.toBeNever();
   });
 });

@@ -9,14 +9,12 @@
  * ```ts
  * const data = (await req.json()) as InvocationData;
  * const invocation = Invocation.fromJSON(data);
- * const run = session.createRun(invocation, { signal: req.signal });
- * while (run.view.hasOlder()) await run.view.loadOlder(); // page channel history for context
- * await run.start();
- * const messages = run.view.getMessages().map((m) => m.message);
+ * const located = await transport.locateInput(invocation.inputEventId);
+ * const run = transport.openRun({ input: located }, { signal: req.signal });
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel
- * is observable: the session/channel name and the `inputEventId` that triggered
+ * is observable: the channel name and the `inputEventId` that triggered
  * the invocation. The agent mints the `invocationId` itself (one per HTTP
  * request) and returns it on the HTTP response, so it is not a body field. Run
  * identity also lives on the channel: the agent mints the `runId` for a fresh
@@ -34,8 +32,10 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Wire shape of a single invocation — the JSON body sent from the client
- * transport's HTTP POST to the agent endpoint.
+ * Wire shape of a single invocation — the JSON body an application POSTs to
+ * its own agent endpoint to wake a run. Nothing in the SDK sends it; the
+ * transport carries the conversation, and this is the out-of-band pointer a
+ * consumer's own route needs before the channel is observable.
  */
 export interface InvocationData {
   /**

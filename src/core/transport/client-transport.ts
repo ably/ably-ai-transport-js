@@ -1,6 +1,7 @@
 /**
  * The self-contained client transport: publish, receive, and history over one
- * channel and codec, without the Tree, View, or React layers.
+ * channel and codec. It keeps no conversation state — a consumer folds the
+ * event stream into state of its own.
  *
  * {@link createClientTransport} owns its whole receive path: it mints a codec
  * decoder, wraps it in a receive transport, and — once {@link
@@ -39,17 +40,9 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import { registerAgent } from '../agent.js';
-import { resolveChannelModes } from '../channel-options.js';
 import type { Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
-import {
-  bestEffortDetach,
-  ConnectGuard,
-  continuityLostError,
-  isContinuityLost,
-  subscribeAndAttach,
-} from './channel-support.js';
+import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './channel-support.js';
 import { buildTransportHeaders } from './headers.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
@@ -80,23 +73,11 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
  * @template TOutput - The codec's output-event domain type.
  */
 export interface ClientTransportOptions<TInput, TOutput> {
-  /** The Ably Realtime client. The caller owns its lifecycle; the transport's `close()` does not close it. */
-  client: Ably.Realtime;
-  /** The name of the channel to publish on and receive from. The transport owns this channel: it resolves it, subscribes its own listener on `connect()`, and detaches it on `close()`. */
-  channelName: string;
+  /** The Ably channel to publish on and receive from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
+  channel: Ably.RealtimeChannel;
   /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. Any full `Codec` satisfies it. */
   codec: WireCodec<TInput, TOutput>;
-  /**
-   * Extra Ably channel modes to request on the transport's channel, on top of the
-   * modes AI Transport always needs. Omit to attach with the default mode set.
-   *
-   * The transport requests the union of these modes with the modes it always
-   * needs, so passing extra modes never drops the SDK's required modes. The
-   * connection's token/key capability must permit the requested operations,
-   * otherwise the server grants only the permitted subset.
-   */
-  channelModes?: readonly Ably.ChannelMode[];
-  /** Overrides the publishing identity stamped as `run-client-id` on inputs. Defaults to the client's own `auth.clientId`, read at publish time; a client with no concrete identity (anonymous, or a wildcard `*` token) stamps no header and the local echo's `clientId` is `undefined`. */
+  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and the local echo's `clientId` is `undefined`. */
   clientId?: string;
   /** Wire-message limit per `channel.history()` round trip in {@link ClientTransport.history}. Defaults to 100. */
   historyPageSize?: number;
@@ -133,9 +114,8 @@ const stampUserHeaders = (msg: Ably.Message, userHeaders: Record<string, string>
 /** Default {@link ClientTransport}. See the file header for the composition. */
 class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput, TOutput> {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _client: Ably.Realtime;
   private readonly _codec: WireCodec<TInput, TOutput>;
-  private readonly _clientIdOverride: string | undefined;
+  private readonly _clientId: string | undefined;
   private readonly _historyPageSize: number;
   private readonly _logger: Logger;
   /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded. */
@@ -168,8 +148,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    */
   private _hasAttachedOnce: boolean;
   private _closed = false;
-  /** Whether `connect()` attached the channel, so `close()` knows to detach. */
-  private _attachAttempted = false;
   /**
    * The shared backward history cursor, opened lazily on the first `history()`
    * call (capturing the attach serial then) and advanced by one caller at a
@@ -185,17 +163,9 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   private _historyTail: Promise<void> = Promise.resolve();
 
   constructor(options: ClientTransportOptions<TInput, TOutput>) {
-    // Register this SDK on both the connection
-    // (options.agents) and channel-attach (params.agent) paths. Idempotent
-    // across transports sharing one client. The transports are the streaming
-    // tier: no Tree, no View, no history hydration.
-    const channelOptions: Ably.ChannelOptions = registerAgent(options.client, { layer: 'streaming' }, options.codec);
-    const modes = resolveChannelModes(options.channelModes);
-    if (modes) channelOptions.modes = modes;
-    this._channel = options.client.channels.get(options.channelName, channelOptions);
-    this._client = options.client;
+    this._channel = options.channel;
     this._codec = options.codec;
-    this._clientIdOverride = options.clientId;
+    this._clientId = options.clientId;
     this._historyPageSize = options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ClientTransport',
@@ -225,8 +195,8 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
           await encoder.close();
         }
       },
-      clientId: () => this._resolveClientId(),
-      isSessionClosed: () => this._closed,
+      clientId: () => this._clientId,
+      isTransportClosed: () => this._closed,
       logger: this._logger,
     });
     this._hasAttachedOnce = this._channel.state === 'attached';
@@ -242,12 +212,11 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       return Promise.reject(this._closedError('connect'));
     }
     this._logger.trace('ClientTransport.connect();');
-    return this._connectGuard.connect(async () => {
-      this._attachAttempted = true;
-      await subscribeAndAttach(this._channel, this._onMessage, this._logger, 'ClientTransport', (error) => {
+    return this._connectGuard.connect(async () =>
+      subscribeAndAttach(this._channel, this._onMessage, this._logger, 'ClientTransport', (error) => {
         this._receiver.emitError(error);
-      });
-    });
+      }),
+    );
   }
 
   subscribe(handler: (event: TransportEvent<TInput, TOutput>) => void): () => void {
@@ -300,7 +269,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       role: 'user',
       runId: opts?.runId,
       codecMessageId,
-      runClientId: this._resolveClientId(),
+      runClientId: this._clientId,
       ...(parent !== undefined && { parent }),
       ...(forkOf !== undefined && { forkOf }),
       ...(regenerates !== undefined && { regenerates }),
@@ -316,7 +285,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     if (!isWireOnlyInput(opts)) {
       this._receiver.emitEvent({
         kind: 'message',
-        meta: wireMetaFromLocalEcho(headers, this._resolveClientId(), userHeaders ?? {}),
+        meta: wireMetaFromLocalEcho(headers, this._clientId, userHeaders ?? {}),
         inputs: [event],
         outputs: [],
       });
@@ -397,21 +366,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     return mine;
   }
 
-  /**
-   * The publishing identity, the explicit override first and the client's own
-   * `auth.clientId` otherwise. Read lazily, never cached at construction:
-   * under token auth the client only learns its clientId once the connection
-   * reaches CONNECTED. A connection with no concrete identity (anonymous, or
-   * a wildcard `*` token) resolves to `undefined`, so no client id is stamped.
-   * @returns The publishing identity, or `undefined` if there is none.
-   */
-  private _resolveClientId(): string | undefined {
-    if (this._clientIdOverride !== undefined) return this._clientIdOverride;
-    const clientId = this._client.auth.clientId;
-    return clientId && clientId !== '*' ? clientId : undefined;
-  }
-
-  async close(): Promise<void> {
+  close(): void {
     if (this._closed) return;
     this._logger.info('ClientTransport.close();');
     this._closed = true;
@@ -419,10 +374,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     this._channel.off(this._onChannelStateChange);
     this._steer.drainClosed();
     this._drainRunIdWatches(this._closedError('await run start'));
-    // The transport resolved this channel, so it owns the detach. Skipped when
-    // nothing ever attached it. `connect()` is the only attach path: every
-    // other method that reaches the channel goes through `_requireOpen` first.
-    await bestEffortDetach(this._channel, this._attachAttempted, this._logger, 'ClientTransport');
   }
 
   /**

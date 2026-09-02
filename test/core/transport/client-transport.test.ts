@@ -1,6 +1,6 @@
 /**
- * createClientTransport unit tests — the self-contained, Tree-free client
- * transport.
+ * createClientTransport unit tests — the client publish, receive, and history
+ * surface.
  *
  * The transport owns its receive path: `connect()` subscribes its listener and
  * attaches the channel, live wires classify onto the `subscribe`/`on('event')`

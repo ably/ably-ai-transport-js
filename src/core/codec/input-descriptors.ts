@@ -77,7 +77,7 @@ export interface InputEncoderCore {
 
 /** Per-write context passed to the input encode driver. */
 export interface InputEncodeContext {
-  /** Per-write overrides (the wire codec-message-id is stamped here by the client session). */
+  /** Per-write overrides (the wire codec-message-id is stamped here by the transport). */
   opts: WriteOptions | undefined;
 }
 
@@ -128,7 +128,7 @@ export interface InputEventSpec<C> {
  * A per-part wire mapping inside a {@link BatchSpec}, narrowed to part member `Q`.
  * `fields` and `data` operate on the selected part; the batch driver fans the
  * domain message out into one wire event per part and reassembles them in the
- * reducer (merge by codec-message-id).
+ * consumer (merge by codec-message-id).
  * @template Q - The narrowed part member.
  */
 export interface PartSpec<Q> {
@@ -209,7 +209,7 @@ export interface BatchSpec<C, P extends { type: string }> {
    */
   messageHeaders?: (input: C) => BatchMessageHeaders;
   /**
-   * DECODE: shape one decoded wire part into a one-part input (the reducer merges
+   * DECODE: shape one decoded wire part into a one-part input (a consumer merges
    * parts by codec-message-id). `ctx` exposes the inbound header tiers so the
    * shared per-message metadata stamped by `messageHeaders` can be read back.
    * The driver stamps only `kind`; the per-message identity rides the

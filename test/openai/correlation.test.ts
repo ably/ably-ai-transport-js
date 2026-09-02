@@ -1,7 +1,8 @@
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
-import { approvedUnexecutedCalls, resolvedCallIds, unansweredCalls } from '@ably/ai-transport/openai';
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
+
+import type { OpenAIMessage } from '../../src/openai/index.js';
+import { approvedUnexecutedCalls, resolvedCallIds, unansweredCalls } from '../../src/openai/index.js';
 
 const gatedCall = (call_id: string, name = 'getWeatherForecast'): Responses.ResponseFunctionToolCall => ({
   id: `fc-${call_id}`,

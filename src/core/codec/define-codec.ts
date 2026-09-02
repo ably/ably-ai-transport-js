@@ -88,8 +88,6 @@ export interface LifecyclePolicy<TOutput> {
  * @template TOutput - The codec's output union.
  */
 export interface DefineCodecConfig<TInput extends { kind: string }, TOutput extends { type: string }> {
-  /** Optional Ably-Agent identifier registered on the channel; omit to opt out. */
-  adapterTag?: string;
   /**
    * The declarative output (`ai-output`) descriptor table, returned from the
    * injected `{ event, stream, drop }` builder (curried on `TOutput`).
@@ -136,7 +134,7 @@ class DefaultCodecEncoder<TInput extends { kind: string }, TOutput extends { typ
   async publishInput(input: TInput, options?: WriteOptions): Promise<void> {
     // No `messageId` threads into inputs — user-message parts carry no
     // transport codec-message-id today; inputs rely on opts.messageId stamped
-    // by the client session.
+    // by the transport.
     await this._inputEncoder.encode(input, this._core, { opts: options });
   }
 
@@ -407,9 +405,6 @@ export const defineCodec =
     const outputDecoder = createOutputDescriptorDecoder(outputs);
     const inputDecoder = createInputDescriptorDecoder(inputs);
     return {
-      // adapterTag is optional on WireCodec; only set it when supplied so a
-      // codec can opt out of Ably-Agent registration.
-      ...(config.adapterTag === undefined ? {} : { adapterTag: config.adapterTag }),
       createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
       createDecoder: () =>
         new DefaultCodecDecoder<TInput, TOutput>(

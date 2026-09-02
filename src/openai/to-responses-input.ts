@@ -1,6 +1,7 @@
 /**
- * Convert a conversation (the `OpenAIMessage[]` read from a drained `run.view`)
- * into the `input` array for an OpenAI `/v1/responses` call.
+ * Convert a conversation (an `OpenAIMessage[]` — e.g. the hydrated conversation
+ * an agent reads on resume) into the `input` array for an OpenAI
+ * `/v1/responses` call.
  *
  * The body is a plain flatten. The value of this function is its signature.
  * `OpenAIItem` is curated so every stored item is a `ResponseInputItem`, and
@@ -17,7 +18,7 @@ import type { OpenAIMessage } from './codec/index.js';
 
 /**
  * Flatten a conversation into OpenAI Responses model input.
- * @param messages - The conversation messages (a drained `run.view`'s messages).
+ * @param messages - The conversation messages.
  * @returns The concatenated items as a Responses `input` array.
  */
 export const toResponsesInput = (messages: OpenAIMessage[]): Responses.ResponseInputItem[] =>

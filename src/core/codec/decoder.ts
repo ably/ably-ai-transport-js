@@ -6,7 +6,7 @@
  * event decoding. Stream trackers are version-guarded: a delivery whose
  * `Message.version.serial` the tracker has already incorporated decodes to
  * nothing, so the same decoder instance can serve both the live
- * subscription and history hydration without double-decoding.
+ * subscription and a backwards history walk without double-decoding.
  *
  * Domain decoders call `createDecoderCore(hooks, options)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
@@ -321,7 +321,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     if (!tracker) {
       // An append is the one action whose `name` the platform does not echo, so
       // a foreign append — an application streaming its own message on a
-      // channel it shares with a session — is identified by the absence of the
+      // channel it shares with a transport — is identified by the absence of the
       // SDK's `extras.ai` envelope. It decodes to nothing, and says so at
       // debug: it is expected traffic, not the out-of-contract case below.
       if (!hasAiEnvelope(message)) {
@@ -405,13 +405,29 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     }
 
     // --- Replacement (NOT a prefix match) ---
+    // The payload diverged from what this decoder accumulated, so no delta
+    // describes the change and the missing tail is unrecoverable. Deliver the
+    // payload whole — a fresh opener plus the entire new content — so the
+    // consumer can replace the stream's content. Emitting nothing would drop
+    // the data silently: `onStreamUpdate` is the only other signal and no
+    // production path wires it.
     tracker.accumulated = data;
     tracker.codecHeaders = { ...codec };
     tracker.transportHeaders = { ...transport };
 
     this._invokeOnStreamUpdate(tracker);
 
-    return [];
+    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); payload replaced, delivering whole', {
+      serial,
+      streamId: tracker.streamId,
+      accumulatedLength: tracker.accumulated.length,
+    });
+
+    const outputs = this._hooks.buildStartEvents(tracker);
+    if (data.length > 0) outputs.push(...this._hooks.buildDeltaEvents(tracker, data));
+    this._applyTerminalStatus(tracker, status, codec, outputs);
+
+    return outputs;
   }
 
   private _decodeFirstContact(

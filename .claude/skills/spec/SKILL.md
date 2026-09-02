@@ -43,8 +43,9 @@ structurally:
 - `AIT-GP1` (two-layer split): Check that `src/core/` has no imports from
   `ai` or other framework packages; check that framework-specific code
   lives in `src/vercel/` (or similar).
-- `AIT-GP2` (codec parameterization): Check that generic transport/tree
-  components use `<TEvent, TMessage>` type parameters.
+- `AIT-GP2` (codec parameterization): Check that generic transport components
+  are parameterized by the codec's input and output unions rather than naming a
+  provider's wire types.
 - `AIT-GP3` (header discipline): Grep `src/core/` for header strings and
   verify only `x-ably-*` headers appear.
 - `AIT-GP4` (single shared channel): Verify transport constructors accept

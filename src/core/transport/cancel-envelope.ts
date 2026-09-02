@@ -4,8 +4,9 @@
  * The client publishes an `ai-cancel` signal and the agent reads it back off
  * the channel. This module is the single source of truth for the cancel wire
  * shape — which transport headers identify the target run, and how they are
- * read — so the publish side (ClientSession) and the read side (AgentSession)
- * cannot drift on the header names or which identifiers a cancel carries.
+ * read — so the publish side (the client transport's `cancel`) and the read
+ * side (the agent transport's cancel routing) cannot drift on the header
+ * names or which identifiers a cancel carries.
  *
  * A cancel targets its run by `run-id` (a continuation, whose run-id the client
  * already knows) and/or by `input-codec-message-id` (a fresh send, whose run-id

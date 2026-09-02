@@ -1,5 +1,5 @@
 /**
- * createAgentTransport unit tests — the standalone, Tree-free agent transport.
+ * createAgentTransport unit tests — the agent run, output, and history surface.
  *
  * The transport owns its receive path: `connect()` subscribes its listener and
  * attaches the channel, after which live wires classify onto the

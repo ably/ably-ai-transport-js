@@ -16,35 +16,11 @@
       "import": "./dist/ably-ai-transport.js",
       "require": "./dist/ably-ai-transport.umd.cjs"
     },
-    "./react": {
-      "types": "./dist/react/index.d.ts",
-      "react-native": "./dist/react/ably-ai-transport-react.umd.cjs",
-      "import": "./dist/react/ably-ai-transport-react.js",
-      "require": "./dist/react/ably-ai-transport-react.umd.cjs"
-    },
     "./vercel": {
       "types": "./dist/vercel/index.d.ts",
       "react-native": "./dist/vercel/ably-ai-transport-vercel.umd.cjs",
       "import": "./dist/vercel/ably-ai-transport-vercel.js",
       "require": "./dist/vercel/ably-ai-transport-vercel.umd.cjs"
-    },
-    "./vercel/react": {
-      "types": "./dist/vercel/react/index.d.ts",
-      "react-native": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs",
-      "import": "./dist/vercel/react/ably-ai-transport-vercel-react.js",
-      "require": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs"
-    },
-    "./temporal": {
-      "types": "./dist/temporal/index.d.ts",
-      "react-native": "./dist/temporal/ably-ai-transport-temporal.umd.cjs",
-      "import": "./dist/temporal/ably-ai-transport-temporal.js",
-      "require": "./dist/temporal/ably-ai-transport-temporal.umd.cjs"
-    },
-    "./temporal/workflow": {
-      "types": "./dist/temporal/workflow/index.d.ts",
-      "react-native": "./dist/temporal/workflow/ably-ai-transport-temporal-workflow.umd.cjs",
-      "import": "./dist/temporal/workflow/ably-ai-transport-temporal-workflow.js",
-      "require": "./dist/temporal/workflow/ably-ai-transport-temporal-workflow.umd.cjs"
     },
     "./openai": {
       "types": "./dist/openai/index.d.ts",
@@ -55,14 +31,10 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:vercel-react && pnpm run build:temporal && pnpm run build:temporal-workflow && pnpm run build:openai",
+    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:vercel && pnpm run build:openai",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
-    "build:react": "vite build --config ./src/react/vite.config.ts --emptyOutDir",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
-    "build:vercel-react": "vite build --config ./src/vercel/react/vite.config.ts --emptyOutDir",
-    "build:temporal": "vite build --config ./src/temporal/vite.config.ts --emptyOutDir",
-    "build:temporal-workflow": "vite build --config ./src/temporal/workflow/vite.config.ts --emptyOutDir",
     "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "prepare": "pnpm run build",
     "lint": "eslint .",
@@ -72,7 +44,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.config.integration.ts",
-    "test:temporal": "vitest run --config vitest.config.temporal.ts",
     "check:error-codes": "tsx scripts/validate-error-codes.ts",
     "precommit": "pnpm run format:check && pnpm run lint && pnpm run typecheck",
     "docs": "typedoc",
@@ -81,9 +52,7 @@
   "files": [
     "dist/**",
     "src/**",
-    "react/**",
     "vercel/**",
-    "temporal/**",
     "openai/**"
   ],
   "repository": {
@@ -115,48 +84,23 @@
     }
   },
   "peerDependencies": {
-    "@temporalio/activity": "^1",
-    "@temporalio/worker": "^1.13.2",
-    "@temporalio/workflow": "^1",
     "ably": "^2.23.0",
     "ai": "^6 || ^7",
-    "openai": "^6",
-    "react": "^18.0.0 || ^19.0.0"
+    "openai": "^6"
   },
   "peerDependenciesMeta": {
-    "@temporalio/activity": {
-      "optional": true
-    },
-    "@temporalio/worker": {
-      "optional": true
-    },
-    "@temporalio/workflow": {
-      "optional": true
-    },
     "ai": {
       "optional": true
     },
     "openai": {
       "optional": true
-    },
-    "react": {
-      "optional": true
     }
   },
   "devDependencies": {
-    "@ai-sdk/react": "^4.0.30",
     "@eslint/compat": "^2.0.5",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^10.0.1",
-    "@temporalio/activity": "^1.21.1",
-    "@temporalio/client": "^1.21.1",
-    "@temporalio/common": "^1.21.1",
-    "@temporalio/testing": "^1.21.1",
-    "@temporalio/worker": "^1.21.1",
-    "@temporalio/workflow": "^1.21.1",
-    "@testing-library/react": "^16.3.2",
     "@types/node": "^25.0.0",
-    "@types/react": "^19.2.14",
     "@typescript-eslint/eslint-plugin": "^8.58.2",
     "@typescript-eslint/parser": "^8.58.2",
     "@vitest/coverage-v8": "^4.1.2",
@@ -170,7 +114,6 @@
     "eslint-plugin-unicorn": "^64.0.0",
     "globals": "^17.5.0",
     "jiti": "^2.6.1",
-    "jsdom": "^29.0.1",
     "openai": "6.45.0",
     "prettier": "^3.5.3",
     "tsx": "^4.21.0",

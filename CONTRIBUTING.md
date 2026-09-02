@@ -27,7 +27,7 @@ To run the unit tests:
 pnpm test
 ```
 
-To run the integration tests (requires an `ABLY_API_KEY` environment variable):
+To run the integration tests (no credentials needed by default — a sandbox app is provisioned automatically; see `.claude/rules/TESTS.md` for the `VITE_ABLY_ENV` overrides that do need a key):
 
 ```shell
 pnpm run test:integration
@@ -38,9 +38,8 @@ pnpm run test:integration
 ```shell
 pnpm run build          # Build all entry points
 pnpm run build:core     # Build core entry point only
-pnpm run build:react    # Build react entry point only
 pnpm run build:vercel   # Build vercel entry point only
-pnpm run build:vercel-react  # Build vercel/react entry point only
+pnpm run build:openai   # Build openai entry point only
 ```
 
 The build uses Vite library mode producing ESM + UMD/CJS bundles with `.d.ts` declarations and sourcemaps in `dist/`.
@@ -60,7 +59,7 @@ pnpm run precommit      # Run all checks (format, lint, typecheck)
 ## Release process (Claude Code)
 
 1. Ensure tests pass in CI on `main` and all work intended for this release has landed.
-2. Run `/release patch|minor|major` in Claude Code. This creates the release branch, bumps the version in `package.json` and `src/version.ts`, invokes the `/changelog` skill to populate `CHANGELOG.md` with merged PRs since the last tag, commits, and opens the release PR. Those three files are the whole release commit.
+2. Run `/release patch|minor|major` in Claude Code. This creates the release branch, bumps the version in `package.json`, invokes the `/changelog` skill to populate `CHANGELOG.md` with merged PRs since the last tag, commits, and opens the release PR. Those two files are the whole release commit.
 3. Review the `### What's Changed` entries in [CHANGELOG.md](./CHANGELOG.md) and adjust if needed.
 4. Get the PR reviewed and merge it to `main`.
 5. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):
@@ -78,12 +77,11 @@ pnpm run precommit      # Run all checks (format, lint, typecheck)
    - Major: breaking changes requiring action from consumers.
    - Minor: new functionality or features.
    - Patch: bug fixes requiring no action from consumers.
-4. Add a version commit touching only these three files:
+4. Add a version commit touching only these two files:
    1. Update the `version` field in `package.json`.
-   2. Update the `VERSION` constant in `src/version.ts` to match.
-   3. Update `CHANGELOG.md` with customer-affecting changes since the last release.
+   2. Update `CHANGELOG.md` with customer-affecting changes since the last release.
 
-   No lockfile changes: `pnpm-lock.yaml` does not record the package's own version, and the demo apps depend on the SDK through a `link:` specifier.
+   No lockfile changes: `pnpm-lock.yaml` does not record the package's own version.
 
 5. Open a PR, get it reviewed and merged to `main`.
 6. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):

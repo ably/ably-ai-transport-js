@@ -333,6 +333,50 @@ describe('createAgentTransport', () => {
       expect(other.abortSignal.aborted).toBe(false);
     });
 
+    it('keeps a cancelled run cancelled, so a later adoption aborts on sight', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+      expect(run.abortSignal.aborted).toBe(true);
+      await run.end({ reason: 'cancelled' });
+
+      // A run is cancelled once and stays cancelled: a durable retry
+      // re-entering it by its stable id must not carry on from where the
+      // cancelled attempt stopped.
+      let onCancelCalls = 0;
+      const adopted = transport.adoptRun('run-1', undefined, {
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock hook
+        onCancel: async () => {
+          onCancelCalls += 1;
+          return true;
+        },
+      });
+      await flushMicrotasks();
+
+      expect(adopted.abortSignal.aborted).toBe(true);
+      expect(onCancelCalls).toBe(1);
+    });
+
+    it("leaves a re-entry alone when the run's onCancel vetoed the cancel", async () => {
+      const { transport, channel } = await setup();
+
+      // A vetoed cancel did not cancel the run, so it does not bind what
+      // comes after it either.
+      // eslint-disable-next-line @typescript-eslint/require-await -- mock hook
+      const run = transport.openRun({ runId: 'run-1' }, { onCancel: async () => false });
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+      expect(run.abortSignal.aborted).toBe(false);
+      await run.end({ reason: 'complete' });
+
+      const adopted = transport.adoptRun('run-1');
+      await flushMicrotasks();
+
+      expect(adopted.abortSignal.aborted).toBe(false);
+    });
+
     it('does not resurrect a cancel that arrives after the run ended', async () => {
       const { transport, channel } = await setup();
 
@@ -341,9 +385,10 @@ describe('createAgentTransport', () => {
       channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
       await flushMicrotasks();
 
-      // A durable agent re-enters a run under a stable id, so a cancel held
-      // past the terminal would abort the adoption instead of the run it was
-      // aimed at.
+      // This run ended for its own reasons and no cancel was ever honoured
+      // against it, so the late cancel addresses nothing. A durable agent
+      // re-enters a run under a stable id, and holding this cancel would abort
+      // the adoption instead of the run it was aimed at.
       const adopted = transport.adoptRun('run-1');
       await flushMicrotasks();
 

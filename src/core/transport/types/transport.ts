@@ -720,6 +720,11 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * suspend — and omit it to mint
    * a fresh one. A continuation is an `openRun` naming the run, not an
    * adopt.
+   *
+   * A run this transport already cancelled stays cancelled: adopting it
+   * aborts the new handle's signal as soon as it registers, and fires its
+   * `onCancel`. A run is cancelled once, so a retry re-entering it by its
+   * stable id must not carry on where the cancelled attempt stopped.
    * @param runId - The id of the run to adopt. Must be non-empty.
    * @param opts - Optional invocation-id pin; see {@link AdoptRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see

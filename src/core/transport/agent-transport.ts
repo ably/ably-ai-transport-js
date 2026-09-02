@@ -164,14 +164,31 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
   /** Cancels whose target run is not registered yet (a cancel can race its run's `openRun`), for `openRun` to pull. */
   private readonly _deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
   /**
-   * Run-ids this process has opened and finished with. A cancel for one of
-   * them is never buffered: the run existed here and has since ended, so
-   * holding the cancel would abort a later `adoptRun` of the same id — which
-   * is exactly how a durable agent re-enters a run under a stable id. An id
-   * whose opening publish failed is removed again, because that run never ran
-   * and its retry still needs the cancel.
+   * Run-ids this process has opened, for a cancel that arrives after the run
+   * is gone. A run that ended for any reason other than a cancel does not
+   * buffer one: holding it would abort the next `adoptRun` of the same id,
+   * which is how a durable agent re-enters a run, and no cancel was ever
+   * honoured against it. An id whose opening publish failed is removed again,
+   * because that run never ran and its retry still needs the cancel.
+   *
+   * A run that WAS cancelled is tracked separately in {@link _cancelledRunIds}
+   * and behaves the opposite way.
    */
   private readonly _seenRunIds = new Map<string, true>();
+  /**
+   * Run-ids this process honoured a cancel for. A cancel is sticky: a run is
+   * cancelled once and stays cancelled, so a later `openRun` or `adoptRun`
+   * under the same id aborts as soon as it registers rather than carrying on
+   * where the cancelled attempt stopped. Under durable execution that is the
+   * whole point — a retry re-enters a run by its stable id, and a retry of a
+   * run the user cancelled must not continue it.
+   *
+   * Only a cancel that was actually honoured lands here; one a run's
+   * `onCancel` vetoed did not cancel the run and does not bind its successors.
+   * FIFO-evicted at {@link DEFERRED_CANCEL_LIMIT}, alongside the other
+   * cancel-routing maps.
+   */
+  private readonly _cancelledRunIds = new Map<string, Ably.InboundMessage>();
   /** Steering-message transport-message-ids observed before their run was opened, keyed by run-id. */
   private readonly _preOpenSteersByRunId = new Map<string, Set<string>>();
 
@@ -462,16 +479,22 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       }
     }
 
-    // Honour a cancel that arrived before this openRun registered the run-id.
-    // Fire-and-forget: with no onCancel hook the abort happens synchronously
-    // (no await precedes it), and a hook error is surfaced inside
-    // _cancelRegistration.
+    // Honour a cancel this run is already subject to: one that arrived before
+    // this openRun registered the run-id, or one an earlier attempt of the
+    // same run already honoured. Fire-and-forget: with no onCancel hook the
+    // abort happens synchronously (no await precedes it), and a hook error is
+    // surfaced inside _cancelRegistration.
     {
       const buffered = this._deferredCancelsByRunId.get(runId);
-      if (buffered !== undefined) {
+      const sticky = this._cancelledRunIds.get(runId);
+      const pending = buffered ?? sticky;
+      if (pending !== undefined) {
         this._deferredCancelsByRunId.delete(runId);
-        this._logger.debug('AgentTransport._createRun(); honouring buffered cancel', { runId });
-        void this._cancelRegistration(registration, buffered);
+        this._logger.debug('AgentTransport._createRun(); honouring cancel at open', {
+          runId,
+          source: buffered === undefined ? 'cancelled-run' : 'buffered',
+        });
+        void this._cancelRegistration(registration, pending);
       }
     }
 
@@ -853,6 +876,9 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         }
       }
       reg.controller.abort();
+      // Sticky from here: a later re-entry of this run id aborts on sight.
+      evictOldestIfFull(this._cancelledRunIds, runId, DEFERRED_CANCEL_LIMIT);
+      this._cancelledRunIds.set(runId, msg);
       this._logger.debug('AgentTransport._cancelRegistration(); run cancelled', { runId });
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
@@ -920,9 +946,19 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       // the client learns the run-id from the ai-run-start echo, which can
       // land before the opening process registers the run (a durable
       // continuation), or a redelivered cancel can precede a re-entry.
+      if (this._cancelledRunIds.has(runId)) {
+        // Already cancelled here, and the record of that already binds any
+        // re-entry. A repeat cancel has nothing left to do.
+        this._logger.debug('AgentTransport._handleCancelMessage(); cancel for an already-cancelled run, dropping', {
+          runId,
+          serial: msg.serial,
+        });
+        return;
+      }
       if (this._seenRunIds.has(runId)) {
-        // The run ran here and has ended. Buffering now would abort the next
-        // adoption of the same run-id instead of cancelling anything.
+        // The run ran here and ended for some other reason. Buffering now
+        // would abort the next adoption of the same run-id instead of
+        // cancelling anything.
         this._logger.debug('AgentTransport._handleCancelMessage(); cancel for an already-ended run, dropping', {
           runId,
           serial: msg.serial,

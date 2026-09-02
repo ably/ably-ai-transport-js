@@ -1,26 +1,28 @@
 /**
- * useClientTools — runs client-executed tools when they appear unresolved in the
- * conversation and publishes their result so the suspended agent run resumes.
+ * useClientTools — runs client-executed tools when they appear unresolved in
+ * the conversation and publishes their result, which wakes a run that replies.
  *
  * Watches the merged thread for a `function_call` whose tool name is a client
  * tool (no server executor; see `isClientTool` in `../api/chat/tools`) that has
- * no `function_call_output` yet, on a run that has suspended. It waits for the
- * run to suspend so a resume never races the run's still-streaming output (a
- * server tool in the same turn whose result has not merged yet). It runs the
- * tool in the browser, then hands a `kind: 'item'` input carrying the
- * `function_call_output` — addressed to the function_call's transport-message-id —
- * to `resolve`, which publishes it and wakes the agent only once every call on
- * the run is answered. The merge appends the output onto that message (paired
- * with its call by `call_id` at render time), and the continuation reuses the
- * run's runId so the agent picks the result up off the channel and resumes.
+ * no `function_call_output` yet, on a run that is no longer streaming. Waiting
+ * for the run to finish is what keeps the answer from racing the run's own
+ * remaining output — a server tool in the same turn whose result has not merged
+ * yet. A run seeded from the store counts as finished: the agent writes the
+ * store as the run ends.
+ *
+ * It runs the tool in the browser, then hands a `kind: 'item'` input carrying
+ * the `function_call_output` — addressed to the function_call's
+ * transport-message-id — to `resolve`, which publishes it and wakes the agent
+ * once every call on the turn is answered. The merge appends the output onto
+ * that message (paired with its call by `call_id` at render time), and the
+ * input carries no run-id, so the agent opens a new run to reply.
  *
  * A `function_call_output` already present means the call was resolved (this
- * page load or a prior one loaded from history), so the hook skips it and does not
- * re-execute on refresh. The `handledRef` dedup guards against a re-render
- * re-running an in-flight executor. Only the initiating client runs the tool:
- * the run's triggering input (the user message named by the run-start's
- * `inputTransportMessageId`) carries its publisher's clientId, and the gate on it
- * keeps other tabs on the same channel — which see the call but lack the
+ * page load or a prior one), so the hook skips it and does not re-execute on
+ * refresh. The `handledRef` dedup guards against a re-render re-running an
+ * in-flight executor. Only the client that asked runs the tool: the nearest
+ * user message before the call carries its publisher's clientId, and the gate
+ * on it keeps other tabs on the same channel — which see the call but lack the
  * browser context (geolocation) — from answering it.
  */
 
@@ -67,17 +69,27 @@ function parseArgs(argumentsJson: string): Record<string, unknown> {
   return {};
 }
 
-/** The clientId of the user message that triggered a run, or undefined when unknown. */
-function runInitiatorClientId(messages: ThreadMessage[], run: RunSummary): string | undefined {
-  if (run.inputTransportMessageId === undefined) return undefined;
-  return messages.find((message) => message.transportMessageId === run.inputTransportMessageId)?.clientId;
+/**
+ * The clientId of the user message that prompted an assistant message: the
+ * nearest user turn before it. The thread is chronological, so that is the
+ * prompt this reply answers.
+ * @param messages - The merged thread, oldest first.
+ * @param index - The assistant message's position in it.
+ * @returns The prompting client's id, or undefined when no user turn precedes it.
+ */
+function promptingClientId(messages: ThreadMessage[], index: number): string | undefined {
+  for (let i = index - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === 'user') return message.clientId;
+  }
+  return undefined;
 }
 
 /** Options for {@link useClientTools}. */
 export interface UseClientToolsOptions {
   /** The merged thread to watch and to resolve calls against. */
   messages: ThreadMessage[];
-  /** The merged run state, for the suspend gate and initiator lookup. */
+  /** The merged run state, for the still-streaming gate. */
   runs: ReadonlyMap<string, RunSummary>;
   /** This client's id; only calls from runs it initiated are executed. */
   clientId: string | undefined;
@@ -104,22 +116,21 @@ export function useClientTools({ messages, runs, clientId, resolve, onLog, onErr
     if (messages.length === 0) return;
     const resolved = resolvedCallIds(messages);
 
-    for (const message of messages) {
+    for (const [index, message] of messages.entries()) {
       if (message.role !== 'assistant') continue;
+      if (message.runId === undefined) continue;
 
-      const run = message.runId === undefined ? undefined : runs.get(message.runId);
-      if (!run || message.runId === undefined) continue;
-      // Only run client tools for runs this client initiated — other tabs see
-      // the call but should not answer it.
-      const initiator = runInitiatorClientId(messages, run);
-      if (initiator !== undefined && initiator !== clientId) continue;
-      // Wait until the run is done streaming before executing a client tool and
-      // poking the agent to resume it. A single model turn can emit a server
-      // tool and a client tool in the same message; resuming while the run is
-      // still active races the run's own output (its server-tool result has not
-      // merged yet), and the provider rejects the resume for a missing output.
-      // The run flips to suspended once the agent pauses it awaiting this input.
-      if (run.status !== 'suspended') continue;
+      // Only the client that asked runs the tool — other tabs see the call but
+      // should not answer it.
+      const prompter = promptingClientId(messages, index);
+      if (prompter !== undefined && prompter !== clientId) continue;
+      // Wait until the run is done streaming. A single model turn can emit a
+      // server tool and a client tool in the same message, and answering while
+      // the run still streams races its own output (the server tool's result
+      // has not merged yet), which the provider rejects as a missing output. A
+      // run absent from `runs` came from the store, and the agent writes the
+      // store as a run ends — so it is finished too.
+      if (runs.get(message.runId)?.status === 'active') continue;
 
       for (const item of message.items) {
         if (item.type !== 'function_call') continue;
@@ -129,7 +140,7 @@ export function useClientTools({ messages, runs, clientId, resolve, onLog, onErr
 
         // Marked before the async work so a re-render cannot start a second
         // executor for the same call. A failed publish un-marks it: the
-        // resolution never reached the wire, so the run stays suspended and
+        // resolution never reached the wire, so the call is still unanswered and
         // the next render must be free to try again.
         const callId = item.call_id;
         handledRef.current.add(callId);

@@ -33,7 +33,7 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
     title: 'Server-side tool call',
     prompt: `what's the weather in Tokyo?`,
     blurb:
-      'The model calls the getWeather tool, the agent runs it server-side and streams the result back as a weather card, then the model replies — all within one run, no suspend.',
+      'The model calls the getWeather tool, the agent runs it server-side and streams the result back as a weather card, then the model replies — all within one run.',
   },
   {
     id: 'client-weather',
@@ -41,7 +41,7 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
     title: 'Client-side tool call',
     prompt: 'where am I?',
     blurb:
-      'The model calls getLocation, which has no server executor: the run suspends, the browser resolves geolocation and publishes the result, and a continuation resumes the same run so the model can reply.',
+      'The model calls getLocation, which has no server executor: the run ends there, the browser resolves geolocation and publishes the result, and that input wakes a new run so the model can reply.',
   },
   {
     id: 'approval-forecast',
@@ -56,7 +56,7 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
       </>
     ),
     blurb:
-      'The model calls getWeatherForecast; the run suspends and shows an approval card. Approve and the agent runs the tool on resume; Deny and it skips it — either way the same run resumes.',
+      'The model calls getWeatherForecast; the run ends and shows an approval card. Approve and the next run executes the tool; Deny and it skips it — either way your answer wakes the run that replies.',
   },
   {
     id: 'multi-tab',

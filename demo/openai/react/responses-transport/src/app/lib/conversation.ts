@@ -14,15 +14,19 @@
  * {@link createThreadMerge} the frontend renders with — so the messages the
  * store ends up holding are the ones a client would have built from the wire.
  *
- * Two writes per turn. The first lands as the run opens, so a page loading
- * mid-run sees the prompt that started it. The second lands when the run is
- * over and carries the assistant's messages.
+ * Two writes per turn. {@link Conversation.save} is called as the run opens, so
+ * a page loading mid-run sees the prompt that started it, and again when the
+ * turn is over, by which point the assistant's messages are in.
+ *
+ * Messages are all it stores. Run state is not conversation content: this demo
+ * has no suspended runs to remember, because a turn that needs the client ends
+ * and the client's answer wakes a new one.
  */
 
 import type { LocatedInput, WireMeta } from '@ably/ai-transport';
 import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
-import { createThreadMerge, type RunSummary, type ThreadMessage } from './merge-thread';
+import { createThreadMerge, type ThreadMessage } from './merge-thread';
 import { loadConversation, saveConversation } from './message-store';
 import type { OpenAIInput } from './openai-thread';
 
@@ -66,14 +70,7 @@ export interface Conversation {
    */
   record(events: OpenAIOutput[]): void;
   /**
-   * Record how the run ended, so a hydrating client knows its status without
-   * reading the channel.
-   * @param status - The run's lifecycle status.
-   */
-  noteRun(status: RunSummary['status']): void;
-  /**
-   * Write the conversation to the store. Called as the run opens and again
-   * when it is over.
+   * Write the conversation to the store, replacing what is there.
    * @returns A promise that resolves once the write is durable.
    */
   save(): Promise<void>;
@@ -99,8 +96,6 @@ export const openConversation = (
   // resolution addressed to the same message joins on.
   merge.apply({ kind: 'message', meta: located.meta, inputs: located.inputs, outputs: [] });
 
-  const runs = new Map<string, RunSummary>(loadConversation(channelName).runs);
-
   return {
     messages: () => merge.messages(),
     record(events) {
@@ -112,11 +107,8 @@ export const openConversation = (
         outputs: events,
       });
     },
-    noteRun(status) {
-      runs.set(runId, { status });
-    },
     async save() {
-      await saveConversation(channelName, { messages: merge.messages(), runs: [...runs] });
+      await saveConversation(channelName, { messages: merge.messages() });
     },
   };
 };

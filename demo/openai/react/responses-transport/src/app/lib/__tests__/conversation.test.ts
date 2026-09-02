@@ -70,7 +70,7 @@ const itemAdded = (item: Responses.ResponseOutputItem, outputIndex = 0): OpenAIO
 
 describe('openConversation', () => {
   it('starts from the store with the triggering input applied', async () => {
-    await saveConversation('ai:conv-seed', { messages: [storedReply('cm-a0', 'earlier reply')], runs: [] });
+    await saveConversation('ai:conv-seed', { messages: [storedReply('cm-a0', 'earlier reply')] });
 
     const conversation = openConversation('ai:conv-seed', 'run-1', locatedPrompt('cm-u1', 'and now?'));
 
@@ -126,28 +126,23 @@ describe('openConversation', () => {
     expect(conversation.messages()).toHaveLength(1);
   });
 
-  it('writes the conversation and the run status to the store', async () => {
+  it('writes the conversation to the store', async () => {
     const conversation = openConversation('ai:conv-save', 'run-1', locatedPrompt('cm-u1', 'hello'));
-    conversation.noteRun('complete');
 
     await conversation.save();
 
-    const stored = loadConversation('ai:conv-save');
-    expect(stored.messages.map((message) => message.transportMessageId)).toEqual(['cm-u1']);
-    expect(stored.runs).toEqual([['run-1', { status: 'complete' }]]);
+    expect(loadConversation('ai:conv-save').messages.map((message) => message.transportMessageId)).toEqual(['cm-u1']);
   });
 
-  it('keeps the runs an earlier turn stored', async () => {
-    await saveConversation('ai:conv-runs', { messages: [], runs: [['run-0', { status: 'complete' }]] });
-    const conversation = openConversation('ai:conv-runs', 'run-1', locatedPrompt('cm-u1', 'hello'));
-    conversation.noteRun('suspended');
+  it('stamps the run on what it records, so a client knows which runs are covered', async () => {
+    const conversation = openConversation('ai:conv-run-stamp', 'run-1', locatedPrompt('cm-u1', 'hello'));
+    conversation.record([itemAdded({ id: 'i-a1', type: 'reasoning', summary: [] })]);
 
     await conversation.save();
 
-    expect(loadConversation('ai:conv-runs').runs).toEqual([
-      ['run-0', { status: 'complete' }],
-      ['run-1', { status: 'suspended' }],
-    ]);
+    const stored = loadConversation('ai:conv-run-stamp');
+    // The prompt is an input and carries no run; the recorded output does.
+    expect(stored.messages.map((message) => message.runId)).toEqual([undefined, 'run-1']);
   });
 
   it('leaves the store untouched until save is called', async () => {

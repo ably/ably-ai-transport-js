@@ -506,14 +506,14 @@ describe('createThreadMerge().seed', () => {
         { transportMessageId: 'cm-u1', role: 'user', items: [{ type: 'message', role: 'user', content: [] }] },
         { transportMessageId: 'cm-a1', role: 'assistant', items: [messageItem('i-a1')], runId: 'r1' },
       ],
-      runs: [['r1', { status: 'complete' }]],
     });
 
     expect(merge.messages().map((m) => m.transportMessageId)).toEqual(['cm-u1', 'cm-a1']);
     expect(merge.messages()[1]?.items).toEqual([messageItem('i-a1')]);
-    expect([...merge.runs()]).toEqual([['r1', { status: 'complete' }]]);
-    // The seeded run has ended, so the thread is idle.
-    expect(merge.activeRunId()).toBe('r1');
+    // Seeding carries no run state: the runs a seeded thread came from have
+    // ended, and `runs()` reports what this merge has seen happen since.
+    expect([...merge.runs()]).toEqual([]);
+    expect(merge.activeRunId()).toBeUndefined();
     expect(merge.isRunning()).toBe(false);
   });
 
@@ -528,7 +528,6 @@ describe('createThreadMerge().seed', () => {
           items: [{ ...messageItem('i-a1'), content: [{ type: 'output_text', text: 'Hello', annotations: [] }] }],
         },
       ],
-      runs: [],
     });
 
     merge.apply(outputEvent('cm-a1', [textDelta('i-a1', 0, ' there')]));
@@ -540,7 +539,6 @@ describe('createThreadMerge().seed', () => {
     const merge = createThreadMerge();
     merge.seed({
       messages: [{ transportMessageId: 'cm-a1', role: 'assistant', items: [messageItem('i-a1')] }],
-      runs: [],
     });
 
     merge.apply(outputEvent('cm-a1', [itemAdded(reasoningItem('i-r1'), 1)]));
@@ -555,7 +553,6 @@ describe('createThreadMerge().seed', () => {
 
     merge.seed({
       messages: [{ transportMessageId: 'cm-t1', role: 'assistant', items: [output] }],
-      runs: [],
     });
 
     expect(merge.messages()[0]?.items).toEqual([output]);
@@ -573,7 +570,6 @@ describe('createThreadMerge().seed', () => {
           toolCallStates: { c1: { approval: 'approved' } },
         },
       ],
-      runs: [],
     });
 
     expect(merge.messages()[0]?.toolCallStates).toEqual({ c1: { approval: 'approved' } });

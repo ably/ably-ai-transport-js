@@ -10,12 +10,12 @@
  * `output_item.done` (function_call, full args): the agentic loop runs the tool
  * and calls the mock again, now with the tool result in the input, so the second
  * turn returns a text reply. A location prompt emits the client-executed
- * `getLocation` call (the run suspends until the browser answers) and a forecast
- * prompt emits the approval-gated `getWeatherForecast` call (the run suspends for
+ * `getLocation` call (the run ends and the browser answers) and a forecast
+ * prompt emits the approval-gated `getWeatherForecast` call (the run ends for
  * the user's decision) — each replies with a sentence on the loop's second turn,
  * a forecast prompt acknowledging instead when the call was denied. A forecast
  * prompt naming two places ("Paris and London") emits one gated call per place, so
- * a single turn suspends on two decisions. A
+ * a single turn ends on two decisions. A
  * "think"/"reason" prompt streams a reasoning item
  * (its summary) first — ahead of a text reply, or ahead of the getWeather call
  * when the prompt is also about weather — which is the case that exercises the
@@ -139,7 +139,7 @@ function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
   if (word) return { kind: 'text', text: word[1], slow: false };
 
   // Forecast (approval-gated server tool): call getWeatherForecast for each place
-  // named, then suspend for the user's decisions. A prompt naming two places emits
+  // named, then end for the user's decisions. A prompt naming two places emits
   // two gated calls in one turn, and the client only resumes the run once both are
   // decided. On the loop's second turn the outputs are present — the tool's JSON
   // forecast for each approved call (the ForecastCard renders it), or a rejection
@@ -162,7 +162,7 @@ function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
     };
   }
 
-  // Location (client-executed tool): call getLocation first; the run suspends
+  // Location (client-executed tool): call getLocation first; the run ends
   // while the browser resolves geolocation. Once the client's result is in the
   // input (the loop's second turn), reply with a sentence.
   if (/\b(location|where\s+am\s+i|where\s+i\s+am)\b/i.test(prompt)) {

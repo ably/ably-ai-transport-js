@@ -8,14 +8,17 @@
  * Nothing pages channel history — the store is the whole record, and the only
  * other source is the live subscription.
  *
- * Live events for a run the store already holds are skipped. The agent stores
- * a run when it is over, so those events are accounted for; merging them again
- * would build a second copy of the same reply under the wire's own
- * transport-message-id. Everything else merges on top, and events that arrive
- * while the store read is still in flight are buffered and merged after, so
- * the merge's input stays in chronological order — which is what lets a
- * mid-run reload (the stored prompt plus a live continuation) come out as one
- * conversation.
+ * Live events for a run the store already covers are skipped. Every run the
+ * store holds has ended — the agent writes it as the run ends, and no run in
+ * this demo suspends — so those events are already merged, and merging them
+ * again would build a second copy of the reply under the wire's own
+ * transport-message-id. Which runs those are comes off the stored messages
+ * themselves, each of which carries the run that produced it.
+ *
+ * Everything else merges on top, and events that arrive while the store read
+ * is still in flight are buffered and merged after, so the merge's input stays
+ * in chronological order — which is what lets a mid-run reload (the stored
+ * prompt plus a live continuation) come out as one conversation.
  *
  * All merging goes through `createThreadMerge` (see `../lib/merge-thread.ts`);
  * this hook only owns the ordering and the React state.
@@ -83,7 +86,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
   const mergeRef = useRef<ThreadMerge>(createThreadMerge());
   const bufferRef = useRef<TransportEvent<OpenAIInput, OpenAIOutput>[]>([]);
   const hydratedRef = useRef(false);
-  /** Runs the store already accounts for, so their live events are not merged twice. */
+  /** Runs the store already covers, so their live events are not merged twice. */
   const storedRunsRef = useRef(new Set<string>());
   const onMergeErrorRef = useRef(options.onMergeError);
   useEffect(() => {
@@ -104,9 +107,8 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
   }, []);
 
   /**
-   * Whether an event belongs to a run the store already holds. The agent
-   * stores a run when it is over, so anything under such a run-id is already
-   * merged; merging it again would build a second copy of the same reply.
+   * Whether an event belongs to a run the store already covers. Merging it
+   * again would build a second copy of the same reply.
    */
   const isStoredRun = useCallback((event: TransportEvent<OpenAIInput, OpenAIOutput>): boolean => {
     const runId = event.kind === 'message' ? event.meta.runId : event.event.runId;
@@ -164,8 +166,14 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
 
       // The store's messages are already merged, so they are adopted rather
       // than replayed.
-      mergeRef.current.seed({ messages: seed.messages ?? [], runs: seed.runs ?? [] });
-      storedRunsRef.current = new Set((seed.runs ?? []).map(([runId]) => runId));
+      const stored = seed.messages ?? [];
+      mergeRef.current.seed({ messages: stored });
+      // Every run the stored messages name has ended, so its output is
+      // accounted for. An input carries no run-id, so only the agent's own
+      // messages contribute here.
+      storedRunsRef.current = new Set(
+        stored.flatMap((message) => (message.runId === undefined ? [] : [message.runId])),
+      );
       // The buffer started at this client's attach point, so it can hold events
       // of a run the store already covers. Those are already merged.
       for (const event of bufferRef.current) {

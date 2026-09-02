@@ -4,10 +4,16 @@
  *
  * One model turn can emit several calls that each need the client: two
  * approval-gated calls ("the forecast for Paris and London"), or a gated call
- * alongside a client-executed one. The agent's model input must carry a matching
- * output for every open `function_call`, so waking the run after the first answer
- * makes the provider reject the resumed request. The resolution itself always
+ * alongside a client-executed one. The agent's model input must carry a
+ * matching output for every open `function_call`, so waking after the first
+ * answer makes the provider reject the request. The resolution itself always
  * publishes immediately — only the wake POST waits for the last answer.
+ *
+ * A resolution carries no run-id. The run that asked for the tool has ended,
+ * and the answer wakes a NEW run that replies — nothing suspends and nothing
+ * resumes. It does carry the `transport-message-id` of the assistant message
+ * holding the call, because that is domain addressing: it is how the merge
+ * amends that message rather than starting another one.
  *
  * A client's own resolution reaches the merge only as the ordinary channel
  * delivery (the transport emits nothing locally on publish), so the merged
@@ -20,8 +26,9 @@
  *
  * A call counts as answered by {@link unansweredCalls}: it has a
  * `function_call_output`, or its approval is `approved` (the agent runs those
- * server-side on resume). A denial's resolution publishes a rejection
- * `function_call_output` alongside the decision, so the resolved check covers it.
+ * server-side on the run the answer wakes). A denial's resolution publishes a
+ * rejection `function_call_output` alongside the decision, so the resolved
+ * check covers it.
  */
 
 import { useCallback, useRef } from 'react';
@@ -36,7 +43,7 @@ import type { ThreadMessage } from '../lib/merge-thread';
 export interface ToolResolution {
   /** The transport-message-id of the assistant message holding the `function_call` being answered. */
   transportMessageId: string;
-  /** The run the call belongs to — the continuation the wake resumes. */
+  /** The run the call belongs to. Read only to decide whether every call on it is answered; the publish carries no run-id. */
   runId: string;
   /** The `call_id` this resolution answers. */
   callId: string;
@@ -96,10 +103,10 @@ export function useToolResolution(options: UseToolResolutionOptions) {
       let eventId: string | undefined;
       try {
         for (const input of inputs) {
-          // Address the resolution at the message holding the call, under the
-          // suspended run's id, so the merge amends that message and the agent's
-          // continuation resumes the right run.
-          const result = await transport.publishInput(input, { transportMessageId, runId });
+          // Address the resolution at the message holding the call, so the
+          // merge amends that message. No run-id: the run that asked has
+          // ended, and this input wakes a new one.
+          const result = await transport.publishInput(input, { transportMessageId });
           eventId = result.eventId;
         }
       } catch (error) {

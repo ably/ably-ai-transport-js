@@ -3,16 +3,16 @@
  *
  * - `getWeather` — server-executed. The agent runs it inside its agentic loop
  *   (see `agent-stream.ts`) and appends the result as a `function_call_output`
- *   item; the run does not suspend.
- * - `getLocation` — client-executed. There is no server executor: the run
- *   suspends after the call, the client runs browser geolocation and publishes
- *   the result as a `function_call_output` item (a `kind: 'item'` input), and
- *   a continuation resumes the run.
+ *   item; the run keeps going.
+ * - `getLocation` — client-executed. There is no server executor: the run ends
+ *   after the call, the client runs browser geolocation and publishes the
+ *   result as a `function_call_output` item (a `kind: 'item'` input), and that
+ *   input wakes a new run.
  * - `getWeatherForecast` — server-executed but gated on user approval. The run
- *   suspends after the call and the agent publishes an approval request; the
- *   client answers with a `kind: 'approval'` input. On approval the agent runs
- *   the tool server-side on resume; on denial the client authors the rejection
- *   output and the agent resumes without running it.
+ *   ends after the call, with the agent's approval request on the call's own
+ *   message; the client answers with a `kind: 'approval'` input. On approval
+ *   the next run executes the tool server-side; on denial the client authors
+ *   the rejection output and the next run replies without running it.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';

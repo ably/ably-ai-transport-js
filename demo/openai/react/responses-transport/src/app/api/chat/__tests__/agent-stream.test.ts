@@ -134,7 +134,7 @@ describe('runAgentLoop', () => {
     expect(types.filter((t) => t === 'function_call')).toHaveLength(1);
   });
 
-  it('emits a gated call and its approval request on ONE message, then suspends', async () => {
+  it('emits a gated call and its approval request on ONE message, then ends the run', async () => {
     const { run, messages, record } = makeRun(new AbortController().signal);
     const result = await runAgentLoop({
       run,
@@ -143,8 +143,9 @@ describe('runAgentLoop', () => {
       record,
     });
 
-    // The gated call needs a human decision, so the run suspends after one turn.
-    expect(result.reason).toBe('suspend');
+    // The gated call needs a human decision, so this run is done after one
+    // turn — the answer wakes a new one.
+    expect(result.reason).toBe('complete');
     expect(messages).toHaveLength(1);
     const events = messages[0] ?? [];
 
@@ -170,7 +171,7 @@ describe('runAgentLoop', () => {
     }
   });
 
-  it('emits one gated call per place when a turn asks about two, and suspends once', async () => {
+  it('emits one gated call per place when a turn asks about two, on one message', async () => {
     const { run, messages, record } = makeRun(new AbortController().signal);
     const result = await runAgentLoop({
       run,
@@ -179,10 +180,10 @@ describe('runAgentLoop', () => {
       record,
     });
 
-    // Both calls ride one model turn, so the run suspends once holding two
+    // Both calls ride one model turn, so the run ends once holding two
     // undecided calls — the case where resuming after a single approval would
     // send the model a function_call with no output.
-    expect(result.reason).toBe('suspend');
+    expect(result.reason).toBe('complete');
     expect(messages).toHaveLength(1);
     const events = messages[0] ?? [];
     const calls = events.filter((e) => e.type === 'response.output_item.added' && e.item.type === 'function_call');

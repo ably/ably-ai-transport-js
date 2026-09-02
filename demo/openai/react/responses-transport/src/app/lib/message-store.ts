@@ -22,8 +22,9 @@
 import type { ThreadSnapshot } from './merge-thread';
 
 /**
- * One conversation as the store holds it — the merged thread and its runs. No
- * watermark: a client reads the store and takes everything else from its live
+ * One conversation as the store holds it — the merged thread, and nothing
+ * else. No run state, because a run is not conversation content; no watermark,
+ * because a client reads the store and takes everything else from its live
  * subscription, so there is no history window to bound.
  */
 export type StoredConversation = ThreadSnapshot;
@@ -40,7 +41,7 @@ const store = new Map<string, StoredConversation>();
  * Modelled as async — it resolves once the write is durable, as a real store
  * would.
  * @param channelName - The conversation key (the channel name).
- * @param conversation - The merged thread and its runs.
+ * @param conversation - The merged thread.
  * @returns A promise that resolves once the conversation is stored.
  */
 export async function saveConversation(channelName: string, conversation: StoredConversation): Promise<void> {
@@ -51,8 +52,8 @@ export async function saveConversation(channelName: string, conversation: Stored
  * Load the stored conversation for a channel, or an empty one when none is
  * stored.
  * @param channelName - The conversation key (the channel name).
- * @returns The merged thread and its runs.
+ * @returns The merged thread.
  */
 export function loadConversation(channelName: string): StoredConversation {
-  return store.get(channelName) ?? { messages: [], runs: [] };
+  return store.get(channelName) ?? { messages: [] };
 }

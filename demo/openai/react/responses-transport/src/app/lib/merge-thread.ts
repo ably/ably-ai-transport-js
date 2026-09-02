@@ -76,14 +76,16 @@ export interface RunSummary {
 }
 
 /**
- * A merged thread as a store holds it — what {@link ThreadMerge.seed} takes
- * and what {@link ThreadMerge.messages} and {@link ThreadMerge.runs} produce.
+ * A merged thread as a store holds it — what {@link ThreadMerge.seed} takes and
+ * what {@link ThreadMerge.messages} produces.
+ *
+ * Messages only. Run state is not part of a conversation: it belongs to the
+ * runs the merge observes live, and a run this thread was seeded from is over
+ * by the time it is stored.
  */
 export interface ThreadSnapshot {
   /** The merged messages, oldest first. */
   messages: ThreadMessage[];
-  /** Every run's merged state, in first-seen order, as `[runId, summary]` pairs. */
-  runs: [string, RunSummary][];
 }
 
 /**
@@ -101,7 +103,10 @@ export interface ThreadMerge {
    * Call it once, before any {@link apply}. Every stored message becomes an
    * addressable bucket again — its output items keep their ids, so a later
    * delta or a tool resolution lands on the message it belongs to.
-   * @param state - The stored thread: its messages (oldest first) and its runs (in first-seen order).
+   *
+   * It seeds no run state. The runs a seeded thread came from have ended, and
+   * {@link runs} reports what this merge has seen happen since.
+   * @param state - The stored thread's messages, oldest first.
    */
   seed(state: ThreadSnapshot): void;
   /** Merge one classified transport event into the thread. Decoded inputs are passthrough JSON and narrow to the demo's union at this boundary (an unrecognised body is skipped). Throws when an event addresses an item the merge has never seen — a decode-sequence bug worth surfacing, not hiding. */
@@ -485,11 +490,6 @@ export const createThreadMerge = (): ThreadMerge => {
         };
         mergeById.set(message.transportMessageId, merge);
         merges.push(merge);
-      }
-      for (const [runId, summary] of state.runs) {
-        if (!runById.has(runId)) runOrder.push(runId);
-        runById.set(runId, summary);
-        lastRunId = runId;
       }
     },
     apply(event) {

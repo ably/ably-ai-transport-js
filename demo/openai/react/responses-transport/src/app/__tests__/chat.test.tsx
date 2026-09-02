@@ -211,7 +211,7 @@ describe('<Chat>', () => {
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
         String(url).includes('/api/messages')
-          ? Promise.resolve(Response.json({ messages: [], runs: [] }))
+          ? Promise.resolve(Response.json({ messages: [] }))
           : Promise.resolve(Response.json({ runId: 'run-1' })),
       ),
     );
@@ -280,7 +280,7 @@ describe('<Chat>', () => {
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
         String(url).includes('/api/messages')
-          ? Promise.resolve(Response.json({ messages: storedMessages, runs: [] }))
+          ? Promise.resolve(Response.json({ messages: storedMessages }))
           : Promise.resolve(Response.json({ runId: 'run-1' })),
       ),
     );
@@ -308,7 +308,7 @@ describe('<Chat>', () => {
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
         String(url).includes('/api/messages')
-          ? Promise.resolve(Response.json({ messages: storedMessages, runs: [['run-done', { status: 'complete' }]] }))
+          ? Promise.resolve(Response.json({ messages: storedMessages }))
           : Promise.resolve(Response.json({ runId: 'run-1' })),
       ),
     );
@@ -322,6 +322,32 @@ describe('<Chat>', () => {
     emit(assistantTurnEvent('cm-wire-a1', 'run-done', 'stored reply'));
 
     expect(screen.getAllByText('stored reply')).toHaveLength(1);
+  });
+
+  it('merges live events of a run the store has never seen', async () => {
+    const storedMessages = [
+      {
+        transportMessageId: 'cm-a1',
+        role: 'assistant' as const,
+        runId: 'run-done',
+        items: [messageItem('i-a1', 'stored reply')],
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: RequestInfo | URL) =>
+        String(url).includes('/api/messages')
+          ? Promise.resolve(Response.json({ messages: storedMessages }))
+          : Promise.resolve(Response.json({ runId: 'run-1' })),
+      ),
+    );
+
+    await renderChat();
+
+    // A different run: the store accounts for nothing of it, so it merges.
+    emit(assistantTurnEvent('cm-a2', 'run-next', 'the next reply'));
+
+    expect(screen.queryByText('the next reply')).not.toBeNull();
   });
 
   it('shows Send (not Stop) when the latest run is suspended', async () => {

@@ -1,6 +1,6 @@
 /**
  * The agent's agentic loop over OpenAI `/responses`, publishing each unit of
- * work as its own message and suspending the run when a tool call needs the
+ * work as its own message and ending the run when a tool call needs the
  * client.
  *
  * The loop itself is the ordinary shape:
@@ -13,12 +13,14 @@
  *
  * Two things this demo exists to show are what the rest is for. Not every tool
  * can be run here — `getLocation` needs the browser and `getWeatherForecast`
- * needs a human — so step 4 splits, and a call the server cannot resolve
- * suspends the run instead of looping. And every unit of work is published
+ * needs a human — so step 4 splits, and a call the server cannot resolve ends
+ * the run instead of looping. The client's answer wakes a new run rather than
+ * resuming this one: there is no suspended state to hold, and a fresh run is
+ * the same thing with less to go wrong. And every unit of work is published
  * under its own `run.pipe`, because that is what gives each one a distinct
  * message on the channel.
  *
- * Server-executed tools (getWeather) don't suspend: the agent calls
+ * Server-executed tools (getWeather) keep the run going: the agent calls
  * `/responses`, and if the model emits function calls it runs them, appends the
  * model's output items (reasoning items and the calls, in order) followed by the
  * tool outputs to the model input, and calls `/responses` again — looping until
@@ -27,15 +29,15 @@
  * reasoning that preceded a function_call to travel with it on the next request.
  *
  * A client-executed tool (getLocation) or an approval-gated tool
- * (getWeatherForecast) cannot be resolved here, so the loop suspends the run:
- * for a gated call it emits a `tool-approval-request` on the call's own message
- * (the tail of the model turn's pipe) before suspending. The client
- * resolves the call — running the browser tool and publishing its
- * `function_call_output`, or answering the approval — then sends a continuation that resumes this run
- * under the same runId. On resume the loop re-hydrates the conversation: a
- * client `function_call_output` (or a denial's rejection output) is already
- * merged into the model input, and an approved-but-unexecuted gated call is run
- * server-side here before the next model turn.
+ * (getWeatherForecast) cannot be resolved here, so the run ends: for a gated
+ * call it emits a `tool-approval-request` on the call's own message (the tail
+ * of the model turn's pipe) first. The client resolves the call — running the
+ * browser tool and publishing its `function_call_output`, or answering the
+ * approval — and that input wakes a NEW run, which answers. On that run the
+ * conversation already carries the resolution: a client `function_call_output`
+ * (or a denial's rejection output) is in the model input, and an
+ * approved-but-unexecuted gated call is run server-side before the first model
+ * turn.
  *
  * Each unit of work is published under its own `run.pipe`, so each gets a fresh
  * `transport-message-id` and a consumer's merge keys it as a distinct
@@ -96,13 +98,13 @@ export interface AgentLoopRequest {
 }
 
 /**
- * How the loop ended. For the `suspend` arm a client-executed or approval-gated
- * tool paused the run awaiting the client, and the route maps it onto
- * `run.suspend()`. Every other arm is a {@link RunEndParams} the route forwards
- * to `run.end()` directly: `complete` when the model produced a final reply, or
- * `error` when a pipe failed, carrying the failure as an `Ably.ErrorInfo`.
+ * How the loop ended — a {@link RunEndParams} the route forwards to `run.end()`
+ * directly. `complete` covers both a final reply and a turn that stopped
+ * because a tool needs the client: either way this run is over, and the
+ * client's resolution wakes a new one. `error` carries a failed pipe's failure
+ * as an `Ably.ErrorInfo`.
  */
-export type AgentLoopOutcome = { reason: 'suspend' } | RunEndParams;
+export type AgentLoopOutcome = RunEndParams;
 
 /** What one model `/responses` turn produced, collected as its stream drains. */
 interface ModelTurn {
@@ -214,10 +216,11 @@ function runToolCalls(calls: Responses.ResponseFunctionToolCall[]): {
 
 /**
  * Run the agentic loop, publishing each unit of work under its own `run.pipe`.
- * Runs any server tool inline and continues; suspends the run when a
+ * Runs any server tool inline and continues; ends the run when a
  * client-executed or approval-gated tool needs the client, emitting a
- * `tool-approval-request` on a gated call's own message first. On resume it
- * completes an approved gated call server-side before continuing.
+ * `tool-approval-request` on a gated call's own message first. On the run the
+ * client's answer wakes, it completes an approved gated call server-side
+ * before the first model turn.
  * @param req - The run handle, initial conversation input, and hydrated messages.
  * @returns The loop's {@link AgentLoopOutcome}.
  */
@@ -279,11 +282,12 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
     }
 
     // A gated call needs a human decision; a client call runs in the browser.
-    // Either way the run can't proceed here — the gated calls' approval requests
-    // already rode the model turn's message, so suspend and let a continuation
-    // resume once the client answers.
+    // Either way this run is done: it ends here, and the resolution the client
+    // publishes wakes a new run that answers. The gated calls' approval
+    // requests already rode the model turn's message, so nothing is left to
+    // say on the wire.
     if (gatedCalls.length > 0 || clientCalls.length > 0) {
-      return terminalError ? { reason: 'error', error: terminalError } : { reason: 'suspend' };
+      return terminalError ? { reason: 'error', error: terminalError } : { reason: 'complete' };
     }
 
     // Only server tools this turn — loop for the next model turn.

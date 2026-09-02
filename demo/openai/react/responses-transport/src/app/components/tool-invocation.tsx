@@ -84,7 +84,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
     return <ToolDeniedCard name={part.name} />;
   }
 
-  // No output yet — the call is still running (a server tool) or suspended
+  // No output yet — the call is still running (a server tool) or waiting
   // awaiting a client result (a client tool).
   if (part.output === undefined) {
     return (

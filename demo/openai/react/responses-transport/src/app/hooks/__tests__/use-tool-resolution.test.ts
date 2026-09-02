@@ -94,7 +94,7 @@ describe('useToolResolution', () => {
     expect(onWake).toHaveBeenCalledTimes(1);
   });
 
-  it('publishes every input of a resolution against the answered message and its run', async () => {
+  it('publishes every input of a resolution against the answered message, with no run-id', async () => {
     const { resolve, publishInput } = setup(['c1']);
     const decision = approval('c1');
     const rejection: OpenAIInput = {
@@ -102,8 +102,9 @@ describe('useToolResolution', () => {
       payload: { type: 'function_call_output', call_id: 'c1', output: '{"error":"denied"}' },
     };
     await resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [decision, rejection] });
-    expect(publishInput).toHaveBeenNthCalledWith(1, decision, { transportMessageId: 'cm-0', runId: 'r1' });
-    expect(publishInput).toHaveBeenNthCalledWith(2, rejection, { transportMessageId: 'cm-0', runId: 'r1' });
+    // No run-id: the run that asked has ended, and this input wakes a new one.
+    expect(publishInput).toHaveBeenNthCalledWith(1, decision, { transportMessageId: 'cm-0' });
+    expect(publishInput).toHaveBeenNthCalledWith(2, rejection, { transportMessageId: 'cm-0' });
   });
 
   it('does nothing without a transport', async () => {

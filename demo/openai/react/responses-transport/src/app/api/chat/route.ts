@@ -6,38 +6,38 @@
  * from `@ably/ai-transport`) parameterized by the demo's typed Responses codec instance;
  * there is no OpenAI-specific transport layer. The wake body carries the
  * channel name and the triggering input's `eventId` (matched on the channel
- * via `locateInput`); a continuation input carries the run-id header of the
- * run it resumes, so the trigger alone decides whether the open is a fresh
- * `ai-run-start` or an `ai-run-resume`. The conversation for the model comes from
- * `getExistingMessages`, which pages the transport's history to exhaustion and
- * merges it through the same merge helper the frontend renders with, then
- * flattens into the `/responses` `input` array by `toResponsesInput`.
+ * via `locateInput`). No input carries a run-id, so every open is a fresh
+ * `ai-run-start` — a tool answer opens a new run rather than resuming the one
+ * that asked. The conversation for the model comes from the store plus that
+ * one input (`lib/conversation.ts`), flattened into the `/responses` `input`
+ * array by `toResponsesInput`. **No channel history is paged**, here or in the
+ * client: the store is the conversation, and the input `locateInput` returns
+ * is everything that has happened since the last write.
  *
- * That same page is what populates the demo's conversation store
- * (`lib/message-store.ts`), which clients hydrate from over
- * `GET /api/messages`. The server owns every write, so a client cannot put
- * anything in the store the agent did not produce, and the read path touches
- * no Ably connection. The write covers this invocation's trigger and every
- * earlier run; the run about to start is what a hydrating client walks the
- * channel for.
+ * The route owns both writes to the store (`lib/message-store.ts`), which
+ * clients hydrate from over `GET /api/messages` — a read that touches no Ably
+ * connection. The prompt lands as the run opens, so a page loading mid-run
+ * sees what started the reply it is watching; the assistant's messages land
+ * when the run is over, built from what the run itself published rather than
+ * from anything read back.
  *
  * Tools run inside the agentic loop (`runAgentLoop`). A server-executed tool
- * does not suspend the run — the loop runs it, publishes its
+ * keeps the run going — the loop runs it, publishes its
  * `function_call_output`, and continues `/responses` until the model produces a
- * final reply. A client-executed or approval-gated tool suspends the run: the
- * loop returns a `suspend` outcome and the route calls `run.suspend()`; a later
- * continuation (the client's `function_call_output` item or approval) resumes
- * the run under the same runId, re-entering this route. The loop publishes each unit of work under
- * its own `run.pipe`, so a run that calls a tool produces several messages (the
- * model turn, the tool outputs, the final turn). Each pipe's stream goes to the
- * run as-is: the codec's descriptor table curates the wire, dropping the framing
- * events no consumer reads and throwing on any genuinely unexpected event.
+ * final reply. A client-executed or approval-gated tool ends it: there is
+ * nothing more this process can do, and the resolution the client publishes
+ * wakes a NEW run that answers. Nothing suspends and nothing resumes, which is
+ * one less state for a hydrating client to reason about. The loop publishes
+ * each unit of work under its own `run.pipe`, so a run that calls a tool
+ * produces several messages (the model turn, the tool outputs, the final turn).
+ * Each pipe's stream goes to the run as-is: the codec's descriptor table
+ * curates the wire, dropping the framing events no consumer reads and throwing
+ * on any genuinely unexpected event.
  *
- * Run outcome: `runAgentLoop` returns an {@link AgentLoopOutcome}. A cancel
- * (client cancel or request abort) ends the run `cancelled`; the `suspend` arm
- * maps onto `run.suspend()`; every other arm is a `RunEndParams` (the error
- * arm already carrying the wrapped `Ably.ErrorInfo`), forwarded to `run.end()`
- * directly.
+ * Run outcome: `runAgentLoop` returns a `RunEndParams`, forwarded to
+ * `run.end()` directly (the error arm already carrying the wrapped
+ * `Ably.ErrorInfo`). A cancel — a client cancel or a request abort — overrides
+ * it and ends the run `cancelled`.
  */
 
 import { after } from 'next/server';
@@ -92,10 +92,10 @@ export async function POST(req: Request) {
     return Response.json({ error: `no input event found for eventId ${body.eventId}` }, { status: 400 });
   }
 
-  // The trigger drives the open: a continuation input carries the run-id
-  // header of the run it resumes, and a fresh send carries none — the
-  // transport re-enters or starts accordingly and anchors the run to the
-  // trigger so cancels route.
+  // Every input this demo publishes carries no run-id, so every open is a
+  // fresh `ai-run-start`. Opening from the located input anchors the run to
+  // its trigger, which is what lets a cancel route back here and lets the
+  // client resolve the run id off the channel.
   const run = transport.openRun({ input: located }, { signal: req.signal });
 
   // The conversation for the model: the store, plus the input that woke this
@@ -117,21 +117,11 @@ export async function POST(req: Request) {
       // tool-approval-request events, reports each batch through `record`, and
       // returns the aggregate outcome.
       const outcome = await runAgentLoop({ run, input, priorMessages, record: conversation.record });
-      if (run.abortSignal.aborted) {
-        // A client cancel (or request abort) stopped the stream; the agent owns
-        // publishing the terminal.
-        await run.end({ reason: 'cancelled' });
-        conversation.noteRun('cancelled');
-      } else if (outcome.reason === 'suspend') {
-        // A client-executed or approval-gated tool paused the run. Suspend it
-        // (publishing the suspend signal); the client resolves the tool and
-        // sends a continuation that resumes this run under the same runId.
-        await run.suspend();
-        conversation.noteRun('suspended');
-      } else {
-        await run.end(outcome);
-        conversation.noteRun(outcome.reason === 'error' ? 'error' : 'complete');
-      }
+      // Every run ends here. A cancel takes precedence over whatever the loop
+      // reported; otherwise the loop's own outcome is the terminal, including
+      // when it stopped because a tool needs the client — that answer wakes a
+      // new run rather than resuming this one.
+      await run.end(run.abortSignal.aborted ? { reason: 'cancelled' } : outcome);
       // The turn is over: store what it produced. Everything the loop published
       // is in the conversation by now, recorded batch by batch as it went.
       await conversation.save();

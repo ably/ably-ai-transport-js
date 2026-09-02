@@ -117,7 +117,7 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     await input.press('Enter');
 
     // The agent runs getWeather server-side within the run, streams the result
-    // back as a weather card, then the model replies — no suspend.
+    // back as a weather card, then the model replies — all in one run.
     await waitForAssistantSettled(page);
 
     // A tool run publishes three messages, each merged as its own assistant
@@ -134,13 +134,13 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     await page.goto(channelUrl(freshChannel(testInfo.title)));
 
     // A forecast prompt calls the gated getWeatherForecast, so the agent publishes
-    // an approval request on the call's own message and suspends the run.
+    // an approval request on the call's own message and ends the run.
     await sendPrompt(page, "what's the weather forecast for Paris?");
     const approve = page.getByRole('button', { name: 'Approve' });
     await expect(approve).toHaveCount(1);
 
     // Approving publishes the decision and wakes the run. The agent runs the
-    // approved call server-side on resume, so the ForecastCard renders its output
+    // approved call server-side on the run the answer wakes, so the ForecastCard renders its output
     // (the 5-day rows) and the model's reply follows.
     await approve.click();
     await waitForAssistantSettled(page);
@@ -158,7 +158,7 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     await expect(deny).toHaveCount(1);
 
     // A denial publishes the decision plus a rejection output rather than
-    // running the tool, so the run still resumes — the model acknowledges
+    // running the tool, so a new run still answers — the model acknowledges
     // instead of forecasting, and no forecast card is rendered.
     await deny.click();
     await waitForAssistantSettled(page);
@@ -167,7 +167,7 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     await expect(assistantBubbles(page).last()).toContainText('not fetch the forecast');
   });
 
-  test('client-side tool: getLocation runs in the browser and its result resumes the run', async ({
+  test('client-side tool: getLocation runs in the browser and its result wakes the answering run', async ({
     browser,
   }, testInfo) => {
     // The client tool needs real browser geolocation, so grant it and pin the
@@ -181,14 +181,14 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     try {
       await page.goto(channelUrl(freshChannel(testInfo.title)));
 
-      // getLocation has no server executor, so the agent suspends the run and
+      // getLocation has no server executor, so the agent ends the run and
       // waits for the browser. useClientTools sees the unresolved call on a
-      // suspended run it initiated, runs geolocation, and publishes the result.
+      // ended run it prompted, runs geolocation, and publishes the result.
       await sendPrompt(page, 'where am I?');
       await expect(page.getByText(/Location:\s*51\.5074, -0\.1278/)).toBeVisible({ timeout: 60_000 });
 
-      // The published result answers the run's only call, so the continuation
-      // goes out and the model replies.
+      // The published result answers the turn's only call, so the wake goes
+      // out and a new run replies.
       await waitForAssistantSettled(page);
       await expect(assistantBubbles(page).last()).toContainText('current location');
 
@@ -202,11 +202,13 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     }
   });
 
-  test('two gated calls in one turn: the run resumes only after both are decided', async ({ page }, testInfo) => {
+  test('two gated calls in one turn: the answering run wakes only after both are decided', async ({
+    page,
+  }, testInfo) => {
     await page.goto(channelUrl(freshChannel(testInfo.title)));
 
     // A forecast prompt naming two places emits two approval-gated calls on one
-    // model turn, so the run suspends holding two undecided calls.
+    // model turn, so the run ends holding two undecided calls.
     await sendPrompt(page, "what's the weather forecast for Paris and London?");
     await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(2);
 

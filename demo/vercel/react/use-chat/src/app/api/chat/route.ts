@@ -69,6 +69,11 @@ export async function POST(req: Request) {
   const body = (await req.json()) as ChatRequestBody;
   const { channelName } = body;
 
+  const apiKey = process.env.ABLY_API_KEY;
+  if (apiKey === undefined) {
+    return new Response('ABLY_API_KEY is not set', { status: 500 });
+  }
+
   // A fresh Ably client per request (trusted environment, API key direct).
   // The agent is ephemeral: it attaches the channel, locates the triggering
   // input in history, streams the response, and closes. A per-request client
@@ -76,7 +81,7 @@ export async function POST(req: Request) {
   // `ABLY_ENDPOINT` lets the e2e tests point the agent at the Ably sandbox
   // (`nonprod:sandbox`); unset in normal use, so it defaults to production.
   const ably = new Ably.Realtime({
-    key: process.env.ABLY_API_KEY!,
+    key: apiKey,
     // The checklist state lives in LiveObjects, an ably-js plugin — without it
     // `channel.object` throws.
     plugins: { LiveObjects },

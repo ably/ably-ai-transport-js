@@ -126,11 +126,14 @@ function planResponse(prompt: ModelPrompt): ResponsePlan {
   }
 
   if (lower.includes('weather')) {
-    // Continuation after a tool resolved: reply with a sentence.
-    if (hasToolResultFor(prompt, 'getWeather')) {
+    // Continuation once a tool has been called: reply with a sentence. Keyed
+    // on the call as well as the result, as the forecast branch above is — a
+    // tool that was called but produced no result (it errored, or the client
+    // never answered) would otherwise be issued again on every continuation.
+    if (hasToolCallFor(prompt, 'getWeather') || hasToolResultFor(prompt, 'getWeather')) {
       return { kind: 'text', text: `It is currently sunny and about 72°F in ${extractLocation(text)}.` };
     }
-    if (hasToolResultFor(prompt, 'getLocation')) {
+    if (hasToolCallFor(prompt, 'getLocation') || hasToolResultFor(prompt, 'getLocation')) {
       return { kind: 'text', text: 'It is currently sunny and about 72°F at your location.' };
     }
     // A named place -> getWeather (server tool); otherwise -> getLocation (client tool).

@@ -40,15 +40,19 @@ function ChatPage() {
   const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
   const [clientId] = useState(() => paramClientId ?? generateClientName());
 
+  // Only the channel goes in the URL. Sharing the address is how a second tab
+  // joins the same conversation, and a `clientId` carried along with it would
+  // give both tabs one identity — which is exactly what the multi-tab scenario
+  // watches for, since it counts distinct `run-client-id` values. A clientId
+  // supplied explicitly in the URL is still honoured.
   useEffect(() => {
-    if (paramChannel && paramClientId) return;
+    if (paramChannel) return;
     const params = new URLSearchParams(searchParams.toString());
-    if (!paramChannel) params.set('channel', channelName);
-    if (!paramClientId) params.set('clientId', clientId);
+    params.set('channel', channelName);
     // `:` is valid unencoded in a query string (RFC 3986); un-escape it so the
     // address bar shows "ai:foo" instead of "ai%3Afoo".
     router.replace(`?${params.toString().replaceAll('%3A', ':')}`);
-  }, [paramChannel, paramClientId, channelName, clientId, router, searchParams]);
+  }, [paramChannel, channelName, router, searchParams]);
 
   return (
     <Providers

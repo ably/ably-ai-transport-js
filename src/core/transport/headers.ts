@@ -337,9 +337,10 @@ export const buildStepHeaders = (opts: {
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   // `invocationClientId` rides the existing `input-client-id` wire name: it is
-  // the publisher of the triggering input, which equals the publisher of the triggering input
-  // only when that issuer published the input event it points at — the common
-  // case. See HEADER_INPUT_CLIENT_ID.
+  // the publisher of the input that drove THIS invocation, which equals
+  // `run-client-id` — the run's owner — only when the same client published
+  // both. A continuation driven by a non-owner's input (a tool result from
+  // another client) is where the two diverge. See HEADER_INPUT_CLIENT_ID.
   if (opts.invocationClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.invocationClientId;
   if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   if (opts.reason !== undefined) h[HEADER_STEP_REASON] = opts.reason;

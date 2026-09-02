@@ -41,6 +41,8 @@ pnpm run build:core     # Build core entry point only
 pnpm run build:react    # Build react entry point only
 pnpm run build:vercel   # Build vercel entry point only
 pnpm run build:openai   # Build openai entry point only
+pnpm run build:temporal          # Build temporal (worker-side) entry point only
+pnpm run build:temporal-workflow # Build temporal/workflow entry point only
 ```
 
 The build uses Vite library mode producing ESM + UMD/CJS bundles with `.d.ts` declarations and sourcemaps in `dist/`.

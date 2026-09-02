@@ -1,14 +1,30 @@
 # Testing Strategy
 
-## Two tiers
+## Three tiers
 
-| Tier            | Command                     | Runs against       | What it proves                               |
-| --------------- | --------------------------- | ------------------ | -------------------------------------------- |
-| **Unit**        | `pnpm test`                 | Mocks only         | Every code path works correctly in isolation |
-| **Integration** | `pnpm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably   |
+| Tier            | Command                     | Runs against          | What it proves                                        |
+| --------------- | --------------------------- | --------------------- | ----------------------------------------------------- |
+| **Unit**        | `pnpm test`                 | Mocks only            | Every code path works correctly in isolation          |
+| **Integration** | `pnpm run test:integration` | Real Ably channels    | Happy path works end-to-end over real Ably            |
+| **Temporal**    | `pnpm run test:temporal`    | A Temporal dev server | Shipped workflow code behaves inside the real sandbox |
 
-Config: `vitest.config.ts` (unit, excludes the integration tier by filename)
-and `vitest.config.integration.ts` (`*.integration.test.ts`).
+Config: `vitest.config.ts` (unit, excludes both other tiers by filename),
+`vitest.config.integration.ts` (`*.integration.test.ts`) and
+`vitest.config.temporal.ts` (`*.temporal.test.ts`).
+
+### The Temporal tier
+
+Only for the workflow-side code in `src/temporal/workflow/`. Workflow code cannot
+be called directly — Temporal has to run it — so these boot a throwaway server
+via `TestWorkflowEnvironment` and bundle fixture workflows through a real
+`Worker`. That bundling is itself a test: a worker-side import leaking into the
+workflow half fails here, because the sandbox has no `ably` and no
+`@temporalio/activity`.
+
+Keep it to what only a real execution can prove: which activities get scheduled
+and in what order, cleanup firing on failure and surviving cancellation, and
+determinism on replay. Activity bodies are faked — their behaviour belongs in the
+unit tier. This tier needs no Ably credentials and touches no channel.
 
 ## Unit tests
 

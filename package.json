@@ -22,6 +22,18 @@
       "import": "./dist/react/ably-ai-transport-react.js",
       "require": "./dist/react/ably-ai-transport-react.umd.cjs"
     },
+    "./temporal": {
+      "types": "./dist/temporal/index.d.ts",
+      "react-native": "./dist/temporal/ably-ai-transport-temporal.umd.cjs",
+      "import": "./dist/temporal/ably-ai-transport-temporal.js",
+      "require": "./dist/temporal/ably-ai-transport-temporal.umd.cjs"
+    },
+    "./temporal/workflow": {
+      "types": "./dist/temporal/workflow/index.d.ts",
+      "react-native": "./dist/temporal/workflow/ably-ai-transport-temporal-workflow.umd.cjs",
+      "import": "./dist/temporal/workflow/ably-ai-transport-temporal-workflow.js",
+      "require": "./dist/temporal/workflow/ably-ai-transport-temporal-workflow.umd.cjs"
+    },
     "./vercel": {
       "types": "./dist/vercel/index.d.ts",
       "react-native": "./dist/vercel/ably-ai-transport-vercel.umd.cjs",
@@ -43,31 +55,35 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:vercel-react && pnpm run build:openai",
+    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:vercel-react && pnpm run build:openai && pnpm run build:temporal && pnpm run build:temporal-workflow",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
+    "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "build:react": "vite build --config ./src/react/vite.config.ts --emptyOutDir",
+    "build:temporal": "vite build --config ./src/temporal/vite.config.ts --emptyOutDir",
+    "build:temporal-workflow": "vite build --config ./src/temporal/workflow/vite.config.ts --emptyOutDir",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
     "build:vercel-react": "vite build --config ./src/vercel/react/vite.config.ts --emptyOutDir",
-    "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
-    "prepare": "pnpm run build",
-    "lint": "eslint .",
-    "lint:fix": "eslint --fix .; (pnpm run format > /dev/null)",
+    "check:error-codes": "tsx scripts/validate-error-codes.ts",
+    "docs": "typedoc",
+    "docs:lint": "typedoc --emit none",
     "format": "prettier --list-different --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix .; (pnpm run format > /dev/null)",
+    "precommit": "pnpm run format:check && pnpm run lint && pnpm run typecheck",
+    "prepare": "pnpm run build",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.config.integration.ts",
-    "check:error-codes": "tsx scripts/validate-error-codes.ts",
-    "precommit": "pnpm run format:check && pnpm run lint && pnpm run typecheck",
-    "docs": "typedoc",
-    "docs:lint": "typedoc --emit none"
+    "test:temporal": "vitest run --config vitest.config.temporal.ts",
+    "typecheck": "tsc --noEmit"
   },
   "files": [
     "dist/**",
     "src/**",
     "react/**",
     "vercel/**",
+    "temporal/**",
     "openai/**"
   ],
   "repository": {
@@ -99,12 +115,24 @@
     }
   },
   "peerDependencies": {
+    "@temporalio/activity": "^1",
+    "@temporalio/worker": "^1.13.2",
+    "@temporalio/workflow": "^1",
     "ably": "^2.23.0",
     "ai": "^6 || ^7",
     "openai": "^6",
     "react": "^18.0.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
+    "@temporalio/activity": {
+      "optional": true
+    },
+    "@temporalio/worker": {
+      "optional": true
+    },
+    "@temporalio/workflow": {
+      "optional": true
+    },
     "ai": {
       "optional": true
     },
@@ -120,6 +148,12 @@
     "@eslint/compat": "^2.0.5",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^10.0.1",
+    "@temporalio/activity": "^1.21.1",
+    "@temporalio/client": "^1.21.1",
+    "@temporalio/common": "^1.21.1",
+    "@temporalio/testing": "^1.21.1",
+    "@temporalio/worker": "^1.21.1",
+    "@temporalio/workflow": "^1.21.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.0.0",
     "@types/react": "^19.2.14",

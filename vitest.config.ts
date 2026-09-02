@@ -5,7 +5,7 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     // The integration tier needs a real Ably sandbox app, so this one stays
     // mocks-only and fast.
-    exclude: ['**/*.integration.test.ts'],
+    exclude: ['**/*.integration.test.ts', '**/*.temporal.test.ts'],
     setupFiles: ['test/helper/expectations.ts'],
     coverage: {
       enabled: false,

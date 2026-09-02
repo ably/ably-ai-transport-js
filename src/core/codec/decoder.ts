@@ -366,7 +366,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     // --- Replacement (NOT a prefix match) ---
     // The payload diverged from what this decoder accumulated, so no delta
-    // describes the change. Nothing is emitted, and that is deliberate.
+    // describes the change. No delta is emitted, and that is deliberate.
     //
     // A provider reducer can only append to an open part, so there are three
     // things this could do and two of them corrupt the consumer's view:
@@ -378,7 +378,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     //     presented as final is worse than no update at all.
     //   - Re-open without closing. The consumer's existing part never ends, so
     //     it streams forever.
-    //   - Emit nothing, and keep the live view on the content it already has.
+    //   - Emit no delta, and keep the live view on the content it already has.
     //
     // So: swap the baseline so later appends extend the update's content, and
     // let a terminal status still close the group rather than leaving the part
@@ -393,12 +393,15 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     tracker.codecHeaders = { ...tracker.codecHeaders, ...codec };
     tracker.transportHeaders = { ...tracker.transportHeaders, ...transport };
 
-    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); non-prefix replacement, content dropped', {
-      serial,
-      streamId: tracker.streamId,
-      priorLength,
-      replacementLength: data.length,
-    });
+    this._logger?.warn(
+      'DefaultDecoderCore._decodeUpdate(); non-prefix replacement, baseline swapped, no delta emitted',
+      {
+        serial,
+        streamId: tracker.streamId,
+        priorLength,
+        replacementLength: data.length,
+      },
+    );
 
     const outputs: TEvent[] = [];
     this._applyTerminalStatus(tracker, status, tracker.codecHeaders, outputs);

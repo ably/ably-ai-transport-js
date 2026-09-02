@@ -1,4 +1,5 @@
 export { OBJECT_MODES } from '../core/channel-options.js';
+export { ErrorCode, errorInfoIs } from '../errors.js';
 export type { ClientTransportProviderProps } from './contexts/client-transport-provider.js';
 export { ClientTransportProvider } from './contexts/client-transport-provider.js';
 export type { ClientTransportHandle, UseClientTransportOptions } from './use-client-transport.js';

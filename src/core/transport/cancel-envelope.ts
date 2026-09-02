@@ -57,7 +57,7 @@ export const buildCancelMessage = (target: CancelTarget): Ably.Message => ({
  * are idempotent, so it carries no routing meaning. `runId` is `undefined` for
  * a malformed cancel; the caller drops it.
  * @param msg - The inbound `ai-cancel` Ably message.
- * @returns The run the cancel targets, or `undefined` when malformed.
+ * @returns `{ runId }`, where `runId` is `undefined` when the message carries no `run-id`.
  */
 export const readCancelTarget = (msg: Ably.InboundMessage): { runId: string | undefined } => ({
   runId: getTransportHeaders(msg)[HEADER_RUN_ID],

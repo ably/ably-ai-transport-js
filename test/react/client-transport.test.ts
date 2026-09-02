@@ -236,7 +236,7 @@ describe('ClientTransportProvider', () => {
     expect(result.current.transport).toBe(fake);
   });
 
-  it('wraps a non-ErrorInfo construction throw, keeping the original as the cause', () => {
+  it('wraps a non-ErrorInfo construction throw as invalid argument, carrying its detail', () => {
     createClientTransportMock.mockImplementation(() => {
       throw new Error('channels.get exploded');
     });
@@ -244,10 +244,13 @@ describe('ClientTransportProvider', () => {
     const { result } = renderHook(() => useClientTransport(), { wrapper: wrapDefault });
 
     expect(result.current.transport).toBeUndefined();
+    // What reaches here is a bad channelName or a closed client, so the code
+    // says caller input rather than SDK fault. The original's detail rides the
+    // message; a plain Error carries no ErrorInfo cause to propagate.
     expect(result.current.error).toBeErrorInfo({
-      code: ErrorCode.InternalError,
+      code: ErrorCode.InvalidArgument,
+      statusCode: 400,
       message: 'unable to create client transport; channels.get exploded',
-      cause: { message: 'channels.get exploded' },
     });
   });
 

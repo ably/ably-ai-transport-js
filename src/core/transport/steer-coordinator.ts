@@ -10,7 +10,7 @@
  *     (`echoMessages: false`).
  *   - {@link _consumedByRunId} — accumulator of `steer-transport-message-ids`
  *     stamps observed on the run's response messages.
- *   - {@link _deadRunIds} — runs whose `run-end` the SDK has merged (with
+ *   - {@link _deadRunIds} — runs whose `run-end` the SDK has observed (with
  *     the terminal reason); subsequent `steer()` calls reject synchronously,
  *     and a publish that raced the terminal resolves not-consumed.
  *
@@ -132,7 +132,7 @@ export class SteerCoordinator<TInput> {
    * outcome handler registers in `_inflightSteers` under the resolved
    * `runId` once the publish is acknowledged.
    *
-   * Dead-handle: if the SDK has already merged a `run-end` for the run
+   * Dead-handle: if the SDK has already observed a `run-end` for the run
    * (recorded in {@link _deadRunIds}), or if `runIdPromise` rejects, both
    * returned promises reject without any channel publish. A run-end that
    * lands while the publish is in flight resolves the outcome not-consumed
@@ -181,7 +181,7 @@ export class SteerCoordinator<TInput> {
         return;
       }
 
-      // Dead-handle: refuse to publish into a Run we've already merged
+      // Dead-handle: refuse to publish into a run whose end we have already observed
       // `run-end` for.
       if (this._deadRunIds.has(resolvedRunId)) {
         const err = new Ably.ErrorInfo(
@@ -355,19 +355,15 @@ export class SteerCoordinator<TInput> {
    * resolved still see their `outcome` promise reject here.
    */
   drainClosed(): void {
-    const closedErr = new Ably.ErrorInfo(
-      'unable to await steer outcome; transport is closed',
-      ErrorCode.SessionClosed,
-      400,
-    );
-    this._drainEpoch += 1;
-    this._lastDrainError = closedErr;
-    for (const bucket of this._inflightSteers.values()) {
-      for (const entry of bucket) entry.reject(closedErr);
-    }
-    this._inflightSteers.clear();
-    this._deadRunIds.clear();
-    this._consumedByRunId.clear();
+    this.drainContinuityLost(this._closedError());
+  }
+
+  /**
+   * The error a close rejects in-flight steer waiters with.
+   * @returns The closed error.
+   */
+  private _closedError(): Ably.ErrorInfo {
+    return new Ably.ErrorInfo('unable to await steer outcome; transport is closed', ErrorCode.SessionClosed, 400);
   }
 
   /**

@@ -222,30 +222,4 @@ export const createReceiveTransport = <TInput, TOutput>(
  */
 export const forwardReceiverOn = <TInput, TOutput>(
   receiver: TransportReceiver<TInput, TOutput>,
-): TransportReceiver<TInput, TOutput>['on'] => {
-  const on = (
-    event: 'event' | 'ably-message' | 'error',
-    handler:
-      | ((e: TransportEvent<TInput, TOutput>) => void)
-      | ((msg: Ably.InboundMessage) => void)
-      | ((err: Ably.ErrorInfo) => void),
-  ): (() => void) => {
-    switch (event) {
-      case 'event': {
-        // CAST: the public overloads pair each event name with its handler
-        // type; TypeScript cannot correlate the union members in the
-        // implementation signature.
-        return receiver.on(event, handler as (e: TransportEvent<TInput, TOutput>) => void);
-      }
-      case 'ably-message': {
-        // CAST: see the 'event' case.
-        return receiver.on(event, handler as (msg: Ably.InboundMessage) => void);
-      }
-      case 'error': {
-        // CAST: see the 'event' case.
-        return receiver.on(event, handler as (err: Ably.ErrorInfo) => void);
-      }
-    }
-  };
-  return on;
-};
+): TransportReceiver<TInput, TOutput>['on'] => receiver.on.bind(receiver);

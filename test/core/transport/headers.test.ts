@@ -247,7 +247,7 @@ describe('buildRunEndError', () => {
   it('falls back to RunResponseStreamFailed and a generic message/status when the headers are absent', () => {
     const err = buildRunEndError({});
     expect(err.code).toBe(ErrorCode.RunResponseStreamFailed);
-    expect(err.message).toBe('agent reported an error');
+    expect(err.message).toBe('unable to complete run; agent reported an error');
     expect(err.statusCode).toBe(500);
   });
 

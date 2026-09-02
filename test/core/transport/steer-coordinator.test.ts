@@ -168,7 +168,7 @@ describe('SteerCoordinator', () => {
   });
 
   // ---------------------------------------------------------------------
-  // observeMessage() — echo match, stamp accumulation, lifecycle
+  // observeMessage() — stamp accumulation and run lifecycle
   // ---------------------------------------------------------------------
 
   describe('observeMessage()', () => {

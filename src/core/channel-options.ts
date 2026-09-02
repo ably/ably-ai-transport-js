@@ -69,15 +69,16 @@ const MODE_ORDER: readonly Ably.ChannelMode[] = [
  *
  * Returns `undefined` when the caller asks for no extra modes, so the channel
  * attaches with no mode flags and the server applies its default set. When
- * extra modes are supplied (e.g. {@link OBJECT_MODES}),
- * returns `AIT_BASE_MODES` unioned with them, de-duplicated and in a
- * fixed canonical order so repeated resolutions compare equal.
+ * extra modes are supplied (e.g. {@link OBJECT_MODES}), returns the server
+ * default set — PUBLISH, SUBSCRIBE, PRESENCE, PRESENCE_SUBSCRIBE and
+ * ANNOTATION_PUBLISH — unioned with them, de-duplicated and in a fixed
+ * canonical order so repeated resolutions compare equal.
  *
- * Modes outside `MODE_ORDER` (which should not occur for a valid
+ * A mode outside that canonical order (which should not occur for a valid
  * {@link Ably.ChannelMode}, but is possible with the type's lowercase aliases)
- * are appended after the canonical modes, sorted alphabetically, so the result
+ * is appended after the canonical ones, sorted alphabetically, so the result
  * is still deterministic.
- * @param extraModes - Additional modes to request on top of `AIT_BASE_MODES`. Omit or pass an empty array to request no modes at all.
+ * @param extraModes - Modes to request on top of the server default set. Omit or pass an empty array to request no modes at all.
  * @returns The canonically-ordered, de-duplicated mode set, or `undefined` when no extra modes were requested.
  */
 export const resolveChannelModes = (extraModes?: readonly Ably.ChannelMode[]): Ably.ChannelMode[] | undefined => {

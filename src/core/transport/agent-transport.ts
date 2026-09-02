@@ -348,7 +348,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     if (this._closed) throw this._closedError(verb);
     if (!this._connectGuard.attempted) {
       throw new Ably.ErrorInfo(
-        `unable to open run; connect() must be called before ${verb}()`,
+        `unable to ${verb === 'adoptRun' ? 'adopt run' : 'open run'}; connect() must be called before ${verb}()`,
         ErrorCode.InvalidArgument,
         400,
       );

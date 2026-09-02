@@ -12,19 +12,6 @@ import { VERSION } from '../version.js';
 const SDK_NAME = 'ai-transport-js';
 
 /**
- * Build the agent-name to version map this SDK registers for the given codec.
- * @param codec - The codec whose optional identifier opts into registration.
- * @param codec.adapterTag - The optional Ably-Agent identifier; registered as an agent when present.
- * @returns Map of agent name to version, always including this SDK.
- */
-const buildAgents = (codec?: { readonly adapterTag?: string }): Record<string, string> => {
-  const agents: Record<string, string> = { [SDK_NAME]: VERSION };
-  const adapterTag = codec?.adapterTag;
-  if (adapterTag !== undefined && adapterTag !== '') agents[adapterTag] = VERSION;
-  return agents;
-};
-
-/**
  * The space-separated `params.agent` string to stamp on channel ATTACH —
  * `ai-transport-js/<version>`, plus the codec's adapter tag when it carries
  * one.
@@ -37,7 +24,10 @@ const buildAgents = (codec?: { readonly adapterTag?: string }): Record<string, s
  * @param codec.adapterTag - The optional Ably-Agent identifier; registered as an agent when present.
  * @returns The channel `params.agent` string.
  */
-export const channelAgent = (codec?: { readonly adapterTag?: string }): string =>
-  Object.entries(buildAgents(codec))
-    .map(([name, version]) => `${name}/${version}`)
-    .join(' ');
+export const channelAgent = (codec?: { readonly adapterTag?: string }): string => {
+  const sdk = `${SDK_NAME}/${VERSION}`;
+  const tag = codec?.adapterTag;
+  // An empty tag would render as a bare `/version`, which is not a valid
+  // agent, so it reads as an opt-out just like an absent one.
+  return tag === undefined || tag === '' ? sdk : `${sdk} ${tag}/${VERSION}`;
+};

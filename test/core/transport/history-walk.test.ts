@@ -24,43 +24,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { Decoder } from '../../../src/core/codec/types.js';
 import { walkHistoryBatch } from '../../../src/core/transport/history-walk.js';
-import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { makeHistoryCursor } from '../../helper/history-cursor.js';
+import type { TestInput, TestOutput } from '../../helper/name-aware-decoder.js';
+import { createNameAwareDecoder, outputTexts } from '../../helper/name-aware-decoder.js';
 import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
-
-interface TestInput {
-  kind: string;
-}
-interface TestOutput {
-  type: string;
-  text?: string;
-}
-
-/**
- * A name-aware decoder like the transports use: `ai-output` yields one output
- * carrying the wire data as `text`, `boom` throws, anything else decodes to
- * nothing.
- * @returns The decoder.
- */
-const createDecoder = (): Decoder<TestInput, TestOutput> => ({
-  decode: (msg: Ably.InboundMessage): { inputs: TestInput[]; outputs: TestOutput[] } => {
-    if (msg.name === 'boom') throw new Error('malformed payload');
-    if (msg.name === 'ai-output') {
-      // CAST: the test wires carry string data.
-      return { inputs: [], outputs: [{ type: 'out', text: msg.data as string }] };
-    }
-    return { inputs: [], outputs: [] };
-  },
-});
-
-/**
- * Project a batch onto its output texts, in batch order.
- * @param events - The classified batch.
- * @returns One text per event (`undefined` for a non-message event).
- */
-const texts = (events: TransportEvent<TestInput, TestOutput>[]): (string | undefined)[] =>
-  events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined));
 
 describe('walkHistoryBatch', () => {
   it('fetches one page per call with no limit, each batch chronological within', async () => {
@@ -69,15 +37,15 @@ describe('walkHistoryBatch', () => {
       [outputMsg('s4', 'four'), outputMsg('s3', 'three')],
       [outputMsg('s2', 'two'), outputMsg('s1', 'one')],
     ]);
-    const decoder = createDecoder();
+    const decoder = createNameAwareDecoder();
 
     const first = await walkHistoryBatch({ cursor, decoder }, {});
-    expect(texts(first.events)).toEqual(['three', 'four']);
+    expect(outputTexts(first.events)).toEqual(['three', 'four']);
     expect(first.exhausted).toBe(false);
     expect(cursor.nextCalls()).toBe(1);
 
     const second = await walkHistoryBatch({ cursor, decoder }, {});
-    expect(texts(second.events)).toEqual(['one', 'two']);
+    expect(outputTexts(second.events)).toEqual(['one', 'two']);
     expect(second.exhausted).toBe(true);
     expect(cursor.nextCalls()).toBe(2);
   });
@@ -91,7 +59,7 @@ describe('walkHistoryBatch', () => {
       [outputMsg('s2', 'two'), outputMsg('s1', 'one')],
     ]);
     const seen: (string | undefined)[] = [];
-    const inner = createDecoder();
+    const inner = createNameAwareDecoder();
     const decoder: Decoder<TestInput, TestOutput> = {
       decode: (msg) => {
         const result = inner.decode(msg);
@@ -103,7 +71,7 @@ describe('walkHistoryBatch', () => {
     const result = await walkHistoryBatch({ cursor, decoder }, { limit: 4 });
 
     expect(seen).toEqual(['one', 'two', 'three', 'four']);
-    expect(texts(result.events)).toEqual(['one', 'two', 'three', 'four']);
+    expect(outputTexts(result.events)).toEqual(['one', 'two', 'three', 'four']);
     expect(result.exhausted).toBe(true);
   });
 
@@ -112,16 +80,16 @@ describe('walkHistoryBatch', () => {
       [outputMsg('s4', 'four'), outputMsg('s3', 'three')],
       [outputMsg('s2', 'two'), outputMsg('s1', 'one')],
     ]);
-    const decoder = createDecoder();
+    const decoder = createNameAwareDecoder();
 
     const first = await walkHistoryBatch({ cursor, decoder }, { limit: 1 });
     // One page satisfied the limit; the batch is that page, chronological.
-    expect(texts(first.events)).toEqual(['three', 'four']);
+    expect(outputTexts(first.events)).toEqual(['three', 'four']);
     expect(first.exhausted).toBe(false);
     expect(cursor.nextCalls()).toBe(1);
 
     const second = await walkHistoryBatch({ cursor, decoder }, {});
-    expect(texts(second.events)).toEqual(['one', 'two']);
+    expect(outputTexts(second.events)).toEqual(['one', 'two']);
     expect(second.exhausted).toBe(true);
   });
 
@@ -131,7 +99,7 @@ describe('walkHistoryBatch', () => {
     controller.abort();
 
     await expect(
-      walkHistoryBatch({ cursor, decoder: createDecoder() }, { signal: controller.signal }),
+      walkHistoryBatch({ cursor, decoder: createNameAwareDecoder() }, { signal: controller.signal }),
     ).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
     expect(cursor.nextCalls()).toBe(0);
   });
@@ -141,11 +109,11 @@ describe('walkHistoryBatch', () => {
     const errors: Ably.ErrorInfo[] = [];
 
     const result = await walkHistoryBatch(
-      { cursor, decoder: createDecoder(), onDecodeError: (err) => errors.push(err) },
+      { cursor, decoder: createNameAwareDecoder(), onDecodeError: (err) => errors.push(err) },
       {},
     );
 
-    expect(texts(result.events)).toEqual(['also-kept', 'kept']);
+    expect(outputTexts(result.events)).toEqual(['also-kept', 'kept']);
     expect(result.exhausted).toBe(true);
     expect(errors).toHaveLength(1);
     // The decoder throw arrives wrapped as the shared message-processing error.
@@ -156,7 +124,7 @@ describe('walkHistoryBatch', () => {
     const cursor = makeHistoryCursor([[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]]);
 
     const result = await walkHistoryBatch(
-      { cursor, decoder: createDecoder() },
+      { cursor, decoder: createNameAwareDecoder() },
       {
         limit: 2,
         onPage: () => {
@@ -165,7 +133,7 @@ describe('walkHistoryBatch', () => {
       },
     );
 
-    expect(texts(result.events)).toEqual(['one', 'two']);
+    expect(outputTexts(result.events)).toEqual(['one', 'two']);
     expect(result.exhausted).toBe(true);
   });
 
@@ -175,9 +143,9 @@ describe('walkHistoryBatch', () => {
     const carrier = inboundMessage({ name: 'noise', serial: 's1', timestamp: 1000 });
     const cursor = makeHistoryCursor([[outputMsg('s2', 'kept'), carrier]]);
 
-    const result = await walkHistoryBatch({ cursor, decoder: createDecoder() }, {});
+    const result = await walkHistoryBatch({ cursor, decoder: createNameAwareDecoder() }, {});
 
-    expect(texts(result.events)).toEqual(['kept']);
+    expect(outputTexts(result.events)).toEqual(['kept']);
     expect(result.exhausted).toBe(true);
   });
 });

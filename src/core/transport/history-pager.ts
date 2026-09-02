@@ -11,6 +11,7 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import type { Decoder } from '../codec/types.js';
+import type { WalkHistoryBatchContext } from './history-walk.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 import type { TransportHistoryOptions, TransportHistoryResult } from './types/transport.js';
@@ -29,7 +30,7 @@ export interface HistoryPagerOptions<TInput, TOutput> {
   channel: Ably.RealtimeChannel;
   /** Wire-message limit per Ably page. */
   pageSize: number;
-  /** The decoder to classify wires on — the transport's live decoder, so a stream spanning the attach boundary is merged once. */
+  /** The decoder to classify wires on — the transport's live decoder, so a stream spanning the attach boundary is decoded once. */
   decoder: Decoder<TInput, TOutput>;
   /** Logger for diagnostics. */
   logger?: Logger;
@@ -45,11 +46,11 @@ export interface HistoryPagerOptions<TInput, TOutput> {
  * caller's to observe — a follower is isolated from a prior link's rejection.
  */
 export class HistoryPager<TInput, TOutput> {
-  private readonly _channel: HistoryPagerOptions<TInput, TOutput>['channel'];
+  private readonly _channel: Ably.RealtimeChannel;
   private readonly _pageSize: number;
-  private readonly _decoder: HistoryPagerOptions<TInput, TOutput>['decoder'];
-  private readonly _logger: HistoryPagerOptions<TInput, TOutput>['logger'];
-  private readonly _onDecodeError: HistoryPagerOptions<TInput, TOutput>['onDecodeError'];
+  private readonly _decoder: Decoder<TInput, TOutput>;
+  private readonly _logger: Logger | undefined;
+  private readonly _onDecodeError: WalkHistoryBatchContext<TInput, TOutput>['onDecodeError'];
   /** The lazily opened backward cursor; `undefined` until the first walk. */
   private _cursor: HistoryPagesCursor | undefined;
   /** Tail of the single-flight chain — always a settled or in-flight void promise. */
@@ -69,8 +70,9 @@ export class HistoryPager<TInput, TOutput> {
    * @param opts - The caller's batch bounds; see {@link TransportHistoryOptions}.
    * @returns The batch of classified events and the exhaustion flag.
    */
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- the tail must advance synchronously so concurrent callers serialise
-  next(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
+  // The tail advances before the first `await`, so a concurrent caller always
+  // links behind this call rather than racing it.
+  async next(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
     const prev = this._tail;
     const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
       await prev;

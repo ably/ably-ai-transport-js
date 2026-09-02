@@ -67,7 +67,7 @@ export interface ClientTransportOptions<TInput, TOutput> {
   channel: Ably.RealtimeChannel;
   /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
   codec: WireCodec<TInput, TOutput>;
-  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and a receiver reads `WireMeta.clientId` as `undefined`. */
+  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted, that header is not stamped; `WireMeta.clientId` is the Ably publisher's own clientId and is unaffected by this option. */
   clientId?: string;
   /** Wire-message limit per `channel.history()` round trip in {@link ClientTransport.history}. Defaults to 100. */
   historyPageSize?: number;

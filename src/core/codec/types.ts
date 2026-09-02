@@ -232,6 +232,14 @@ export interface DecodedMessage<TInput, TOutput> {
  * decoder instance can therefore be shared by the live subscription and
  * history hydration — whichever route delivers a message's content first
  * wins, and the other route's covered deliveries are no-ops.
+ *
+ * One decode contract a consumer has to know: an update whose content does not
+ * extend what the decoder accumulated yields no delta. A provider reducer can
+ * only append to an open part, so there is no emittable change — the message's
+ * wire content stays authoritative, and a fresh decode (history, or a re-merge
+ * with a new decoder) yields it in full. A terminal status on such an update
+ * still closes the group, so a consumer's open part ends rather than streaming
+ * forever.
  */
 export interface Decoder<TInput, TOutput> {
   /** Decode one Ably inbound message into the input/output halves. */

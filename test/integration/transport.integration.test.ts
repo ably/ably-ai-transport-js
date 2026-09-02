@@ -323,9 +323,9 @@ describe('standalone transport integration', () => {
   }, 45_000);
 
   it('steering settles for a client that never receives its own publishes', async () => {
-    // The reason `published` resolves from the publish acknowledgement rather
-    // than the steer's own channel echo: with echoMessages off there is no
-    // echo to wait for, and the old design would have hung here.
+    // Why `published` resolves from the publish acknowledgement rather than
+    // the steer's own channel echo: with echoMessages off there is no echo to
+    // wait for.
     const channelName = uniqueChannelName('t-steer-noecho');
     const clientRealtime = ablyRealtimeClient({ echoMessages: false });
     const agentRealtime = ablyRealtimeClient();
@@ -353,8 +353,7 @@ describe('standalone transport integration', () => {
       payload: { id: 'u-steer', role: 'user', parts: [{ type: 'text', text: 'be brief' }] },
     });
 
-    // This is the assertion the redesign exists for: with no echo coming
-    // back, `published` can only settle from the publish acknowledgement.
+    // No echo arrives, so this can only have settled from the acknowledgement.
     const published = await steer.published;
     expect(published.serial).toBeDefined();
 

@@ -1,7 +1,7 @@
 /**
  * Guards what each public entry point publishes.
  *
- * The package ships three entry points and each one's `index.ts` is the
+ * The package ships four entry points and each one's `index.ts` is the
  * authoritative list of its public API. The codec suites cannot catch a
  * mis-wired barrel because they import the internal modules directly and never
  * exercise the entry points, so an export that goes missing surfaces only in a
@@ -46,9 +46,10 @@ import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
 
 /**
- * Every key a wire codec may carry. An allowlist rather than a denylist: a
- * codec that grew a surface nobody anticipated still fails here, where a list
- * of names we thought of would not.
+ * Every key a wire codec may carry. The assertion reports any key outside
+ * this set, so a codec that grows a new surface fails here until the set is
+ * widened deliberately — which is the point: message assembly moving back
+ * inside the SDK is the boundary this design exists to hold.
  */
 const WIRE_CODEC_KEYS = new Set(['adapterTag', 'createDecoder', 'createEncoder']);
 

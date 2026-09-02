@@ -183,7 +183,6 @@ interface StepLifecycleBase {
  * consumers correlating
  * step events to a run / invocation / participant.
  */
-
 export type StepLifecycleEvent =
   | (StepLifecycleBase & {
       /** A step attempt began. */

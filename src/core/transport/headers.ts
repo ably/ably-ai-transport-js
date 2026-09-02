@@ -208,8 +208,8 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
 export const buildRunEndError = (headers: Record<string, string>): Ably.ErrorInfo => {
   const codeRaw = headers[HEADER_ERROR_CODE];
   const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
-  const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.RunResponseStreamFailed;
-  const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
+  const code = Number.isInteger(parsedCode) && parsedCode > 0 ? parsedCode : ErrorCode.RunResponseStreamFailed;
+  const message = headers[HEADER_ERROR_MESSAGE] ?? 'unable to complete run; agent reported an error';
   // 5-digit codes encode their HTTP status in the leading 3 digits; otherwise 500.
   const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
   return new Ably.ErrorInfo(message, code, statusCode);
@@ -337,7 +337,7 @@ export const buildStepHeaders = (opts: {
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   // `invocationClientId` rides the existing `input-client-id` wire name: it is
-  // the publisher of the triggering input, which equals the POST issuer's id
+  // the publisher of the triggering input, which equals the publisher of the triggering input
   // only when that issuer published the input event it points at — the common
   // case. See HEADER_INPUT_CLIENT_ID.
   if (opts.invocationClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.invocationClientId;

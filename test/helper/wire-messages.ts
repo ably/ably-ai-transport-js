@@ -98,7 +98,7 @@ export const boomMsg = (serial: string): Ably.InboundMessage =>
 
 /**
  * Build a foreign wire — an application's own publish on a channel it shares
- * with a session. It carries no `extras.ai` envelope.
+ * with a transport. It carries no `extras.ai` envelope.
  * @returns The foreign InboundMessage.
  */
 export const foreignWire = (): Ably.InboundMessage =>

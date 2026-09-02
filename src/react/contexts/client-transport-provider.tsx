@@ -34,7 +34,7 @@ import type { ClientTransportOptions } from '../../core/transport/client-transpo
 import { createClientTransport } from '../../core/transport/client-transport.js';
 import type { ClientTransport } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
-import { errorMessage } from '../../utils.js';
+import { errorCause, errorMessage } from '../../utils.js';
 import type { ClientTransportSlot } from './client-transport-context.js';
 import { ClientTransportContext } from './client-transport-context.js';
 
@@ -125,21 +125,26 @@ export const ClientTransportProvider = <TInput, TOutput>({
       // original has to survive: `client.channels.get()` throws a plain Error
       // on a closed client or a bad channel name, and "unknown error" leaves
       // the developer nothing to act on.
-      transportOptions.logger?.error('ClientTransportProvider(); transport construction failed', {
-        channelName,
-        error: errorMessage(error),
-      });
-      // `errorCause` only propagates a value that is already an ErrorInfo, and
-      // `client.channels.get()` throws a plain Error — so wrap it to give the
-      // chain something to carry rather than passing an always-undefined cause.
+      transportOptions.logger
+        ?.withContext({ component: 'ClientTransportProvider' })
+        .error('ClientTransportProvider(); transport construction failed', {
+          channelName,
+          error: errorMessage(error),
+        });
+      // InvalidArgument, not InternalError: what reaches here is a bad
+      // `channelName` or a closed client, which is the caller's own input and
+      // lifecycle. InternalError promises the opposite, so stamping it would
+      // send a developer hunting an SDK bug that is not there. The message
+      // already carries the original's detail, so `errorCause` — which only
+      // propagates a value that is already an ErrorInfo — is enough.
       constructionErrorRef.current =
         error instanceof Ably.ErrorInfo
           ? error
           : new Ably.ErrorInfo(
               `unable to create client transport; ${errorMessage(error)}`,
-              ErrorCode.InternalError,
-              500,
-              error instanceof Error ? new Ably.ErrorInfo(error.message, ErrorCode.InternalError, 500) : undefined,
+              ErrorCode.InvalidArgument,
+              400,
+              errorCause(error),
             );
     }
   }

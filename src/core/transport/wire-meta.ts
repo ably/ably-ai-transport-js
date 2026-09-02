@@ -28,7 +28,7 @@ import type { WireMeta } from './types/transport.js';
  * Read one inbound Ably message into its {@link WireMeta}. Populates the raw
  * `transport` / `codec` header buckets verbatim, then projects the typed
  * convenience fields off the transport tier and the message's own Ably fields.
- * Never interprets the projected fields — it copies them through.
+ * Copies the identity headers through verbatim; the two id-list fields are JSON-parsed, degrading to `undefined` on a malformed value.
  * @param rawMsg - The inbound Ably wire message.
  * @returns The message's transport-tier metadata.
  */

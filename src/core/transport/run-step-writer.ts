@@ -31,6 +31,7 @@ import type {
   OpenRunHooks,
   PipeSource,
   RunEndReason,
+  RunStepTransport,
   StepEndParams,
   StepEndReason,
   StepEndResult,
@@ -157,43 +158,16 @@ export interface RunStepWriterContext<TInput, TOutput> {
  * `step-start-serial`, so a retry supersedes the prior attempt's output.
  * @template TOutput - The codec output type carried by the step's streams.
  */
-export interface WriterStep<TOutput> {
-  /** This step's id — stable across retry attempts of the same step. */
-  readonly stepId: string;
-  /**
-   * The run's AbortSignal; there is no per-step abort. Fires when a cancel
-   * arrives for this run.
-   */
-  readonly abortSignal: AbortSignal;
+export interface WriterStep<TOutput> extends RunStepTransport<TOutput> {
   /**
    * Publish `ai-step-start`, opening the step for output. Idempotent — a
    * second call is a no-op. Rejects if another step is already active on the
    * run (only one step may be open at a time), or if the run has ended.
+   *
+   * The public {@link RunStepTransport} has no `start()`: the agent transport
+   * wraps this step and opens it on the first `pipe` or `send`.
    */
   start(): Promise<void>;
-  /**
-   * Pipe an output stream through the encoder to the channel, stamping every
-   * output with this step's identity. A stream error returns
-   * `{ reason: 'error' }` (it does NOT throw) and marks the step `failed`
-   * when {@link WriterStep.end} closes it.
-   * @param source - The output source to pipe (see {@link PipeSource}).
-   * @returns The {@link StreamResult} for this pipe.
-   */
-  pipe(source: PipeSource<TOutput>): Promise<StreamResult>;
-  /**
-   * Publish a single discrete output as one assistant message, stamped with
-   * this step's identity. The step must be active (started, not ended).
-   * @param output - The single codec output to publish.
-   */
-  send(output: TOutput): Promise<void>;
-  /**
-   * Publish `ai-step-end`, closing the step. Idempotent. Omit `params` to
-   * derive the reason from the step's piped output (`failed` if any pipe
-   * errored, else `complete`).
-   * @param params - Optional {@link StepEndParams}.
-   * @returns The terminal publish's acknowledgement; see {@link StepEndResult}.
-   */
-  end(params?: StepEndParams): Promise<StepEndResult>;
 }
 
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
@@ -708,9 +682,6 @@ export const createRunStepWriter = <TInput, TOutput>(
     return {
       get stepId() {
         return stepId;
-      },
-      get abortSignal() {
-        return signal;
       },
       start: async (): Promise<void> => {
         logger?.trace('WriterStep.start();', { runId, stepId });

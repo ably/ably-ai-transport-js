@@ -41,7 +41,7 @@ const setupCollector = async (
 ): Promise<{
   pubChannel: ReturnType<ReturnType<typeof ablyRealtimeClient>['channels']['get']>;
   buckets: Map<string, Bucket>;
-  waitFor: (predicate: () => boolean, what: string, timeoutMs?: number) => Promise<void>;
+  waitFor: (predicate: () => boolean) => Promise<void>;
 }> => {
   const pubClient = ablyRealtimeClient();
   const subClient = ablyRealtimeClient();
@@ -69,29 +69,18 @@ const setupCollector = async (
   });
 
   /**
-   * Resolve once the predicate holds, or fail with what was collected. A bare
-   * wait would hang to the suite timeout with nothing to read.
+   * Resolve once the predicate holds.
+   *
+   * No deadline of its own: vitest's test timeout is the only one, and a test
+   * that hangs here has found something rather than merely run slowly (see
+   * `.claude/rules/TESTS.md`).
    * @param predicate - The condition to wait for.
-   * @param what - What is being waited for, for the failure message.
-   * @param timeoutMs - How long to wait before failing.
    * @returns Resolves when the predicate holds.
    */
-  const waitFor = async (predicate: () => boolean, what: string, timeoutMs = 15_000): Promise<void> => {
+  const waitFor = async (predicate: () => boolean): Promise<void> => {
     if (predicate()) return;
-    await new Promise<void>((resolve, reject) => {
-      const waiter = { predicate, resolve };
-      const timer = setTimeout(() => {
-        waiters.delete(waiter);
-        const seen = [...buckets].map(
-          ([id, b]) => `${id}: ${String(b.outputs.length)} out / ${String(b.inputs.length)} in`,
-        );
-        reject(new Error(`timed out waiting for ${what} (collected — ${seen.join('; ') || 'nothing'})`));
-      }, timeoutMs);
-      waiter.resolve = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      waiters.add(waiter);
+    await new Promise<void>((resolve) => {
+      waiters.add({ predicate, resolve });
     });
   };
 
@@ -115,10 +104,7 @@ describe('OpenAI wire-codec integration', () => {
     }
     await encoder.close();
 
-    await waitFor(
-      () => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done').length === 1,
-      'the reconstructed output_item.done',
-    );
+    await waitFor(() => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done').length === 1);
 
     const outputs = buckets.get('asst-1')?.outputs ?? [];
     const types = outputs.map((e) => e.type);
@@ -151,10 +137,7 @@ describe('OpenAI wire-codec integration', () => {
     });
     await encoder.close();
 
-    await waitFor(
-      () => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'function_call_output').length === 1,
-      'the function_call_output item',
-    );
+    await waitFor(() => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'function_call_output').length === 1);
 
     const outputs = buckets.get('asst-1')?.outputs ?? [];
     // The item envelope (call_id / name) rides the reconstructed
@@ -194,7 +177,7 @@ describe('OpenAI wire-codec integration', () => {
     await encoder.publishInput(decision, { messageId: 'user-1' });
     await encoder.close();
 
-    await waitFor(() => (buckets.get('user-1')?.inputs.length ?? 0) === 3, 'all three client inputs');
+    await waitFor(() => (buckets.get('user-1')?.inputs.length ?? 0) === 3);
 
     const inputs = buckets.get('user-1')?.inputs ?? [];
     expect(inputs[0]).toEqual(turn);

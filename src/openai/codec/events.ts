@@ -218,9 +218,9 @@ type Assert<T extends true> = T;
  * referenced at runtime — its only job is to fail to typecheck, right here,
  * if a future change to `WithoutSequenceNumber` / `WithWireDoneItem` /
  * `WithoutTextDoneLogprobs` (or an OpenAI SDK bump) ever breaks that claim,
- * instead of surfacing nowhere until someone happens to pipe a real stream
- * through (today, only the `yield value` in the demo's `agent-stream.ts`,
- * which isn't even part of this package's own `tsc` run).
+ * instead of surfacing nowhere until an application happens to pipe a real
+ * provider stream through — which no test in this package does, so nothing
+ * else would catch it.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- see doc comment
 type AssertRealEventIsOpenAIOutput = Assert<Responses.ResponseStreamEvent extends OpenAIOutput ? true : false>;

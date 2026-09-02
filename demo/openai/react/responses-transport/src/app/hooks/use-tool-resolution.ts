@@ -57,7 +57,7 @@ export interface ToolResolution {
 
 /** What the hook passes to `onWake` once a resolution answers the run's last call. */
 export interface ToolResolutionWake {
-  /** The `event-id` of the last published resolution input, for the agent's `locateInput`. The published input carries the run-id header, so the wake needs no run identity of its own. */
+  /** The `event-id` of the last published resolution input, for the agent's `locateInput`. It is the only identity the wake carries: a resolution publishes no run-id, and the woken run is a fresh one. */
   eventId: string;
 }
 

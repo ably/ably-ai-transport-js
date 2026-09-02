@@ -97,7 +97,8 @@ show.
 
 ### What the tier covers today
 
-**Codec level**, in `test/integration/vercel/wire-codec.integration.test.ts`: a
+**Codec level**, one suite per codec (`test/integration/vercel/` and
+`test/integration/openai/`, both named `wire-codec.integration.test.ts`): a
 text and tool-call roundtrip over a real channel, proving the wire format and
 Ably's message serialization.
 

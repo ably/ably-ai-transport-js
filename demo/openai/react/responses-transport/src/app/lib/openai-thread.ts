@@ -212,12 +212,12 @@ export const resolvedCallIds = (messages: OpenAIMessage[]): Set<string> => {
 /**
  * Find the function calls that still owe the model an answer: a
  * `function_call` with no `function_call_output` that is not approved either.
- * An approved call counts as answered (the agent runs it server-side on
- * resume, before the next model turn); a denial is answered on the wire by a
+ * An approved call counts as answered (the woken run executes it server-side
+ * before its first model turn); a denial is answered on the wire by a
  * `function_call_output` recording the rejection. A call still pending a
  * decision, and a client-executed call whose result has not arrived, are both
- * unanswered — resuming while any call is unanswered makes the provider
- * reject the request.
+ * unanswered — sending the conversation while any call is unanswered makes the
+ * provider reject the request.
  * @param messages - The conversation messages to scan.
  * @returns The calls still awaiting an answer, in message/item order.
  */
@@ -237,8 +237,8 @@ export const unansweredCalls = (messages: OpenAIMessage[]): Responses.ResponseFu
 /**
  * Find the gated function calls the user has approved but the agent has not
  * yet run: a `function_call` whose approval is `'approved'` with no
- * `function_call_output` present. On resume the agent must run these
- * server-side before the next model turn.
+ * `function_call_output` present. The run woken by that approval must run
+ * these server-side before its first model turn.
  * @param messages - The conversation messages to scan.
  * @returns The approved-but-unexecuted gated calls, in message/item order.
  */

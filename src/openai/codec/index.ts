@@ -130,6 +130,13 @@ export const createResponsesCodec = <TInput = unknown>(): WireCodec<TInput, Open
         // raw SyntaxError would be wrapped as.
         if (msg.name === EVENT_AI_INPUT) {
           if (!hasAiEnvelope(msg)) return { inputs: [], outputs: [] };
+          // Only a create carries an input body. The passthrough publishes one
+          // discrete message per input and never appends, updates or deletes,
+          // so any other action on this name came from elsewhere on the shared
+          // channel and decodes to nothing — reading its `data` would throw on
+          // a delete, and the receive path would turn that into an error event
+          // over a message that is not ours to interpret.
+          if (msg.action !== 'message.create') return { inputs: [], outputs: [] };
           if (typeof msg.data !== 'string') {
             throw new Ably.ErrorInfo(
               'unable to decode input; the wire body is not a JSON string',

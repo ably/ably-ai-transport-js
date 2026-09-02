@@ -82,9 +82,9 @@ export interface AgentLoopRequest {
   /** The flattened conversation, ready for the first `/responses` `input` array. */
   input: Responses.ResponseInputItem[];
   /**
-   * The hydrated conversation as codec messages, carrying `toolCallStates`. Read
-   * on resume to find an approved-but-unexecuted gated call the agent must run
-   * server-side before the next model turn.
+   * The hydrated conversation as codec messages, carrying `toolCallStates`.
+   * Read at the start of a run to find an approved-but-unexecuted gated call
+   * this run must execute server-side before its first model turn.
    */
   priorMessages: OpenAIMessage[];
   /**

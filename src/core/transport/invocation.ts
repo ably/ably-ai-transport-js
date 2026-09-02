@@ -1,0 +1,115 @@
+/**
+ * Invocation — value object wrapping the JSON body that a client sends to
+ * an agent's HTTP endpoint to start a run.
+ *
+ * The data shape is the wire contract; the {@link Invocation} class is a
+ * runtime view of that data with the same fields. {@link Invocation.fromJSON}
+ * is the entry point used by agent handlers:
+ *
+ * ```ts
+ * const data = (await req.json()) as InvocationData;
+ * const invocation = Invocation.fromJSON(data);
+ * const channel = client.channels.get(invocation.channelName);
+ * const transport = createAgentTransport({ channel, codec });
+ * await transport.connect();
+ * const located = await transport.locateInput(invocation.inputEventId);
+ * ```
+ *
+ * The body carries only what the agent needs out-of-band before the channel
+ * is observable: the channel name and the `inputEventId` that triggered
+ * the invocation. The agent mints the `invocationId` itself (one per HTTP
+ * request) and returns it on the HTTP response, so it is not a body field. Run
+ * identity also lives on the channel: the agent mints the `runId` for a fresh
+ * run and reads the existing `runId` off the triggering input event for a
+ * continuation — so the body carries no run-id either. Per-message metadata —
+ * `clientId`, continuation status — likewise lives on the channel and is
+ * resolved by the agent from the triggering input event, not from the body. The `inputClientId` the agent re-stamps on its own publishes
+ * comes from the publisher's Ably `clientId` on the matched input event, not
+ * from a body field.
+ */
+
+import * as Ably from 'ably';
+
+import { ErrorCode } from '../../errors.js';
+
+// ---------------------------------------------------------------------------
+// Wire shape
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire shape of a single invocation — the JSON body sent from the client
+ * transport's HTTP POST to the agent endpoint.
+ */
+export interface InvocationData {
+  /**
+   * Identifier for the specific input event on the channel that triggered
+   * this invocation. The agent locates the event via the `event-id`
+   * header. Its wire headers carry the run-id for a continuation (absent for
+   * a fresh run), so run identity is resolved from the channel, not the body.
+   */
+  inputEventId: string;
+  /** The conversation's Ably channel name. */
+  channelName: string;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime view
+// ---------------------------------------------------------------------------
+
+/**
+ * Runtime view of an {@link InvocationData}. Constructed via
+ * {@link Invocation.fromJSON}. Read-only; carries no behaviour beyond
+ * exposing its fields.
+ */
+// Spec: AIT-ST13
+export class Invocation {
+  /**
+   * Identifier for the specific input event on the channel that triggered
+   * this invocation. Run identity is resolved from that event's wire headers
+   * (or minted), not from the body.
+   */
+  readonly inputEventId: string;
+  /** The conversation's Ably channel name. */
+  readonly channelName: string;
+
+  private constructor(data: InvocationData) {
+    this.inputEventId = data.inputEventId;
+    this.channelName = data.channelName;
+  }
+
+  /**
+   * Build an Invocation from its JSON wire shape.
+   *
+   * Both fields are validated, because this is a trust boundary in two
+   * directions: the body arrives over HTTP from a client, and — under a
+   * durable framework — out of a workflow history written by an older SDK.
+   * A payload missing either field would otherwise reach
+   * `client.channels.get(undefined)` deep inside an activity, resolving the
+   * wrong channel or throwing somewhere that says nothing about why.
+   * @param data - Parsed JSON body matching {@link InvocationData}.
+   * @returns A new Invocation exposing the same fields.
+   * @throws {@link Ably.ErrorInfo} with `InvalidArgument` when either field is missing or empty.
+   */
+  static fromJSON(data: InvocationData): Invocation {
+    if (typeof data.channelName !== 'string' || data.channelName === '') {
+      throw new Ably.ErrorInfo('unable to build invocation; channelName is missing', ErrorCode.InvalidArgument, 400);
+    }
+    if (typeof data.inputEventId !== 'string' || data.inputEventId === '') {
+      throw new Ably.ErrorInfo('unable to build invocation; inputEventId is missing', ErrorCode.InvalidArgument, 400);
+    }
+    return new Invocation(data);
+  }
+
+  /**
+   * Serialise this invocation to its JSON wire shape — the body a client
+   * POSTs to the agent's endpoint to wake a run. Round-trips through
+   * {@link Invocation.fromJSON}.
+   * @returns The {@link InvocationData} carrying this invocation's identity.
+   */
+  toJSON(): InvocationData {
+    return {
+      inputEventId: this.inputEventId,
+      channelName: this.channelName,
+    };
+  }
+}

@@ -516,6 +516,39 @@ export type RunEndParams =
       error?: Ably.ErrorInfo;
     };
 
+/**
+ * A run's identity — which run this is, and which invocation of it is
+ * publishing.
+ *
+ * Both fields are plain data, so an orchestration that opens a run in one
+ * process can thread its identity to another that re-enters it (an
+ * `openRun` naming the same `runId`); the run handle itself does not cross
+ * processes. Neither field accepts the empty string; omit a field to have it
+ * minted.
+ */
+export interface RunIdentity {
+  /**
+   * The run's id — the conversation turn's identity, and the durable key a
+   * continuing process re-enters the run by ({@link OpenRunOptions.runId}).
+   *
+   * Supply a stable value under durable execution so a fresh-process retry
+   * re-enters the run instead of minting a new UUID and opening a parallel
+   * one. This is independent of {@link StepOptions.stepId}: a run id is the
+   * turn's identity, a step id is one re-attemptable unit within the turn.
+   * Both want a stable source on retry, but they are distinct ids — do not
+   * treat the framework's step id as a run id across turns.
+   */
+  runId: string;
+
+  /**
+   * The id of the invocation publishing for the run — one per HTTP request on
+   * the normal path, or one per activity of a durable turn, stamped on every
+   * event that process publishes for the run. Independent of the run's owner
+   * identity: a continuing activity stamps its own id, not the opener's.
+   */
+  invocationId: string;
+}
+
 // ---------------------------------------------------------------------------
 // Send side: agent
 // ---------------------------------------------------------------------------

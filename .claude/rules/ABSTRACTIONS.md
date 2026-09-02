@@ -213,7 +213,11 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     same order — ably-js compares them order-sensitively, so two resolvers that
     disagree reattach the channel or silently revert its mode set. See
     `src/core/channel-options.ts`.
-11. **No message assembly in the SDK** — no reducer, no merge driver, no
-    projection type. The application demultiplexes a batch's `message` events
-    by their transport-message-id and merges each bucket with the provider's own
-    machinery.
+11. **No message assembly in the generic layer** — `src/core/` holds no
+    reducer, no merge driver and no projection type, and a consumer of the core
+    transport demultiplexes a batch's `message` events by their
+    transport-message-id and merges each bucket itself. A codec adapter may
+    reconstruct messages where the provider's own interface demands them
+    (Vercel's chat transport hands `useChat` a message list on reconnect), and
+    then only by driving the provider's reducer over the buckets — never by
+    reimplementing one. See `.claude/rules/AISDK.md`.

@@ -14,11 +14,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   HEADER_CODEC_MESSAGE_ID,
-  HEADER_FORK_OF,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INPUT_CODEC_MESSAGE_IDS,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_STEER_CODEC_MESSAGE_IDS,
@@ -83,15 +80,12 @@ describe('wireMetaFromMessage', () => {
     const meta = wireMetaFromMessage(
       inboundMessage({
         transport: {
-          [HEADER_PARENT]: 'p1',
-          [HEADER_FORK_OF]: 'f1',
-          [HEADER_MSG_REGENERATE]: 'r1',
           [HEADER_INPUT_CODEC_MESSAGE_ID]: 'i1',
         },
       }),
     );
 
-    expect(meta).toMatchObject({ parent: 'p1', forkOf: 'f1', regenerates: 'r1', inputCodecMessageId: 'i1' });
+    expect(meta).toMatchObject({ inputCodecMessageId: 'i1' });
   });
 
   it('parses the steer-codec-message-ids stamp into the typed field', () => {

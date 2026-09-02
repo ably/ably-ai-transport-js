@@ -48,6 +48,14 @@ export const fApproved = boolField('approved', false);
 export const fReason = strField('reason');
 
 /**
+ * The domain message id an action addresses — the message a regeneration
+ * starts from. Shares the `messageId` header with {@link fMessageId} and
+ * carries the same kind of value, but is defaulted to total because those
+ * bodies require it.
+ */
+export const fTargetMessageId = strField('messageId', '');
+
+/**
  * Validated finish reason. Mirrors the AI SDK's `FinishReason` literals and
  * falls back to `'stop'` for an absent or unrecognized value.
  */

@@ -144,7 +144,12 @@ describe('SteerCoordinator', () => {
       const { coord, closed } = h;
       closed.value = true;
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
-      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      // The message distinguishes the pre-publish closed guard from the two
+      // drainClosed() paths, which share this code.
+      await expect(published).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionClosed,
+        message: 'unable to steer; transport closed',
+      });
       await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
       expect(h.publishCalls).toHaveLength(0);
     });
@@ -325,7 +330,10 @@ describe('SteerCoordinator', () => {
       const id = lastSteerCodecMessageId(h);
       coord.observeMessage(ablyMsg('ai-input', { [HEADER_CODEC_MESSAGE_ID]: id }));
       coord.drainClosed();
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(outcome).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionClosed,
+        message: 'unable to await steer outcome; transport closed',
+      });
     });
 
     it('settles pending-echo published with undefined and rejects outcome with SessionClosed', async () => {
@@ -334,7 +342,10 @@ describe('SteerCoordinator', () => {
       await flush();
       coord.drainClosed();
       await expect(published).resolves.toEqual({ serial: undefined });
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(outcome).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionClosed,
+        message: 'unable to await steer publish; transport closed',
+      });
     });
   });
 });

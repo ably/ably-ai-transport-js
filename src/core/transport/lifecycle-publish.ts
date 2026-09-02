@@ -10,7 +10,7 @@ import { errorCause, errorMessage } from '../../utils.js';
  * the step lifecycle nested within it — because a failed step publish is the
  * same class of failure as a failed run publish and surfaces identically.
  */
-export type LifecyclePhase = 'step-start' | 'step-end';
+export type LifecyclePhase = 'run-start' | 'run-resume' | 'run-suspend' | 'run-end' | 'step-start' | 'step-end';
 
 /**
  * Options identifying the lifecycle publish being bracketed.
@@ -54,7 +54,12 @@ export const publishLifecycleEvent = async <T>(
       500,
       errorCause(error),
     );
-    logger?.error(`${component}.${method}(); lifecycle publish failed`, { phase, runId, ...logContext });
+    logger?.error(`${component}.${method}(); lifecycle publish failed`, {
+      phase,
+      runId,
+      error: errorMessage(error),
+      ...logContext,
+    });
     throw errInfo;
   }
 };

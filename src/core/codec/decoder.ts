@@ -8,7 +8,7 @@
  * nothing, so the same decoder instance can serve both the live
  * subscription and a backwards history walk without double-decoding.
  *
- * Domain decoders call `createDecoderCore(hooks, options)` and provide hooks
+ * Domain decoders call `createDecoderCore(hooks)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
  * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
  * concerns (`codec-message-id`) are surfaced by the transport via `WireMeta`, not
@@ -21,20 +21,6 @@ import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.
 import type { Logger } from '../../logger.js';
 import { getCodecHeaders, getTransportHeaders, hasAiEnvelope } from '../../utils.js';
 import type { MessagePayload, StreamSequenceState } from './types.js';
-
-// ---------------------------------------------------------------------------
-// Options
-// ---------------------------------------------------------------------------
-
-/** Options for creating a decoder core. */
-export interface DecoderCoreOptions {
-  /** Called when a tracked stream is replaced (non-prefix update). Receives the tracker with updated state. */
-  onStreamUpdate?: (tracker: StreamSequenceState) => void;
-  /** Called when a message is deleted. Receives the serial and tracker (if one exists). */
-  onStreamDelete?: (serial: string, tracker: StreamSequenceState | undefined) => void;
-  /** Logger instance for diagnostic output. */
-  logger?: Logger;
-}
 
 // ---------------------------------------------------------------------------
 // Domain hooks
@@ -84,15 +70,11 @@ export interface DecoderCore<TEvent> {
 class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
   private readonly _hooks: DecoderCoreHooks<TEvent>;
   private readonly _logger: Logger | undefined;
-  private readonly _onStreamUpdate: ((tracker: StreamSequenceState) => void) | undefined;
-  private readonly _onStreamDelete: ((serial: string, tracker: StreamSequenceState | undefined) => void) | undefined;
   private readonly _serialState = new Map<string, StreamSequenceState>();
 
-  constructor(hooks: DecoderCoreHooks<TEvent>, options: DecoderCoreOptions = {}) {
+  constructor(hooks: DecoderCoreHooks<TEvent>, logger?: Logger) {
     this._hooks = hooks;
-    this._onStreamUpdate = options.onStreamUpdate;
-    this._onStreamDelete = options.onStreamDelete;
-    this._logger = options.logger?.withContext({ component: 'DecoderCore' });
+    this._logger = logger?.withContext({ component: 'DecoderCore' });
   }
 
   decode(message: Ably.InboundMessage): TEvent[] {
@@ -148,28 +130,6 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
    */
   private _stringData(message: Ably.InboundMessage): string {
     return typeof message.data === 'string' ? message.data : '';
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: safe callback invocation
-  // -------------------------------------------------------------------------
-
-  private _invokeOnStreamUpdate(tracker: StreamSequenceState): void {
-    if (!this._onStreamUpdate) return;
-    try {
-      this._onStreamUpdate(tracker);
-    } catch (error) {
-      this._logger?.error('DefaultDecoderCore._invokeOnStreamUpdate(); callback threw', { error });
-    }
-  }
-
-  private _invokeOnStreamDelete(serial: string, tracker: StreamSequenceState | undefined): void {
-    if (!this._onStreamDelete) return;
-    try {
-      this._onStreamDelete(serial, tracker);
-    } catch (error) {
-      this._logger?.error('DefaultDecoderCore._invokeOnStreamDelete(); callback threw', { error });
-    }
   }
 
   // -------------------------------------------------------------------------
@@ -405,27 +365,31 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     }
 
     // --- Replacement (NOT a prefix match) ---
-    // The payload diverged from what this decoder accumulated, so no delta
-    // describes the change and the missing tail is unrecoverable. Deliver the
-    // payload whole — a fresh opener plus the entire new content — so the
-    // consumer can replace the stream's content. Emitting nothing would drop
-    // the data silently: `onStreamUpdate` is the only other signal and no
-    // production path wires it.
+    // The payload diverged from what this decoder accumulated: the missing
+    // piece sits inside content this fold already delivered, and a provider
+    // reducer can only append to an open part, so no emittable delta exists.
+    // The wire itself is whole (an update replaces the message data), so a
+    // fresh decode — history, or a refold — yields the full content. This live
+    // fold delivers nothing; it swaps its baseline so later appends extend the
+    // update's content, and a terminal status still closes the group so the
+    // consumer's open part ends rather than staying open forever.
+    const priorLength = tracker.accumulated.length;
     tracker.accumulated = data;
-    tracker.codecHeaders = { ...codec };
-    tracker.transportHeaders = { ...transport };
+    // Merge rather than replace: the identity keys (the group kind, the stream
+    // id) are what the build hooks dispatch on, so an update that omits a tier
+    // must not erase them.
+    tracker.codecHeaders = { ...tracker.codecHeaders, ...codec };
+    tracker.transportHeaders = { ...tracker.transportHeaders, ...transport };
 
-    this._invokeOnStreamUpdate(tracker);
-
-    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); payload replaced, delivering whole', {
+    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); non-prefix replacement, content dropped', {
       serial,
       streamId: tracker.streamId,
-      accumulatedLength: tracker.accumulated.length,
+      priorLength,
+      replacementLength: data.length,
     });
 
-    const outputs = this._hooks.buildStartEvents(tracker);
-    if (data.length > 0) outputs.push(...this._hooks.buildDeltaEvents(tracker, data));
-    this._applyTerminalStatus(tracker, status, codec, outputs);
+    const outputs: TEvent[] = [];
+    this._applyTerminalStatus(tracker, status, tracker.codecHeaders, outputs);
 
     return outputs;
   }
@@ -493,8 +457,6 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     const tracker = this._serialState.get(serial);
 
-    this._invokeOnStreamDelete(serial, tracker);
-
     if (tracker) {
       // No need to advance the tracker's version here: `_closeTracker` leaves a
       // closed tombstone, and `_alreadyIncorporated`'s closed check drops every
@@ -515,10 +477,8 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 /**
  * Create a decoder core with the given domain hooks.
  * @param hooks - Domain-specific hooks for stream classification, event building, and discrete decoding.
- * @param options - Decoder configuration (callbacks, logger).
+ * @param logger - Logger for diagnostic output.
  * @returns A new {@link DecoderCore} instance.
  */
-export const createDecoderCore = <TEvent>(
-  hooks: DecoderCoreHooks<TEvent>,
-  options: DecoderCoreOptions = {},
-): DecoderCore<TEvent> => new DefaultDecoderCore(hooks, options);
+export const createDecoderCore = <TEvent>(hooks: DecoderCoreHooks<TEvent>, logger?: Logger): DecoderCore<TEvent> =>
+  new DefaultDecoderCore(hooks, logger);

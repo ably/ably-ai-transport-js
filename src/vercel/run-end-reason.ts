@@ -11,12 +11,13 @@ import { ErrorCode } from '../errors.js';
  * always carries `error`.
  *
  * This is a *description of what the Vercel run resulted in*, not a command to
- * the SDK. The common case maps cleanly onto one transport action — `'suspend'`
- * → `AgentRunTransport.suspend()`, everything else → `AgentRunTransport.end()` — and to make that case a
- * one-liner the non-`'suspend'` arms are deliberately assignable to
- * {@link RunEndParams}, so after a `suspend` guard the whole object passes
- * straight to `AgentRunTransport.end(outcome)`. That assignability is a convenience for this
- * adapter, not a constraint on what an outcome can mean: responding to an
+ * the SDK. The common case maps cleanly onto one transport action —
+ * `'suspend'` → `AgentRunTransport.suspend()`, everything else →
+ * `AgentRunTransport.end()` — and to make that case a one-liner the
+ * non-`'suspend'` arms are deliberately assignable to {@link RunEndParams},
+ * so after a `suspend` guard the whole object passes straight to
+ * `AgentRunTransport.end(outcome)`. That assignability is a convenience for
+ * this adapter, not a constraint on what an outcome can mean: responding to an
  * outcome may also involve work outside this SDK (persisting a result,
  * notifying a human, triggering a downstream workflow), and the developer is
  * free to do that around the terminal call.
@@ -27,8 +28,9 @@ import { ErrorCode } from '../errors.js';
  * in what a developer must do in response. A different SDK's outcome type would
  * have different arms; hence each adapter names its own rather than sharing a
  * single core `RunOutcome`. The vocabulary it bottoms out in
- * ({@link RunEndParams}, `AgentRunTransport.suspend`/`AgentRunTransport.end`) is the shared, codec-agnostic
- * part that does live in core.
+ * ({@link RunEndParams}, `AgentRunTransport.suspend` /
+ * `AgentRunTransport.end`) is the shared, codec-agnostic part that does live
+ * in core.
  */
 export type VercelRunOutcome =
   | {

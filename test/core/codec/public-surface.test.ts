@@ -12,7 +12,6 @@ import type {
   OutputDescriptor,
   OutputEventSpec,
   OutputStreamSpec,
-  RunIdentity,
   StepEndParams,
   StepEndReason,
   StepOptions,
@@ -65,12 +64,5 @@ describe('public codec-authoring surface', () => {
     // The client-identity scope is part of the step-options seam, so it must
     // be carried on the public surface.
     expectTypeOf<StepOptions>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
-  });
-
-  // The run identity (durable cross-process execution) is public too: an
-  // orchestration threading a run's identity across processes must never have
-  // to redeclare the shape.
-  it('exports the run identity', () => {
-    expectTypeOf<RunIdentity>().toEqualTypeOf<{ runId: string; invocationId: string }>();
   });
 });

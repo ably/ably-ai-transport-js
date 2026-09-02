@@ -383,9 +383,9 @@ describe('createDecoderCore', () => {
   // -- message.update (replacement) ----------------------------------------
 
   describe('message.update (replacement)', () => {
-    it('delivers a non-prefix replacement whole, and reports it to onStreamUpdate', () => {
-      const onUpdate = vi.fn();
-      const decoder = createDecoderCore(hooks, { onStreamUpdate: onUpdate });
+    it('drops a non-prefix replacement, warns, and swaps the baseline for later deltas', () => {
+      const { logger, warn } = createMockLogger();
+      const decoder = createDecoderCore(hooks, logger);
 
       decoder.decode(
         withHeaders(
@@ -402,16 +402,25 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      // No delta describes a payload that diverged from the accumulation, so
-      // the replacement arrives as a fresh opener plus the whole new content.
-      expect(outputs).toEqual([
-        { type: 'start', streamId: 'id-1' },
-        { type: 'delta', streamId: 'id-1', delta: 'completely different' },
-      ]);
-      expect(onUpdate).toHaveBeenCalledOnce();
+      // The missing piece sits inside content this fold already delivered, and
+      // a provider reducer can only append to an open part — so nothing is
+      // emitted, and the wire (which the update made whole) is the authority a
+      // refold reads.
+      expect(outputs).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // The baseline swapped to the update's content: a later update that
+      // extends it emits only the new tail.
+      const tail = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'completely different plus' },
+          { [HEADER_STREAM]: 'true' },
+        ),
+      );
+      expect(tail).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' plus' }]);
     });
 
-    it('closes the stream when the replacement is also terminal', () => {
+    it('closes the group when the replacement is terminal, without re-delivering content', () => {
       const decoder = createDecoderCore(hooks);
 
       decoder.decode(
@@ -429,14 +438,16 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      expect(outputs).toEqual([
-        { type: 'start', streamId: 'id-1' },
-        { type: 'delta', streamId: 'id-1', delta: 'replaced' },
-        { type: 'end', streamId: 'id-1' },
-      ]);
+      // The consumer's open part is ended rather than left streaming forever;
+      // the replacement's content itself is not re-delivered.
+      expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
+
+      // The tracker is closed: further deliveries for the serial decode to nothing.
+      const after = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'more' }, {}));
+      expect(after).toEqual([]);
     });
 
-    it('emits only an opener when the replacement payload is empty', () => {
+    it('keeps the group identity when a replacement carries no codec headers', () => {
       const decoder = createDecoderCore(hooks);
 
       decoder.decode(
@@ -447,23 +458,25 @@ describe('createDecoderCore', () => {
       );
       decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'hello' }, {}));
 
+      // The replacement's tiers are merged over the tracker's, so an update
+      // that omits them cannot erase the stream identity: the terminal end
+      // still names the original stream.
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.update', serial: 's1', name: 'text', data: '' }, { [HEADER_STREAM]: 'true' }),
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'different' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'complete' },
+        ),
       );
 
-      expect(outputs).toEqual([{ type: 'start', streamId: 'id-1' }]);
+      expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
   });
 
   // -- message.delete ------------------------------------------------------
 
   describe('message.delete', () => {
-    it('calls onStreamDelete with serial and tracker state before clearing', () => {
-      let capturedAccumulated: string | undefined;
-      const onDelete = vi.fn((_serial: string, tracker: { accumulated: string } | undefined) => {
-        capturedAccumulated = tracker?.accumulated;
-      });
-      const decoder = createDecoderCore(hooks, { onStreamDelete: onDelete });
+    it('closes the stream so later deliveries for the serial decode to nothing', () => {
+      const decoder = createDecoderCore(hooks);
 
       decoder.decode(
         withHeaders(
@@ -472,19 +485,15 @@ describe('createDecoderCore', () => {
         ),
       );
       decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'content' }, {}));
-      decoder.decode(withHeaders({ action: 'message.delete', serial: 's1' }, {}));
+      expect(decoder.decode(withHeaders({ action: 'message.delete', serial: 's1' }, {}))).toEqual([]);
 
-      expect(onDelete).toHaveBeenCalledOnce();
-      expect(capturedAccumulated).toBe('content');
+      const after = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'more' }, {}));
+      expect(after).toEqual([]);
     });
 
-    it('calls onStreamDelete with undefined tracker for unknown serial', () => {
-      const onDelete = vi.fn();
-      const decoder = createDecoderCore(hooks, { onStreamDelete: onDelete });
-
-      decoder.decode(withHeaders({ action: 'message.delete', serial: 'unknown' }, {}));
-
-      expect(onDelete).toHaveBeenCalledWith('unknown', undefined);
+    it('returns empty for an unknown serial', () => {
+      const decoder = createDecoderCore(hooks);
+      expect(decoder.decode(withHeaders({ action: 'message.delete', serial: 'unknown' }, {}))).toEqual([]);
     });
 
     it('returns empty for missing serial', () => {
@@ -505,13 +514,13 @@ describe('createDecoderCore', () => {
   // -- foreign messages ----------------------------------------------------
   //
   // An application may publish its own messages on a channel it shares with a
-  // session. Those wires carry no `extras.ai` envelope, and the core must fold
+  // transport. Those wires carry no `extras.ai` envelope, and the core must fold
   // none of them into codec events or stream state.
 
   describe('foreign messages', () => {
     it('ignores a foreign append instead of treating it as a first-contact stream', () => {
       const { logger, warn } = createMockLogger();
-      const decoder = createDecoderCore(hooks, { logger });
+      const decoder = createDecoderCore(hooks, logger);
 
       // An application streaming its own message publishes appends the core has
       // no create for. Ably does not echo `name` on an append, so the missing
@@ -524,7 +533,7 @@ describe('createDecoderCore', () => {
 
     it('opens no stream state for a foreign create, so its later appends stay foreign', () => {
       const { logger, warn } = createMockLogger();
-      const decoder = createDecoderCore(hooks, { logger });
+      const decoder = createDecoderCore(hooks, logger);
 
       decoder.decode(foreignMessage({ action: 'message.create', serial: 'f1', data: 'chunk one' }));
       const outputs = decoder.decode(foreignMessage({ action: 'message.append', serial: 'f1', data: 'chunk two' }));
@@ -535,7 +544,7 @@ describe('createDecoderCore', () => {
 
     it('still warns for a trackerless append that carries the ai envelope', () => {
       const { logger, warn } = createMockLogger();
-      const decoder = createDecoderCore(hooks, { logger });
+      const decoder = createDecoderCore(hooks, logger);
 
       decoder.decode(withHeaders({ action: 'message.append', serial: 's1', name: 'text', data: 'chunk' }, {}));
 
@@ -565,48 +574,6 @@ describe('createDecoderCore', () => {
         { type: 'delta', streamId: 'id-1', delta: 'lo' },
         { type: 'end', streamId: 'id-1' },
       ]);
-    });
-  });
-
-  // -- callback error isolation --------------------------------------------
-
-  describe('callback error isolation', () => {
-    it('does not propagate errors from onStreamUpdate callback', () => {
-      const decoder = createDecoderCore(hooks, {
-        onStreamUpdate: () => {
-          throw new Error('callback error');
-        },
-      });
-
-      decoder.decode(
-        withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text' },
-          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'streaming', [HEADER_STREAM_ID]: 'id-1' },
-        ),
-      );
-      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'hello' }, {}));
-
-      // Non-prefix replacement triggers onStreamUpdate — should not throw
-      expect(() => {
-        decoder.decode(
-          withHeaders(
-            { action: 'message.update', serial: 's1', name: 'text', data: 'different' },
-            { [HEADER_STREAM]: 'true' },
-          ),
-        );
-      }).not.toThrow();
-    });
-
-    it('does not propagate errors from onStreamDelete callback', () => {
-      const decoder = createDecoderCore(hooks, {
-        onStreamDelete: () => {
-          throw new Error('callback error');
-        },
-      });
-
-      expect(() => {
-        decoder.decode(withHeaders({ action: 'message.delete', serial: 's1' }, {}));
-      }).not.toThrow();
     });
   });
 
@@ -711,7 +678,7 @@ describe('createDecoderCore', () => {
 
       // The stale aggregate's data is not a prefix extension of the tracker's
       // accumulated text — without the version guard it would be treated as a
-      // stream replacement and corrupt the projection.
+      // stream replacement and corrupt the stream tracker's accumulation.
       const stale = decoder.decode(
         withHeaders(
           { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:02' } },
@@ -855,7 +822,7 @@ describe('createDecoderCore', () => {
 
     it('warns and falls back to first contact for a bare no-tracker append', () => {
       const { logger, warn } = createMockLogger();
-      const decoder = createDecoderCore(hooks, { logger });
+      const decoder = createDecoderCore(hooks, logger);
 
       // Out of contract: the platform converts the first post-attach append of
       // an in-flight message into a full-contents update, so a bare append

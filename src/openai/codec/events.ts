@@ -236,10 +236,9 @@ type Assert<T extends true> = T;
  * `Responses.ResponseStreamEvent` is always assignable to it. Never
  * referenced at runtime — its only job is to fail to typecheck, right here,
  * if a future change to `WithoutSequenceNumber` / `WithWireDoneItem` /
- * `WithoutTextDoneLogprobs` (or an OpenAI SDK bump) ever breaks that claim,
- * instead of surfacing nowhere until someone happens to pipe a real stream
- * through (today, only the `yield value` in the demo's `agent-stream.ts`,
- * which isn't even part of this package's own `tsc` run).
+ * `WithoutTextDoneLogprobs` (or an OpenAI SDK bump) ever breaks that claim.
+ * Nothing in this package pipes a real `ResponseStreamEvent` through, so this
+ * assertion is the only place the assignability claim is checked.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- see doc comment
 type AssertRealEventIsOpenAIOutput = Assert<Responses.ResponseStreamEvent extends OpenAIOutput ? true : false>;
@@ -373,16 +372,6 @@ export interface OpenAIMessageInput {
 }
 
 /**
- * A regeneration signal. Carries no body: the `regenerates` and `parent`
- * structure ride the transport's publish options, and `WireMeta` reports them
- * on the way back.
- */
-export interface OpenAIRegenerateInput {
-  /** Discriminator. */
-  kind: 'regenerate';
-}
-
-/**
  * A tool resolution: the body is OpenAI's own `function_call_output` input
  * item, published against the assistant message holding the `function_call`
  * (addressed by the publish options' `codecMessageId`). A failure or a denial
@@ -416,4 +405,4 @@ export interface OpenAIApprovalInput {
  * one codec-defined body. Addressing rides the transport's publish options
  * and `WireMeta`, never the body.
  */
-export type OpenAIInput = OpenAIMessageInput | OpenAIRegenerateInput | OpenAIItemInput | OpenAIApprovalInput;
+export type OpenAIInput = OpenAIMessageInput | OpenAIItemInput | OpenAIApprovalInput;

@@ -3,7 +3,11 @@
 ## Layout
 
 The generic layer lives in `src/core/`; each codec lives in its own directory
-(`src/vercel/`, `src/openai/`, …) under a `codec/` subdirectory. Shared
+(`src/vercel/`, `src/openai/`, …) under a `codec/` subdirectory. A codec entry
+point may also ship provider-shaped helpers outside `codec/` — modules that
+map a provider result onto transport types or derive loop state from provider
+items rather than defining wire format. Such a helper may depend on the
+generic layer and on its own provider SDK, never on another codec. Shared
 header/event/message-name constants and Ably message helpers sit at the top of
 `src/` (`constants.ts`, `utils.ts`). Tests mirror `src/` under `test/`.
 
@@ -100,12 +104,15 @@ no singletons or service locators.
 
 ## Class pattern
 
-Use ES6 classes with the **interface + default implementation** pattern:
+The shape a component takes is a choice with a reason, not a single mandate:
 
-- Define a public **interface** for the contract (`Foo`).
-- Implement it with a **`Default*` class** (`DefaultFoo`). The interface is
-  public API; the class is internal. Every current instance lives under
-  `src/core/`.
+- **Interface + `Default*` class** where a consumer holds the thing: define a
+  public **interface** for the contract (`Foo`) and implement it with a
+  **`Default*` class** (`DefaultFoo`). The interface is public API; the class
+  is internal.
+- **Plain internal class or factory-composed object literal** where the
+  component is only ever composed by a factory in the same layer — nothing
+  outside names the type, so an interface would be ceremony.
 
 ### Private state
 

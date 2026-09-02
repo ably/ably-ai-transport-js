@@ -49,3 +49,33 @@ export const pausedStream = <T>(): ReadableStream<T> =>
       /* never enqueues or closes */
     },
   });
+
+/** A stream a test pushes into by hand, with an explicit close. */
+export interface ManualStream<T> {
+  /** The readable side, handed to the code under test. */
+  stream: ReadableStream<T>;
+  /** Enqueue one value. */
+  push(value: T): void;
+  /** Close the stream, letting a pipe over it complete. */
+  close(): void;
+}
+
+/**
+ * Build a stream the test controls: push values mid-test and close when
+ * done. Lets a test hold a pipe open across an arrangement step (e.g. a late
+ * subscriber attaching mid-stream) without any timer.
+ * @returns The manual stream.
+ */
+export const manualStream = <T>(): ManualStream<T> => {
+  let controller: ReadableStreamDefaultController<T> | undefined;
+  const stream = new ReadableStream<T>({
+    start: (c) => {
+      controller = c;
+    },
+  });
+  return {
+    stream,
+    push: (value) => controller?.enqueue(value),
+    close: () => controller?.close(),
+  };
+};

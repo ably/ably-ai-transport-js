@@ -2,6 +2,11 @@ import * as Ably from 'ably';
 
 /**
  * Error codes for the AI Transport SDK.
+ *
+ * The `Session*` member names mirror the canonical identifiers in the
+ * ably-common error registry (`session_subscription_failed`, `session_closed`,
+ * …), so they are kept even though this SDK's own vocabulary says "transport".
+ * Read `Session` as "transport" throughout.
  */
 export enum ErrorCode {
   /**
@@ -10,9 +15,8 @@ export enum ErrorCode {
   InvalidArgument = 40003,
 
   /**
-   * The operation was cancelled (Ably 40033) — the run was cancelled, the
-   * caller's abort signal fired, or the transport began closing while the
-   * operation was in flight.
+   * The operation was cancelled (Ably 40033) — a caller-supplied `AbortSignal`
+   * fired during a history load, a history page wait, or an input locate.
    */
   OperationCancelled = 40033,
 
@@ -48,10 +52,10 @@ export enum ErrorCode {
   SessionSubscriptionFailed = 104001,
 
   /**
-   * A cancel could not be honoured. Either the run's `onCancel` hook threw
-   * while the SDK was processing a cancel message — the SDK never reaches the
-   * abort — or routing the inbound cancel to its target run failed before any
-   * hook ran. Either way the run is **not** cancelled and keeps running.
+   * The run's `onCancel` hook threw while the SDK was processing a cancel
+   * message — the SDK never reaches the abort, so the run is **not** cancelled
+   * and keeps running. A failure to route the cancel to its run at all is
+   * {@link ErrorCode.RunCancelRoutingFailed} instead.
    */
   RunCancelHandlerFailed = 104002,
 
@@ -105,9 +109,8 @@ export enum ErrorCode {
   /**
    * Channel history pagination failed after bounded retry — either the initial
    * `channel.history()` call or a subsequent `page.next()` exhausted its
-   * retry budget. Also used when a history load fails with an error that is
-   * not already an `Ably.ErrorInfo`. The original failure is preserved as
-   * `cause` where available.
+   * retry budget. The original failure is preserved as `cause` where
+   * available.
    */
   SessionHistoryFetchFailed = 104011,
 
@@ -117,6 +120,15 @@ export enum ErrorCode {
    * run by then, so the run is unaffected; only the notification failed.
    */
   RunSteerHandlerFailed = 104012,
+
+  /**
+   * An inbound cancel message could not be delivered to the run it targets —
+   * the dispatch itself failed before any hook ran. The cancel is neither
+   * carried out nor rejected, so the run keeps running as though the message
+   * had not arrived. A cancel that reached its run but whose `onCancel` hook
+   * threw is {@link ErrorCode.RunCancelHandlerFailed} instead.
+   */
+  RunCancelRoutingFailed = 104013,
 }
 
 /**
@@ -125,5 +137,5 @@ export enum ErrorCode {
  * @param error The error code to compare against.
  * @returns true if the error code matches, false otherwise.
  */
-// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- comparing an ErrorInfo's numeric code against the enum is this helper's whole job
 export const errorInfoIs = (errorInfo: Ably.ErrorInfo, error: ErrorCode): boolean => errorInfo.code === error;

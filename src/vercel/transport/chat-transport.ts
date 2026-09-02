@@ -129,9 +129,14 @@ export interface ChatTransportOptions<
 }
 
 /**
- * The hint an application may pass through `resumeStream({ body })`. The
- * `resume: true` mount path passes no body, so a hint only ever reaches the
- * adapter from a manual call.
+ * The hint an application may pass through `resumeStream({ body })` to resume
+ * one specific run, skipping {@link ChatTransport.reconnectToStream}'s own
+ * discovery.
+ *
+ * The `resume: true` mount path passes no body, so a hint only ever reaches
+ * the adapter from a manual `resumeStream()` call — typically the one an
+ * application makes in response to {@link ChatTransport.onForeignRun}, where
+ * it already knows the run id and has no reason to let the adapter guess.
  */
 export interface ReconnectHint {
   /** Resume this run directly, skipping discovery. */
@@ -143,6 +148,13 @@ export interface ReconnectHint {
  * `ChatTransport` (so it drops straight into `useChat({ transport })`), plus
  * the hydration walk, a cancel the SDK interface leaves out, and the
  * observation points a shared channel needs.
+ *
+ * `sendMessages` and `reconnectToStream` are inherited unchanged, so their
+ * signatures carry the SDK's own docs. Two things about this adapter's
+ * behaviour are not visible from them: `reconnectToStream` resolves which run
+ * to resume in the order given on {@link readSince}, and a caller can skip
+ * that discovery by passing {@link ReconnectHint} through
+ * `resumeStream({ body })`.
  * @template TMetadata - Per-message metadata type.
  * @template TDataParts - Custom data-part types.
  * @template TTools - Tool set typing tool parts.

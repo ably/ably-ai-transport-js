@@ -113,13 +113,16 @@ export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
 attempt to close the run**. That attempt is the reason to use it: an unclosed run
 leaves the browser waiting on a stream that never ends, and remembering to clean
 up by hand is the easiest part of a durable agent to forget. It runs in a
-non-cancellable scope, so it still fires when the workflow itself is cancelled or
-terminated.
+non-cancellable scope, so it still fires when the workflow itself is cancelled. A
+_terminated_ workflow is beyond its reach: a terminate dispatches no further
+workflow task, so no cleanup activity runs.
 
 Best-effort is literal, and deliberate. Cleanup gets one attempt with a short
 timeout, because retrying would let a hanging cleanup hold up a terminate; it
-no-ops when the run is already terminal or parked suspended; and its own failure
-is swallowed so the body's error reaches Temporal unmasked. It also only fires on
+reads no wire state, so it publishes its error terminal over a run that already
+ended (a second `ai-run-end` a reader ignores) and over one `suspend` had parked
+(replacing the park); and its own failure is swallowed so the body's error
+reaches Temporal unmasked. It also only fires on
 a throw — a body that returns without publishing a terminal leaves the run open.
 
 "Opens the run" covers two cases: a fresh turn creates one, and a continuation

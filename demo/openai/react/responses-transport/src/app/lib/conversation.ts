@@ -18,9 +18,16 @@
  * a page loading mid-run sees the prompt that started it, and again when the
  * turn is over, by which point the assistant's messages are in.
  *
- * Messages are all it stores. Run state is not conversation content: this demo
- * has no suspended runs to remember, because a turn that needs the client ends
- * and the client's answer wakes a new one.
+ * What it stores is the messages plus the channel serial they are complete up
+ * to — the trigger's own serial, which is deliberately conservative. The store
+ * also holds the messages this run publishes, whose serials are higher, so a
+ * client's walk re-reads them and the merge folds them into the same buckets.
+ * Claiming a higher watermark would risk skipping a message another
+ * participant published that this turn never saw.
+ *
+ * No run state. A run is not conversation content, and this demo has no
+ * suspended runs to remember either: a turn that needs the client ends, and
+ * the client's answer wakes a new one.
  */
 
 import type { LocatedInput, WireMeta } from '@ably/ai-transport';
@@ -108,7 +115,10 @@ export const openConversation = (
       });
     },
     async save() {
-      await saveConversation(channelName, { messages: merge.messages() });
+      await saveConversation(channelName, {
+        messages: merge.messages(),
+        ...(located.meta.serial === undefined ? {} : { latestSerial: located.meta.serial }),
+      });
     },
   };
 };

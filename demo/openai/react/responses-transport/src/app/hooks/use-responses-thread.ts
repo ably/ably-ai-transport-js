@@ -2,23 +2,28 @@
  * useResponsesThread — the demo's conversation state, merged from the client
  * transport's event stream.
  *
- * On mount it hydrates from the messages endpoint (`GET /api/messages`), which
- * returns the conversation the server's store holds: already-merged messages
- * and runs. Those seed the merge, so nothing already merged is merged again.
- * Nothing pages channel history — the store is the whole record, and the only
- * other source is the live subscription.
+ * Two sources, joined on a channel serial. `GET /api/messages` answers with the
+ * conversation the server's store holds — already merged — plus the serial it
+ * is complete up to. Those messages seed the merge, and then
+ * `transport.history()` pages backwards only for the gap between that serial
+ * and this client's own attach point (each call returns the next OLDER
+ * chronological batch, so batches prepend and events at or before the seam are
+ * dropped). Live events from `useTransportEvents` merge on top.
  *
- * Live events for a run the store already covers are skipped. Every run the
- * store holds has ended — the agent writes it as the run ends, and no run in
- * this demo suspends — so those events are already merged, and merging them
- * again would build a second copy of the reply under the wire's own
- * transport-message-id. Which runs those are comes off the stored messages
- * themselves, each of which carries the run that produced it.
+ * The store is the producer for the messages it holds. Its watermark is a
+ * lower bound rather than an exact seam, so the walk can re-return a message
+ * the store already accounts for — and re-applying an output would duplicate
+ * its text, because a decoder meeting a streamed message for the first time
+ * emits everything accumulated so far as one delta. So an event's outputs are
+ * dropped when the store already seeded that transport-message-id. Its inputs
+ * still apply: a message body merges part-by-part with an equality dedupe, a
+ * tool output dedupes by call-id, and an approval is last-writer-wins per
+ * call, so applying one twice changes nothing.
  *
- * Everything else merges on top, and events that arrive while the store read
- * is still in flight are buffered and merged after, so the merge's input stays
- * in chronological order — which is what lets a mid-run reload (the stored
- * prompt plus a live continuation) come out as one conversation.
+ * Events that arrive while the store read is still in flight are buffered and
+ * merged after, so the merge's input stays in chronological order — which is
+ * what lets a mid-run reload (the stored prompt plus a live continuation) come
+ * out as one conversation.
  *
  * All merging goes through `createThreadMerge` (see `../lib/merge-thread.ts`);
  * this hook only owns the ordering and the React state.
@@ -30,6 +35,7 @@ import type { OpenAIOutput } from '@ably/ai-transport/openai';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { createThreadMerge, type RunSummary, type ThreadMerge, type ThreadMessage } from '../lib/merge-thread';
+import { serialOf } from '../lib/serial-of';
 import type { StoredConversation } from '../lib/message-store';
 import type { OpenAIInput } from '../lib/openai-thread';
 
@@ -86,8 +92,8 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
   const mergeRef = useRef<ThreadMerge>(createThreadMerge());
   const bufferRef = useRef<TransportEvent<OpenAIInput, OpenAIOutput>[]>([]);
   const hydratedRef = useRef(false);
-  /** Runs the store already covers, so their live events are not merged twice. */
-  const storedRunsRef = useRef(new Set<string>());
+  /** Transport-message-ids the store seeded, so their outputs are not merged twice. */
+  const seededIdsRef = useRef(new Set<string>());
   const onMergeErrorRef = useRef(options.onMergeError);
   useEffect(() => {
     onMergeErrorRef.current = options.onMergeError;
@@ -107,13 +113,21 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
   }, []);
 
   /**
-   * Whether an event belongs to a run the store already covers. Merging it
-   * again would build a second copy of the same reply.
+   * The event as this merge should apply it, or `undefined` when there is
+   * nothing left to apply. An event for a message the store seeded keeps its
+   * inputs (which are idempotent) and loses its outputs (which would duplicate
+   * the text the store already holds).
    */
-  const isStoredRun = useCallback((event: TransportEvent<OpenAIInput, OpenAIOutput>): boolean => {
-    const runId = event.kind === 'message' ? event.meta.runId : event.event.runId;
-    return runId !== undefined && storedRunsRef.current.has(runId);
-  }, []);
+  const forMerge = useCallback(
+    (event: TransportEvent<OpenAIInput, OpenAIOutput>): TransportEvent<OpenAIInput, OpenAIOutput> | undefined => {
+      if (event.kind !== 'message') return event;
+      const id = event.meta.transportMessageId;
+      if (id === undefined || !seededIdsRef.current.has(id)) return event;
+      if (event.inputs.length === 0) return undefined;
+      return { ...event, outputs: [] };
+    },
+    [],
+  );
 
   const applyEvent = useCallback((event: TransportEvent<OpenAIInput, OpenAIOutput>) => {
     try {
@@ -134,8 +148,9 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       bufferRef.current.push(event);
       return;
     }
-    if (isStoredRun(event)) return;
-    applyEvent(event);
+    const forApply = forMerge(event);
+    if (!forApply) return;
+    applyEvent(forApply);
     publish(true);
   });
 
@@ -144,7 +159,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     let disposed = false;
     hydratedRef.current = false;
     bufferRef.current = [];
-    storedRunsRef.current = new Set();
+    seededIdsRef.current = new Set();
     mergeRef.current = createThreadMerge();
     publish(false);
 
@@ -164,20 +179,50 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       const seed = (await response.json()) as StoredConversation;
       if (disposed) return;
 
+      const stored = seed.messages ?? [];
+      const seam = seed.latestSerial;
+
+      // Newer than the seam. An event with no serial is kept: only a locally
+      // synthesised event lacks one, and history never carries those.
+      const newerThanSeam = (event: TransportEvent<OpenAIInput, OpenAIOutput>): boolean => {
+        if (seam === undefined) return true;
+        const serial = serialOf(event);
+        // Ably serials order lexicographically.
+        return serial === undefined || serial > seam;
+      };
+
+      // The gap: everything published after the store's watermark, up to this
+      // client's own attach point. Page backwards until a batch actually
+      // contains an event at or before the seam — not until one is merely
+      // shorter after filtering, which a serial-less event would also cause.
+      const gap: TransportEvent<OpenAIInput, OpenAIOutput>[] = [];
+      let exhausted = false;
+      let reachedSeam = false;
+      while (!exhausted && !reachedSeam && !disposed) {
+        const batch = await transport.history();
+        const fresh = batch.events.filter((event) => newerThanSeam(event));
+        reachedSeam = batch.events.some((event) => !newerThanSeam(event));
+        // Each batch is older than the previous one, so prepend.
+        gap.unshift(...fresh);
+        exhausted = batch.exhausted;
+      }
+      if (disposed) return;
+
       // The store's messages are already merged, so they are adopted rather
       // than replayed.
-      const stored = seed.messages ?? [];
       mergeRef.current.seed({ messages: stored });
-      // Every run the stored messages name has ended, so its output is
-      // accounted for. An input carries no run-id, so only the agent's own
-      // messages contribute here.
-      storedRunsRef.current = new Set(
-        stored.flatMap((message) => (message.runId === undefined ? [] : [message.runId])),
-      );
-      // The buffer started at this client's attach point, so it can hold events
-      // of a run the store already covers. Those are already merged.
+      seededIdsRef.current = new Set(stored.map((message) => message.transportMessageId));
+
+      for (const event of gap) {
+        const forApply = forMerge(event);
+        if (forApply) applyEvent(forApply);
+      }
+      // The live buffer starts at this client's attach point, which is EARLIER
+      // than the store read, so it can overlap what the walk covered.
       for (const event of bufferRef.current) {
-        if (!isStoredRun(event)) applyEvent(event);
+        if (!newerThanSeam(event)) continue;
+        const forApply = forMerge(event);
+        if (forApply) applyEvent(forApply);
       }
       bufferRef.current = [];
       hydratedRef.current = true;
@@ -197,7 +242,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     return () => {
       disposed = true;
     };
-  }, [transport, publish, applyEvent, isStoredRun, channelName]);
+  }, [transport, publish, applyEvent, forMerge, channelName]);
 
   return state;
 }

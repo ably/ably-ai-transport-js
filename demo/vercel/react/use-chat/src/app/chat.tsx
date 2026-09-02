@@ -5,20 +5,21 @@ import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessa
 import { useAblyMessages } from '@ably/ai-transport/react';
 import type { ChatTransport } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Chat as ChatView,
   COMMON_SCENARIOS,
   hasClientTool,
   runClientTool,
   stopAndCancel,
+  useChannelHydration,
   type CallbackLogEntry,
   type ClientToolLogEntry,
   type DemoStepId,
   type Scenario,
 } from '@ably-ai-demos/frontend';
 import { ChecklistWidget } from './components/checklist-widget';
-import { useStoredHydration } from './hooks/use-stored-hydration';
+import type { StoredConversation } from './lib/message-store';
 
 // Pick shared scenarios by id, never by position: the shared list is edited
 // independently of this demo, and an index would silently change what the
@@ -45,22 +46,41 @@ const SCENARIOS: readonly Scenario[] = [
 ];
 
 /**
- * Hydrate the conversation from the server's store, then render the chat.
+ * Hydrate the conversation, then render the chat.
  *
- * The store is the whole record: the agent route writes it as each run opens
- * and again when the run's stream ends, so one `GET /api/messages` is the
- * conversation. Nothing pages channel history.
+ * Two sources, joined on a channel serial. The server's store answers with the
+ * messages it holds and the serial they are complete up to, and
+ * `chatTransport.readSince(latestSerial)` walks the channel back only as far
+ * as that serial and returns whatever was published since. `useChannelHydration`
+ * runs both and hands over the two lists joined, deduped by message id — the
+ * store winning, since its watermark is a lower bound rather than an exact
+ * seam.
  *
- * The store also names a run streaming right now, and the chat resumes it with
- * an explicit `resumeStream({ body: { runId } })` rather than useChat's
- * `resume: true`. The two are not interchangeable here. `resume: true` fires
- * on mount with no body, so the adapter has to discover a run for itself —
- * from a history walk that retained one, or from a run it watched start live.
- * A page that hydrates from a store does neither, so naming the run is the
- * only thing that works.
+ * The walk is what makes a run still streaming resumable. `readSince`
+ * withholds any message whose run has not ended and retains its events, so
+ * `resumeStream()` below replays that message and continues live — one
+ * producer per message, which is what the reducer needs.
+ *
+ * `resume: true` is deliberately not passed. It fires on mount, before the
+ * fetch and the walk have run, and a reconnect with nothing retained has no
+ * run to resume.
  */
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const state = useStoredHydration({ channelName: chatId });
+  const state = useChannelHydration({
+    loadStored: async () => {
+      const response = await fetch(`/api/messages?channelName=${encodeURIComponent(chatId)}`);
+      if (!response.ok) {
+        throw new Error(`messages request failed with status ${String(response.status)}`);
+      }
+      // CAST: trust boundary — the response body is our own messages route's
+      // JSON, which serves the store verbatim.
+      const stored = (await response.json()) as StoredConversation;
+      return {
+        messages: stored.messages,
+        ...(stored.latestSerial === undefined ? {} : { latestSerial: stored.latestSerial }),
+      };
+    },
+  });
 
   if (state.status === 'loading') {
     return (
@@ -83,7 +103,6 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
       clientId={clientId}
       chatTransport={state.chatTransport}
       initialMessages={state.initialMessages}
-      activeRunId={state.activeRunId}
     />
   );
 }
@@ -93,13 +112,11 @@ function ChatInner({
   clientId,
   chatTransport,
   initialMessages,
-  activeRunId,
 }: {
   chatId: string;
   clientId?: string;
   chatTransport: ChatTransport;
   initialMessages: UIMessage[];
-  activeRunId: string | undefined;
 }) {
   // -- Callback & status logging for the debug pane -------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -124,11 +141,11 @@ function ChatInner({
     });
   }, []);
 
-  // useChat owns all message state from here: it starts from the stored
-  // conversation, and the adapter turns its sends into channel publishes plus
-  // the wake-the-agent POST, with the reply streaming back off the channel. A
-  // run still streaming at page load is picked up by the resume effect below,
-  // which passes its id as a reconnect hint.
+  // useChat owns all message state from here: it starts from the hydrated
+  // conversation (the store plus the walk), and the adapter turns its sends
+  // into channel publishes plus the wake-the-agent POST, with the reply
+  // streaming back off the channel. A run still streaming at page load is
+  // picked up by the resume effect below.
   const { messages, sendMessage, stop, status, addToolOutput, addToolApprovalResponse, resumeStream } = useChat({
     id: chatId,
     transport: chatTransport,
@@ -179,15 +196,31 @@ function ChatInner({
     },
   });
 
-  // Resume the run the store said was streaming. The hint names it directly,
-  // so the adapter joins that run rather than guessing from what it has seen
-  // — which on a page that just loaded is nothing. Runs once per hydrated run
-  // id; a run that ends before this fires resumes to an already-closed stream,
-  // which the adapter answers with no chunks.
+  // useChat hands back a fresh `resumeStream` identity every render, and
+  // resuming sets status, so an effect that depends on it re-runs forever.
+  // Read it through a ref instead and let the effects below own when they fire.
+  const resumeStreamRef = useRef(resumeStream);
   useEffect(() => {
-    if (activeRunId === undefined) return;
-    void resumeStream({ body: { runId: activeRunId } });
-  }, [activeRunId, resumeStream]);
+    resumeStreamRef.current = resumeStream;
+  });
+
+  // Step five of hydration, once per mount: pick up whatever the walk
+  // withheld. The walk has already run by the time this component mounts, so
+  // the adapter holds the in-flight message and takes its run id off that
+  // message's own header. With nothing in flight this is a no-op — the adapter
+  // answers `null`.
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (resumedRef.current) return;
+    resumedRef.current = true;
+    void resumeStreamRef.current();
+  }, []);
+
+  // A run this client did not start. useChat accepts new streamed content only
+  // through resumeStream(), so an idle tab has to ask for another
+  // participant's run explicitly or it renders nothing while they chat. The
+  // adapter fires this only while idle, so it cannot fight our own send.
+  useEffect(() => chatTransport.onForeignRun(() => void resumeStreamRef.current()), [chatTransport]);
 
   // Track status transitions for the debug pane. Recording a history of an
   // external value's transitions is the intended use of this effect — it

@@ -12,10 +12,13 @@
  * that the agent did not produce. Clients read it once, on hydration, through
  * `GET /api/messages`.
  *
- * It also records the run currently open on the channel. A page that loads
- * while a run is streaming has a conversation but no live stream, so
- * hydration hands that run id to `resumeStream` as a reconnect hint and the
- * adapter picks the run up from the channel.
+ * It also records the channel serial the stored messages are complete up to.
+ * That serial is the join: hydration hands it to `chatTransport.readSince()`,
+ * which walks the channel back only as far as it and returns whatever was
+ * published since, and a run still streaming is left for `resumeStream()`. No
+ * run id is stored — keeping one alive across a refresh would put the
+ * transport's wire metadata in the application's schema, and the walk recovers
+ * the run id from the message it withholds.
  */
 
 import type { UIMessage } from 'ai';
@@ -25,46 +28,42 @@ export interface StoredConversation {
   /** The persisted messages, oldest-first. */
   messages: UIMessage[];
   /**
-   * The run streaming on the channel right now, when there is one. A client
-   * resumes it on hydration rather than waiting for the next append.
+   * The channel serial the stored messages are complete up to, or `undefined`
+   * when nothing has been stored yet. Every channel message at or before it is
+   * accounted for in `messages`, which is what lets a client walk back only as
+   * far as it.
    */
-  activeRunId?: string;
+  latestSerial?: string;
 }
 
 const store = new Map<string, StoredConversation>();
 
 /**
- * Replace a conversation's messages, leaving the open run as it is.
+ * Replace a conversation's messages, and move the watermark to `latestSerial`.
  *
  * The AI SDK hands back the whole updated conversation rather than the newest
  * turn (`toUIMessageStream`'s `originalMessages` + `onEnd`), so a write is a
  * replacement and needs no merge or upsert.
  *
+ * The watermark only ever moves forward, so a slow or retried write cannot
+ * pull it back over messages the store already accounts for.
+ *
  * Modelled as async — it resolves once the write is durable, as a real store
  * would.
  * @param channelName - The conversation key (the channel name).
  * @param messages - The whole conversation, oldest-first.
+ * @param latestSerial - The channel serial the messages are complete up to. Omit to leave the watermark where it is.
  * @returns A promise that resolves once the messages are stored.
  */
-export async function saveMessages(channelName: string, messages: UIMessage[]): Promise<void> {
+export async function saveMessages(channelName: string, messages: UIMessage[], latestSerial?: string): Promise<void> {
   const current = store.get(channelName);
-  store.set(channelName, { ...current, messages });
-}
-
-/**
- * Record which run is open on the channel, or that none is.
- *
- * The route sets it as a run opens and clears it when the run's stream ends,
- * so the value a hydrating client reads is only ever a run it can still join.
- * @param channelName - The conversation key (the channel name).
- * @param activeRunId - The open run's id, or `undefined` to clear it.
- * @returns A promise that resolves once the change is durable.
- */
-export async function setActiveRun(channelName: string, activeRunId: string | undefined): Promise<void> {
-  const current = store.get(channelName) ?? { messages: [] };
+  // Ably serials order lexicographically.
+  const advanced =
+    latestSerial !== undefined && (current?.latestSerial === undefined || latestSerial > current.latestSerial);
+  const watermark = advanced ? latestSerial : current?.latestSerial;
   store.set(channelName, {
-    messages: current.messages,
-    ...(activeRunId === undefined ? {} : { activeRunId }),
+    messages,
+    ...(watermark === undefined ? {} : { latestSerial: watermark }),
   });
 }
 
@@ -72,7 +71,7 @@ export async function setActiveRun(channelName: string, activeRunId: string | un
  * Load the stored conversation for a channel, or an empty one when none is
  * stored.
  * @param channelName - The conversation key (the channel name).
- * @returns The stored messages (oldest-first) and the open run, if any.
+ * @returns The stored messages (oldest-first) and the serial they are complete up to.
  */
 export function loadConversation(channelName: string): StoredConversation {
   return store.get(channelName) ?? { messages: [] };

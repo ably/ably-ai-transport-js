@@ -44,7 +44,7 @@ import { tools } from './tools';
 import { makeChecklistTool } from './checklist-tool';
 import { checklistFrom, type ChecklistItemRow, type ChecklistRoot } from '../../lib/checklist';
 import { applyInputs } from '../../lib/apply-input';
-import { loadConversation, saveMessages, setActiveRun } from '../../lib/message-store';
+import { loadConversation, saveMessages } from '../../lib/message-store';
 
 /**
  * The pointer body the useChat adapter POSTs. The adapter also sends `runId`
@@ -99,6 +99,10 @@ export async function POST(req: Request) {
 
   let run;
   let conversation;
+  // The channel serial the store's messages are complete up to once this turn
+  // has written them: the trigger's own serial. Declared out here so `after()`
+  // can read it.
+  let watermark;
   try {
     // Connect AFTER the trigger was published (this route runs per POST):
     // locateInput and history are bounded at the channel attach point, so the
@@ -112,7 +116,8 @@ export async function POST(req: Request) {
     }
 
     // The conversation for the model: the store, plus the input that woke this
-    // invocation (see lib/apply-input.ts). No channel history is paged.
+    // invocation (see lib/apply-input.ts). The route reads no channel history —
+    // the store is its record, and the trigger is what has happened since.
     conversation = await applyInputs(loadConversation(channelName).messages, located.inputs);
 
     // Opening from the located input anchors the run to its trigger, so
@@ -122,11 +127,17 @@ export async function POST(req: Request) {
     run = transport.openRun({ input: located }, { signal: req.signal });
 
     // Store the turn as the run opens, not only when it finishes. A page that
-    // loads mid-run hydrates from the store, so without this write it would
-    // show the reply arriving with nothing that prompted it. The open run goes
-    // in alongside, which is what lets that page resume the stream.
-    await saveMessages(channelName, conversation);
-    await setActiveRun(channelName, run.runId);
+    // loads mid-run seeds from the store and walks the channel from its
+    // watermark, so without this write the reply would arrive with nothing
+    // that prompted it.
+    //
+    // The watermark is the trigger's own serial — deliberately conservative.
+    // The store also holds the messages this run is about to publish, whose
+    // serials are higher, so a client's walk re-reads them and dedupes by
+    // message id. Claiming a higher watermark would risk skipping a message
+    // published by another participant that this turn never saw.
+    watermark = located.meta.serial;
+    await saveMessages(channelName, conversation, watermark);
   } catch (error) {
     close();
     throw error;
@@ -134,6 +145,7 @@ export async function POST(req: Request) {
 
   const openedRun = run;
   const messages = conversation;
+  const storedUpTo = watermark;
 
   after(async () => {
     try {
@@ -166,7 +178,7 @@ export async function POST(req: Request) {
           originalMessages: messages,
           generateMessageId: () => crypto.randomUUID(),
           onEnd: ({ messages: updated }) => {
-            void saveMessages(channelName, updated);
+            void saveMessages(channelName, updated, storedUpTo);
           },
         }),
       );
@@ -189,9 +201,6 @@ export async function POST(req: Request) {
         error: new Ably.ErrorInfo(`unable to complete run; ${message}`, ErrorCode.RunResponseStreamFailed, 500),
       });
     } finally {
-      // The run is over either way, so nothing is left for a hydrating client
-      // to resume.
-      await setActiveRun(channelName, undefined);
       close();
     }
   });

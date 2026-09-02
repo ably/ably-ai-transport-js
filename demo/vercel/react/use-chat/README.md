@@ -1,14 +1,15 @@
 # `useChat` demo
 
-A Next.js chat app that plugs Ably AI Transport into the Vercel AI SDK's [`useChat`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) hook. `ChatTransportProvider` supplies a `chatTransport` that drops straight into `useChat({ transport })`: sends publish on an Ably channel and wake the agent route with a small pointer POST, and the streamed reply arrives back over the channel. The conversation itself lives in a server-side store, which the route writes as each run opens and again when it ends — so hydration is one REST read and nothing pages channel history. Each fresh visit opens a new channel (`?channel=<name>` pins a specific one).
+A Next.js chat app that plugs Ably AI Transport into the Vercel AI SDK's [`useChat`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) hook. `ChatTransportProvider` supplies a `chatTransport` that drops straight into `useChat({ transport })`: sends publish on an Ably channel and wake the agent route with a small pointer POST, and the streamed reply arrives back over the channel. The conversation itself lives in a server-side store, which the route writes as each run opens and again when it ends, together with the channel serial its messages are complete up to. Hydration reads the store and then walks the channel back only as far as that serial, so the two sources join without overlapping. Each fresh visit opens a new channel (`?channel=<name>` pins a specific one).
 
 What the demo shows:
 
 - **Streaming over Ably** — `useChat` owns the message state; the transport turns its sends into channel publishes and its response stream into channel subscriptions.
 - **Tools** — a server tool (`getWeather`), a browser tool (`getLocation`, run via `onToolCall` + `addToolOutput`), and an approval-gated tool (`getWeatherForecast`, resolved via `addToolApprovalResponse`). A turn that stops on a tool call ends; the resolution carries no run id, so its continuation wakes a fresh run that answers.
 - **Cancel** — Stop publishes a cancel over the channel; the agent aborts the model call and ends the run.
-- **Hydrate from your own store** — the chat hydrates from `GET /api/messages` before it mounts (`useStoredHydration`), which reads the server's conversation store. The channel carries the live conversation; the store is the record of it, and the client reads no history.
-- **Resume a run in flight** — the store also names the run streaming right now, so a page that loads mid-run hands that id to `resumeStream` as a `ReconnectHint` and the adapter joins the run off the channel. The decoder's first contact with a stream in progress carries the text so far, so nothing published before the page loaded is lost.
+- **Hydrate from your own store, joined to the channel** — `useChannelHydration` reads `GET /api/messages` for the stored messages and the serial they are complete up to, then calls `chatTransport.readSince(latestSerial)`, which walks the channel back only as far as that serial. Both lists seed `useChat`, deduped by message id. The store is the record; the channel covers whatever the store has not caught up with.
+- **Resume a run in flight** — `readSince` withholds any message whose run has not ended and retains its events, so the `resumeStream()` after the walk replays that message and continues live. One producer per message, which is what the reducer needs. No run id is stored: the adapter takes it off the withheld message's own header.
+- **See another participant's run** — `chatTransport.onForeignRun` fires for a run this tab did not start, and the demo answers it with `resumeStream()`. useChat accepts new streamed content only that way, so without it an idle tab renders nothing while someone else chats.
 - **Server-owned persistence** — every write happens in the agent route. A client never writes to the store, so it cannot put anything there the agent did not produce.
 - **LiveObjects checklist** — see below.
 
@@ -66,13 +67,15 @@ How it works:
 1. Builds a fresh Ably client and channel, and a `createAgentTransport` over it.
 2. `connect()`, then `locateInput(eventId)` finds the triggering input in channel history (404 if missing).
 3. Builds the model context by reading the store and applying the located input to it (`src/app/lib/apply-input.ts`). No channel history is paged.
-4. Opens a run anchored to the located input, writes the turn and the open run id to the store, and answers 202. Nothing is read from the response body: the client resolves the run id off the channel, from the `ai-run-start` that names the input it published.
+4. Opens a run anchored to the located input, writes the turn to the store under the trigger's own channel serial, and answers 202. Nothing is read from the response body: the client resolves the run id off the channel, from the `ai-run-start` that names the input it published.
 5. Inside `after()`: `streamText` with the conversation and tools, pipes the UIMessage chunk stream into `run.pipe(...)`, then `run.end(...)` — including when a client tool or approval is pending, because the client's resolution wakes a new run rather than resuming this one.
-6. `toUIMessageStream({ originalMessages, onEnd })` puts the AI SDK in its own persistence mode: `onEnd` hands back the whole updated conversation, so the store write needs no merge of the demo's own. The open run is cleared once the run is over.
+6. `toUIMessageStream({ originalMessages, onEnd })` puts the AI SDK in its own persistence mode: `onEnd` hands back the whole updated conversation, so the store write needs no merge of the demo's own.
 
 ## The conversation store
 
-`src/app/lib/message-store.ts` is an in-memory stand-in for the database an app would keep conversations in, keyed by channel name and lost on restart. `GET /api/messages` (`src/app/api/messages/route.ts`) serves it and touches no Ably connection, because it stands in for a query against the app's own database. There is no write side on that route — the agent route owns every write.
+`src/app/lib/message-store.ts` is an in-memory stand-in for the database an app would keep conversations in, keyed by channel name and lost on restart. It holds the messages and the channel serial they are complete up to. `GET /api/messages` (`src/app/api/messages/route.ts`) serves it and touches no Ably connection, because it stands in for a query against the app's own database. There is no write side on that route — the agent route owns every write.
+
+The watermark the route reports is the trigger's own serial, deliberately conservative. The store also holds the messages the run then publishes, whose serials are higher, so a client's walk re-reads them and dedupes by message id. Claiming a higher watermark would risk skipping a message another participant published that this turn never saw.
 
 `src/app/lib/apply-input.ts` is the one thing the store cannot supply: the input that woke the agent, which is still only on the channel. A user turn replaces or appends a message; a tool resolution and an approval decision both replay through the AI SDK's own reducer (`readUIMessageStream`) — the decision as a `tool-approval-response` chunk — so the SDK owns every state transition. What is left is the part no reducer can do for itself: deciding which stored message a body addresses, and putting a message into the list.
 

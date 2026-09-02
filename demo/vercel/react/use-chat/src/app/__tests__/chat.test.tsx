@@ -22,6 +22,8 @@ const mockSendMessages = vi.fn<ChatTransport['sendMessages']>();
 const mockCancel = vi.fn<ChatTransport['cancel']>(async () => {});
 // null is the AI SDK's "nothing to resume".
 const mockReconnect = vi.fn<ChatTransport['reconnectToStream']>(async () => null);
+const mockReadSince = vi.fn<ChatTransport['readSince']>(async () => ({ messages: [], exhausted: true }));
+const mockForeignRun = vi.fn<ChatTransport['onForeignRun']>(() => () => {});
 
 /**
  * A fresh adapter per test. The demo's hydration caches its store read per
@@ -32,19 +34,23 @@ const mockReconnect = vi.fn<ChatTransport['reconnectToStream']>(async () => null
 const makeChatTransport = (): ChatTransport => ({
   sendMessages: mockSendMessages,
   reconnectToStream: mockReconnect,
-  readSince: async () => ({ messages: [], exhausted: true }),
+  readSince: mockReadSince,
   cancel: mockCancel,
   close: () => {},
   streaming: false,
   onStreamingChange: () => () => {},
-  onForeignRun: () => () => {},
+  onForeignRun: mockForeignRun,
 });
 
 let mockChatTransport: ChatTransport = makeChatTransport();
 
+// One stable object. The hydration hook keys its effect on the pair's
+// identity, so a fresh literal per render would re-run the walk forever.
+const mockTransport = { connect: async () => undefined };
+
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   useChatTransport: () => ({
-    transport: { connect: async () => undefined },
+    transport: mockTransport,
     chatTransport: mockChatTransport,
     error: undefined,
   }),
@@ -97,6 +103,9 @@ describe('<Chat>', () => {
     mockSendMessages.mockReset();
     mockCancel.mockReset();
     mockReconnect.mockClear();
+    mockReadSince.mockClear();
+    mockReadSince.mockResolvedValue({ messages: [], exhausted: true });
+    mockForeignRun.mockClear();
     mockChatTransport = makeChatTransport();
     mockSendMessages.mockResolvedValue(chunkStreamOf([]));
     // Hydration reads the server's conversation store over HTTP. An empty
@@ -116,48 +125,80 @@ describe('<Chat>', () => {
     vi.unstubAllGlobals();
   });
 
-  it('seeds the conversation from the stored messages the server serves', async () => {
+  it('seeds from the store and appends what the channel walk returns', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
         Promise.resolve(
           Response.json({
             messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'stored prompt' }] }],
+            latestSerial: 's-2',
           }),
         ),
       ),
     );
+    mockReadSince.mockResolvedValue({
+      messages: [{ id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'walked reply' }] }],
+      exhausted: true,
+    });
 
     render(<Chat chatId="ai:test" />);
 
     expect(await screen.findByText('stored prompt')).not.toBeNull();
-    // The store is the whole record: nothing walks the channel for it.
-    await waitFor(() => {
-      expect(mockReconnect).not.toHaveBeenCalled();
-    });
+    expect(screen.queryByText('walked reply')).not.toBeNull();
   });
 
-  it('resumes the run the store reports open, naming it as a reconnect hint', async () => {
+  it('walks the channel back only as far as the serial the store reports', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => Promise.resolve(Response.json({ messages: [], activeRunId: 'run-open' }))),
+      vi.fn(() => Promise.resolve(Response.json({ messages: [], latestSerial: 's-7' }))),
     );
 
     render(<Chat chatId="ai:test" />);
 
     await waitFor(() => {
-      expect(mockReconnect).toHaveBeenCalledTimes(1);
+      expect(mockReadSince).toHaveBeenCalledTimes(1);
     });
-    // The hint is what lets a page that never watched the run start still join
-    // it — the adapter has nothing of its own to resume from.
-    expect(mockReconnect.mock.calls[0]?.[0]).toMatchObject({ body: { runId: 'run-open' } });
+    expect(mockReadSince).toHaveBeenCalledWith('s-7');
   });
 
-  it('resumes nothing when the store reports no open run', async () => {
+  it('walks the whole channel when the store reports no serial', async () => {
     render(<Chat chatId="ai:test" />);
 
+    await waitFor(() => {
+      expect(mockReadSince).toHaveBeenCalledTimes(1);
+    });
+    expect(mockReadSince).toHaveBeenCalledWith(undefined);
+  });
+
+  it('resumes once after the walk, so a run still streaming is picked up', async () => {
+    render(<Chat chatId="ai:test" />);
+
+    // Step five of the hydration flow. The walk has already run, so the
+    // adapter holds whatever it withheld; with nothing in flight it answers
+    // null and useChat stays idle.
+    await waitFor(() => {
+      expect(mockReconnect).toHaveBeenCalledTimes(1);
+    });
     await screen.findByPlaceholderText('Type a message...');
-    expect(mockReconnect).not.toHaveBeenCalled();
+    expect(mockReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('subscribes to runs another participant started', async () => {
+    render(<Chat chatId="ai:test" />);
+
+    await waitFor(() => {
+      expect(mockForeignRun).toHaveBeenCalled();
+    });
+    // useChat takes new streamed content only through resumeStream, so an idle
+    // tab has to ask for a foreign run or it renders nothing while others chat.
+    const notify = mockForeignRun.mock.calls[0]?.[0];
+    if (!notify) throw new Error('no foreign-run callback registered');
+    mockReconnect.mockClear();
+    notify('run-elsewhere');
+    await waitFor(() => {
+      expect(mockReconnect).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('cancels the run on the channel when Stop is pressed', async () => {

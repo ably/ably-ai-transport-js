@@ -22,12 +22,20 @@
 import type { ThreadSnapshot } from './merge-thread';
 
 /**
- * One conversation as the store holds it — the merged thread, and nothing
- * else. No run state, because a run is not conversation content; no watermark,
- * because a client reads the store and takes everything else from its live
- * subscription, so there is no history window to bound.
+ * One conversation as the store holds it: the merged thread plus the channel
+ * serial it is complete up to. No run state — a run is not conversation
+ * content — but the serial matters, because it is the join. A client reads the
+ * store and then walks the channel back only as far as that serial, so the two
+ * sources meet without either producing a message the other already did.
  */
-export type StoredConversation = ThreadSnapshot;
+export interface StoredConversation extends ThreadSnapshot {
+  /**
+   * The channel serial the stored messages are complete up to, or `undefined`
+   * when nothing has been stored yet. Every channel message at or before it is
+   * accounted for in `messages`.
+   */
+  latestSerial?: string;
+}
 
 const store = new Map<string, StoredConversation>();
 
@@ -36,7 +44,8 @@ const store = new Map<string, StoredConversation>();
  *
  * The writer holds the whole merged thread — it seeded from the store and
  * added this turn — so a write is a replacement and needs no merge or upsert
- * of its own.
+ * of its own. The watermark only ever moves forward, so a slow or retried
+ * write cannot pull it back over messages the store already accounts for.
  *
  * Modelled as async — it resolves once the write is durable, as a real store
  * would.
@@ -45,14 +54,23 @@ const store = new Map<string, StoredConversation>();
  * @returns A promise that resolves once the conversation is stored.
  */
 export async function saveConversation(channelName: string, conversation: StoredConversation): Promise<void> {
-  store.set(channelName, conversation);
+  const current = store.get(channelName);
+  // Ably serials order lexicographically.
+  const advanced =
+    conversation.latestSerial !== undefined &&
+    (current?.latestSerial === undefined || conversation.latestSerial > current.latestSerial);
+  const watermark = advanced ? conversation.latestSerial : current?.latestSerial;
+  store.set(channelName, {
+    messages: conversation.messages,
+    ...(watermark === undefined ? {} : { latestSerial: watermark }),
+  });
 }
 
 /**
  * Load the stored conversation for a channel, or an empty one when none is
  * stored.
  * @param channelName - The conversation key (the channel name).
- * @returns The merged thread.
+ * @returns The merged thread and the serial it is complete up to.
  */
 export function loadConversation(channelName: string): StoredConversation {
   return store.get(channelName) ?? { messages: [] };

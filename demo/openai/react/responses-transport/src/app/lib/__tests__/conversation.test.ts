@@ -126,12 +126,17 @@ describe('openConversation', () => {
     expect(conversation.messages()).toHaveLength(1);
   });
 
-  it('writes the conversation to the store', async () => {
+  it('writes the conversation to the store under the trigger serial', async () => {
     const conversation = openConversation('ai:conv-save', 'run-1', locatedPrompt('cm-u1', 'hello'));
 
     await conversation.save();
 
-    expect(loadConversation('ai:conv-save').messages.map((message) => message.transportMessageId)).toEqual(['cm-u1']);
+    const stored = loadConversation('ai:conv-save');
+    expect(stored.messages.map((message) => message.transportMessageId)).toEqual(['cm-u1']);
+    // Deliberately the trigger's serial, not the run's newest: a client's walk
+    // re-reads this turn's own output rather than risk skipping a message
+    // another participant published that this turn never saw.
+    expect(stored.latestSerial).toBe('s-1');
   });
 
   it('stamps the run on what it records, so a client knows which runs are covered', async () => {

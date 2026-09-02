@@ -262,7 +262,9 @@ describe('<Chat>', () => {
     expect(screen.queryByText('Hi there')).not.toBeNull();
   });
 
-  it('hydrates the thread from the stored messages, with no history paging', async () => {
+  it('seeds from the stored messages and walks only the gap newer than the seam', async () => {
+    const withSerial = (event: Event, serial: string): Event =>
+      event.kind === 'message' ? { ...event, meta: { ...event.meta, serial } } : event;
     const storedMessages = [
       {
         transportMessageId: 'cm-u1',
@@ -271,7 +273,7 @@ describe('<Chat>', () => {
           {
             type: 'message' as const,
             role: 'user' as const,
-            content: [{ type: 'input_text' as const, text: 'restored prompt' }],
+            content: [{ type: 'input_text' as const, text: 'stored prompt' }],
           },
         ],
       },
@@ -280,22 +282,31 @@ describe('<Chat>', () => {
       'fetch',
       vi.fn((url: RequestInfo | URL) =>
         String(url).includes('/api/messages')
-          ? Promise.resolve(Response.json({ messages: storedMessages }))
+          ? Promise.resolve(Response.json({ messages: storedMessages, latestSerial: 's-2' }))
           : Promise.resolve(Response.json({ runId: 'run-1' })),
       ),
     );
-    // Anything in history would be a second source for the conversation. The
-    // store is the only one, so these batches must never be paged.
-    mockState.historyBatches = [{ events: [userMessageEvent('cm-u0', 'never paged')], exhausted: true }];
+    mockState.historyBatches = [
+      {
+        events: [
+          withSerial(userMessageEvent('cm-u1', 'stored prompt'), 's-2'),
+          withSerial(assistantTurnEvent('cm-a1', 'run-1', 'newer reply'), 's-3'),
+        ],
+        exhausted: false,
+      },
+      { events: [withSerial(userMessageEvent('cm-u0', 'beyond the seam'), 's-1')], exhausted: true },
+    ];
 
     await renderChat();
 
-    expect(screen.queryByText('restored prompt')).not.toBeNull();
-    expect(screen.queryByText('never paged')).toBeNull();
+    expect(screen.getAllByText('stored prompt')).toHaveLength(1);
+    expect(screen.queryByText('newer reply')).not.toBeNull();
+    // The walk stopped at the seam: the older batch was never paged.
+    expect(screen.queryByText('beyond the seam')).toBeNull();
     expect(mockState.historyBatches).toHaveLength(1);
   });
 
-  it('skips live events of a run the store already holds', async () => {
+  it('drops the outputs of a message the store already seeded', async () => {
     const storedMessages = [
       {
         transportMessageId: 'cm-a1',
@@ -316,10 +327,10 @@ describe('<Chat>', () => {
     await renderChat();
     expect(screen.getAllByText('stored reply')).toHaveLength(1);
 
-    // A late delivery of that run's own output. The store already accounts for
-    // it, so merging it again would render the reply twice — under the wire's
-    // transport-message-id rather than the stored one.
-    emit(assistantTurnEvent('cm-wire-a1', 'run-done', 'stored reply'));
+    // The store is this message's producer. A decoder meeting the stream for
+    // the first time emits everything accumulated as one delta, so applying
+    // that on top of the stored text would render it twice.
+    emit(assistantTurnEvent('cm-a1', 'run-done', 'stored reply'));
 
     expect(screen.getAllByText('stored reply')).toHaveLength(1);
   });

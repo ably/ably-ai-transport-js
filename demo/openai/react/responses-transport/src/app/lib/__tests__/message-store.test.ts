@@ -1,7 +1,8 @@
 /**
  * Tests for the demo's server-owned conversation store: it holds the merged
- * thread — messages only, no wire events and no run state — and replaces it
- * wholesale on the next write.
+ * thread — messages, no wire events and no run state — plus the channel serial
+ * they are complete up to, replaces the messages wholesale on the next write,
+ * and only ever moves the watermark forward.
  *
  * The store is module-scoped, so each test uses its own channel name.
  */
@@ -17,7 +18,10 @@ const message = (transportMessageId: string, text: string): ThreadMessage => ({
   items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
 });
 
-const conversation = (messages: ThreadMessage[]): StoredConversation => ({ messages });
+const conversation = (messages: ThreadMessage[], latestSerial?: string): StoredConversation => ({
+  messages,
+  ...(latestSerial === undefined ? {} : { latestSerial }),
+});
 
 describe('message store', () => {
   it('reports an empty conversation for a channel it has never seen', () => {
@@ -26,12 +30,28 @@ describe('message store', () => {
     expect(stored.messages).toEqual([]);
   });
 
-  it('holds the merged messages', async () => {
-    const stored = conversation([message('cm-1', 'hello')]);
+  it('holds the merged messages and the serial they are complete up to', async () => {
+    const stored = conversation([message('cm-1', 'hello')], 's-1');
 
     await saveConversation('ai:saved', stored);
 
     expect(loadConversation('ai:saved')).toEqual(stored);
+  });
+
+  it('never moves the watermark backwards, so a retried write cannot skip messages', async () => {
+    await saveConversation('ai:watermark', conversation([message('cm-1', 'a'), message('cm-2', 'b')], 's-2'));
+
+    await saveConversation('ai:watermark', conversation([message('cm-1', 'a')], 's-1'));
+
+    expect(loadConversation('ai:watermark').latestSerial).toBe('s-2');
+  });
+
+  it('leaves the watermark where it is when a write reports none', async () => {
+    await saveConversation('ai:no-serial', conversation([message('cm-1', 'a')], 's-1'));
+
+    await saveConversation('ai:no-serial', conversation([message('cm-1', 'a'), message('cm-2', 'b')]));
+
+    expect(loadConversation('ai:no-serial').latestSerial).toBe('s-1');
   });
 
   it('replaces the conversation wholesale, because the writer holds all of it', async () => {

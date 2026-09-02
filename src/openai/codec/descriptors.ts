@@ -17,13 +17,14 @@
  *   and streams the `arguments` text. The complete item still arrives on the
  *   discrete `output_item.done`, and the call's *result* is the codec's own
  *   `function_call_output` event (see below).
- * - **The terminal lifecycle events are bare discrete signals** (`response.completed`
- *   / `.incomplete` / `.failed`) — no payload. They carry only the signal the
- *   decode-lifecycle policy needs to free its opening-bracket tracking; run outcome is
- *   observed out-of-band. The lifecycle openers (`created` / `.in_progress` /
- *   `.queued`), the stream-level `error`, and the content-/summary-part close
- *   boundaries carry nothing the projection needs, so the codec `drop`s them —
- *   they encode to nothing and never reach the wire.
+ * - **The response lifecycle events are all dropped.** The terminal events
+ *   (`response.completed` / `.incomplete` / `.failed`), the openers (`.created`
+ *   / `.in_progress` / `.queued`), and the stream-level `error` carry nothing a
+ *   wire consumer reads — run outcome is observed out-of-band via the transport
+ *   run-end event. The content-/summary-part close boundaries likewise carry
+ *   nothing a consumer's fold needs (each streamed group has its own real
+ *   close). The codec `drop`s them all — they encode to nothing and never reach
+ *   the wire.
  * - **The table is a total inventory; anything outside it throws.** Every event
  *   the codec expects is transmitted (`event` / `stream`) or deliberately kept
  *   off the wire (`drop`); an event that is neither hits the encoder's safety
@@ -37,9 +38,10 @@
  *
  * Input side: the user message is a `batch` that fans the user message's
  * content parts out into one `ai-input` event per part (one for a plain text prompt),
- * reassembled and merged by the reducer — see {@link inputs}. The `regenerate`
- * signal is a wire-only event: it stamps only its `kind` header (the agent
- * reads `target` / `parent` via the input-event lookup) and folds to nothing.
+ * reassembled by a consumer merging parts by codec-message-id — see {@link inputs}. The `regenerate`
+ * signal is a wire-only event: it stamps only its `kind` header and carries no
+ * body — the `regenerates` / `parent` structure rides the transport headers,
+ * and `WireMeta` reports it on the way back.
  *
  * Hosted tools are added by adding entries here; the codec/transport split is
  * unaffected.
@@ -115,7 +117,7 @@ const hasLogprobs = (p: WireDoneContentPart): p is PartWithLogprobs =>
   p.type === 'output_text' && p.logprobs !== undefined && p.logprobs.length > 0;
 
 // Build the `content` array a message's wire-form output_item.done carries. Its
-// sole job is to carry per-part `logprobs` to the client, where the reducer
+// sole job is to carry per-part `logprobs` to the client, where a consumer
 // folds each part's logprobs into its already-streamed content slot by index.
 //
 // Returns `undefined` when no part has logprobs: there is nothing to carry, so
@@ -135,7 +137,7 @@ const toWireContent = (content: readonly WireDoneContentPart[] | undefined): Wir
  * drops that content and keeps only the fields the client cannot rebuild from
  * the deltas (`id`/`status`, a reasoning item's `encrypted_content`, and a
  * message's per-part `logprobs`). This keeps the streamed content from going on
- * the wire twice; the client's reducer folds the deltas back into the finalised
+ * the wire twice; a consumer's fold merges the deltas back into the finalised
  * item.
  * Takes {@link DoneItem} — the real, rich `Responses.ResponseOutputItem`
  * OpenAI actually sends for an unsupported type, or the already-modelled
@@ -181,8 +183,8 @@ export const outputs = ({
   // --- content-part streams: assistant text, refusal, reasoning text -------
   // Three groups share the content_part.added start, differentiated by the
   // added part's type; each fills content[content_index] of its item, so the stream id
-  // composes item_id + content_index and the decoded delta carries both for the
-  // reducer to target the exact slot.
+  // composes item_id + content_index and the decoded delta carries both for a
+  // consumer's fold to target the exact slot.
   stream('output_text', {
     streamId: contentSlotStreamId,
     fields: [fItemId, fOutputIndex, fContentIndex, fPart],
@@ -313,7 +315,7 @@ export const outputs = ({
   // event). The id sits nested at item.id on the start but top-level item_id on
   // the deltas (relocate), so it is derived per phase. The fc item is carried on
   // the start header (fItem), re-stamped on every append, so the decoder rebuilds
-  // item_id / name from it — the reducer never parses the transport stream id.
+  // item_id / name from it — no consumer ever parses the transport stream id.
   stream('function_call_arguments', {
     streamId: (c) => {
       if (c.type !== 'response.output_item.added') return c.item_id;
@@ -366,9 +368,9 @@ export const outputs = ({
   // lifecycle openers are that same request envelope, and the stream-level
   // `error` is agent-side signalling, not conversation content. All are dropped:
   // encoded to nothing, never on the wire. (A future agent-side run-outcome
-  // mapper — see the reducer's AIT-1113 note — would read the terminal events and
-  // `error` from the raw stream before encode, so keeping them off the wire costs
-  // nothing even once it lands.)
+  // mapper — AIT-1113 — would read the terminal events and `error` from the raw
+  // stream before encode, so keeping them off the wire costs nothing even once
+  // it lands.)
   drop('response.completed'),
   drop('response.incomplete'),
   drop('response.failed'),
@@ -386,11 +388,11 @@ export const outputs = ({
   // changing the format. The `item` is a structured object (a message, reasoning
   // item, or function call). The decode CAST below trusts the `{ item }` envelope
   // the encoder always publishes (a trust boundary); it reads `.item` without
-  // guarding against a malformed payload, matching the trust the reducer already
-  // places in the decoded item.
+  // guarding against a malformed payload, matching the trust a consumer places
+  // in the decoded item.
   //
-  // `output_index` / `sequence_number` are dropped: the reducer keys on the
-  // item's own id, and Ably serials order the wire, so neither is read on decode
+  // `output_index` / `sequence_number` are dropped: the item's own id already
+  // identifies it, and Ably serials order the wire, so neither is read on decode
   // or resent to /responses.
   //
   // `output_item.added` is emitted as this discrete event only for message and
@@ -399,28 +401,29 @@ export const outputs = ({
   // `start.match`), so it never reaches here.
   //
   // `output_item.done` is discrete for every item type, but its payload is
-  // REDUCED (see {@link toWireItem}): the item's content is already folded from
-  // the streams, so re-echoing the whole item would duplicate (e.g.) a long
-  // message's text on the wire. It carries only what the reducer finalises — the
-  // terminal `status`; a message's per-part `logprobs` (the one content datum
-  // the streamed deltas don't reconstruct — see below); and a reasoning item's
-  // done-only `encrypted_content`.
+  // REDUCED (see {@link toWireItem}): the streams already carried the item's
+  // content, so re-echoing the whole item would duplicate (e.g.) a long
+  // message's text on the wire. It carries only what finalises the item in a
+  // consumer's fold — the terminal `status`; a message's per-part `logprobs`
+  // (the one content datum the streamed deltas don't reconstruct — see below);
+  // and a reasoning item's done-only `encrypted_content`.
   //
   // Logprobs are sourced from the finalised item here because this is the one
   // place they fold in type-safely. The finalised item's content is typed
   // `ResponseOutputText`, whose `logprobs` is the rich SDK shape (with `bytes`)
-  // the projection slot wants, so the fold is a plain, cast-free assignment. The
+  // a folded message's content slot wants, so the fold is a plain, cast-free
+  // assignment. The
   // output_text.done EVENT also carries logprobs at runtime, but its SDK type
   // (`ResponseTextDoneEvent`) declares a leaner, `bytes`-less shape, so sourcing
   // them there would need an unsafe cast betting on a richer runtime shape than
   // the type promises. And `content_part.done`, the event that literally hands
   // you the finalised part, does not carry them in practice (its `part.logprobs`
   // comes through empty), so it isn't an option; see its drop below. This
-  // mirrors what OpenAI's own response accumulator does
-  // (openai/lib/responses/ResponseAccumulator's `output_item.done` case clones
-  // the finalised item wholesale): it sources `ResponseOutputText.logprobs` from
-  // the finalised item too, not from the per-event logprobs on the deltas or
-  // text-done.
+  // mirrors what OpenAI's own reducer does (`accumulateResponse` in
+  // openai/lib/responses/ResponseAccumulator — its `output_item.done` case
+  // clones the finalised item wholesale): it sources
+  // `ResponseOutputText.logprobs` from the finalised item too, not from the
+  // per-event logprobs on the deltas or text-done.
   event('response.output_item.added', {
     data: {
       encode: (c) => ({ item: assertModelledOutputItem(c.item) }),
@@ -435,12 +438,12 @@ export const outputs = ({
       decode: (d) => ({ item: (d as { item: WireDoneItem }).item }),
     },
   }),
-  // The content-/summary-part close boundaries are pure markers the reducer
-  // folds to nothing — each streamed group above already has its own real
-  // close (its `end:` chunk — response.output_text.done / .refusal.done /
-  // .reasoning_text.done / .reasoning_summary_text.done — rebuilt from the
-  // accumulated stream text), so these generic part-close events carry no
-  // unique data and are dropped rather than transmitted. Note content_part.done
+  // The content-/summary-part close boundaries are pure markers — each streamed
+  // group above already has its own real close (its `end:` chunk —
+  // response.output_text.done / .refusal.done / .reasoning_text.done /
+  // .reasoning_summary_text.done — rebuilt from the accumulated stream text),
+  // so these generic part-close events carry no unique data and are dropped
+  // rather than transmitted. Note content_part.done
   // echoes the whole finalised part (text + annotations) and its type even has a
   // `logprobs` field — but OpenAI leaves that field empty in practice (verified
   // against a real response), so it is NOT a viable logprobs carrier; logprobs
@@ -451,7 +454,7 @@ export const outputs = ({
   // --- server-executed tool result (codec's own output event) --------------
   // Not a Responses stream event: OpenAI surfaces tool output only as model
   // input on the next turn, so the agent publishes this after running the
-  // tool. The reducer folds the item into the message its codec-message-id
+  // tool. A consumer folds the item into the message its codec-message-id
   // names (paired with its function_call by call_id at render time). Like the
   // item envelopes above, the item is carried under the `item` key of its wire
   // `data` envelope (see that note for the rationale).
@@ -468,8 +471,8 @@ export const outputs = ({
   // function calls, so the agent authors this to gate a tool on a human
   // decision (mirroring the Agents SDK's RunToolApprovalItem). call_id and name
   // ride the headers; the tool's arguments ride the JSON wire data, so a client
-  // can render the approval prompt from the request alone. The reducer marks the
-  // call `pending` in the message's per-call_id tool-call state.
+  // can render the approval prompt from the request alone. A consumer's fold
+  // marks the call `pending` in the message's per-call_id tool-call state.
   event('tool-approval-request', {
     fields: [fCallId, fName],
     data: { encode: (c) => c.arguments, decode: (d) => ({ arguments: asString(d) }) },
@@ -483,7 +486,7 @@ export const outputs = ({
   // support, so they are not described: the encoder's safety net throws on them,
   // which beats silently dropping that content.
   // TODO(AIT-1121): support these event types — each is added by extending this
-  // table with a stream / event descriptor plus its reducer arm. The inventory
+  // table with a stream / event descriptor. The inventory
   // below is exhaustive against openai@6.44.0's ResponseStreamEvent union;
   // revisit it on a dependency bump.
   //  text annotations: response.output_text.annotation.added — citations

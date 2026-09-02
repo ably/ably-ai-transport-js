@@ -3,7 +3,7 @@
  *
  * `WireMeta` is the metadata the receive stream surfaces alongside a decoded
  * message. It carries the two raw header tiers (`transport` and `codec`)
- * verbatim so any consumer — the Tree included — rebuilds conversation state off
+ * verbatim so any consumer rebuilds conversation state off
  * the public event with no privileged access to the wire, plus a typed
  * convenience projection of the transport tier's identity and structure fields.
  */

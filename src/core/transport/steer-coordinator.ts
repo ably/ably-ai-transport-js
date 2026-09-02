@@ -1,7 +1,7 @@
 /**
  * Client-side steer state machine.
  *
- * Owns every piece of state involved in the `session.view.send(...)` →
+ * Owns every piece of state involved in the {@link ClientTransport.steer} →
  * `run.steer(...)` → lifecycle-event lifecycle:
  *   - {@link _pendingEchoes} — steers awaiting their own channel echo (so
  *     the SDK can read the Ably-assigned publish serial and surface it via
@@ -13,15 +13,15 @@
  *   - {@link _deadRunIds} — runs whose `run-end` the SDK has folded;
  *     subsequent `steer()` calls reject synchronously.
  *
- * Hosting sessions wire it up by:
+ * A hosting transport wires it up by:
  *   1. constructing it with a publish callback, a clientId resolver, and
  *      a closed predicate;
- *   2. calling `observeMessage(msg)` from their channel listener for every
+ *   2. calling `observeMessage(msg)` from its channel listener for every
  *      inbound message;
- *   3. exposing `steer(runIdPromise, input)` as the {@link ClientRun.steer}
+ *   3. exposing `steer(runIdPromise, input)` as the {@link ClientTransport.steer}
  *      method;
  *   4. calling `drainContinuityLost(err)` on a channel discontinuity;
- *   5. calling `drainClosed()` on session close.
+ *   5. calling `drainClosed()` when the transport closes.
  */
 
 import * as Ably from 'ably';
@@ -45,7 +45,7 @@ import type { SteerOutcome, SteerResult } from './types/steer.js';
 /** Constructor options for {@link SteerCoordinator}. */
 export interface SteerCoordinatorOptions<TInput> {
   /**
-   * Publish a steer input on the channel. Wraps the session-level
+   * Publish a steer input on the channel. Wraps the transport's
    * `Encoder<TInput, _>.publishInput` so the coordinator does not need
    * to know about TOutput.
    */
@@ -56,11 +56,11 @@ export interface SteerCoordinatorOptions<TInput> {
    */
   clientId: () => string | undefined;
   /**
-   * Whether the hosting session is closed. Checked once after the
-   * `runIdPromise` resolves so a session-close-during-await rejects
-   * cleanly instead of publishing into a dead session.
+   * Whether the hosting transport is closed. Checked once after the
+   * `runIdPromise` resolves so a close-during-await rejects cleanly instead of
+   * publishing into a transport that has gone away.
    */
-  isSessionClosed: () => boolean;
+  isTransportClosed: () => boolean;
   /** Logger for malformed-header / parse-failure warnings. */
   logger: Logger;
 }
@@ -74,7 +74,7 @@ interface InflightSteer {
   steerCodecMessageId: string;
   /** Resolve the outcome promise (called on every lifecycle event the entry survives to). */
   resolve: (outcome: SteerOutcome) => void;
-  /** Reject the outcome promise (continuity loss, session close). */
+  /** Reject the outcome promise (continuity loss, transport close). */
   reject: (e: Ably.ErrorInfo) => void;
 }
 
@@ -90,19 +90,19 @@ interface PendingSteerEcho {
   resolvePublished: (value: { serial: string | undefined }) => void;
   /** Resolve the outcome (used by the run-end drain when the echo never landed). */
   resolveOutcome: (outcome: SteerOutcome) => void;
-  /** Reject the outcome (continuity loss, session close). */
+  /** Reject the outcome (continuity loss, transport close). */
   rejectOutcome: (e: Ably.ErrorInfo) => void;
 }
 
 /**
- * Owns the client-side steer lifecycle for one {@link ClientSession}. See the
- * module doc for the state it holds and how a session wires it in.
+ * Owns the client-side steer lifecycle for one `ClientTransport`. See the
+ * module doc for the state it holds and how the transport wires it in.
  * @template TInput - The codec's input event type.
  */
 export class SteerCoordinator<TInput> {
   private readonly _publish: (input: TInput, opts: WriteOptions) => Promise<void>;
   private readonly _clientId: () => string | undefined;
-  private readonly _isSessionClosed: () => boolean;
+  private readonly _isTransportClosed: () => boolean;
   private readonly _logger: Logger;
 
   /** In-flight steer outcomes awaiting resolution, keyed by run-id. */
@@ -127,7 +127,7 @@ export class SteerCoordinator<TInput> {
   constructor(options: SteerCoordinatorOptions<TInput>) {
     this._publish = options.publish;
     this._clientId = options.clientId;
-    this._isSessionClosed = options.isSessionClosed;
+    this._isTransportClosed = options.isTransportClosed;
     this._logger = options.logger.withContext({ component: 'SteerCoordinator' });
   }
 
@@ -206,8 +206,8 @@ export class SteerCoordinator<TInput> {
         return;
       }
 
-      if (this._isSessionClosed()) {
-        const err = new Ably.ErrorInfo('unable to steer; session is closed', ErrorCode.SessionClosed, 400);
+      if (this._isTransportClosed()) {
+        const err = new Ably.ErrorInfo('unable to steer; transport closed', ErrorCode.SessionClosed, 400);
         rejectPublished(err);
         rejectOutcome(err);
         return;
@@ -232,10 +232,10 @@ export class SteerCoordinator<TInput> {
         rejectOutcome,
       });
 
-      // The steer publishes on `ai-input` with the `run-id` header set,
-      // which the Tree routes into the addressed Run's projection via
-      // `_applyRunMessage`. Callers pass the same shape `view.send` accepts
-      // (typically `codec.createUserMessage(...)`).
+      // The steer publishes on `ai-input` with the `run-id` header set, so a
+      // consumer folding the run's messages routes it onto that run. Callers
+      // pass the same input shape a send does (typically
+      // `codec.createUserMessage(...)`).
       try {
         await this._publish(input, { extras: { headers }, messageId: codecMessageId });
       } catch (error) {
@@ -366,7 +366,7 @@ export class SteerCoordinator<TInput> {
   }
 
   /**
-   * Drain on session close. Rejects any in-flight outcomes and pending
+   * Drain when the transport closes. Rejects any in-flight outcomes and pending
    * echoes so callers awaiting them settle rather than hang. Steers whose
    * `published` already resolved still see their `outcome` promise reject
    * here.
@@ -374,7 +374,7 @@ export class SteerCoordinator<TInput> {
   drainClosed(): void {
     if (this._inflightSteers.size > 0) {
       const closedErr = new Ably.ErrorInfo(
-        'unable to await steer outcome; session closed',
+        'unable to await steer outcome; transport closed',
         ErrorCode.SessionClosed,
         400,
       );
@@ -385,7 +385,7 @@ export class SteerCoordinator<TInput> {
     }
     if (this._pendingEchoes.size > 0) {
       const echoClosedErr = new Ably.ErrorInfo(
-        'unable to await steer publish; session closed',
+        'unable to await steer publish; transport closed',
         ErrorCode.SessionClosed,
         400,
       );

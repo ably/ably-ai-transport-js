@@ -5,17 +5,17 @@ import type { RunEndReason, StreamResult } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 
 /**
- * The outcome of a Vercel `streamText` response piped through `Run.pipe`.
+ * The outcome of a Vercel `streamText` response piped through `AgentRunTransport.pipe`.
  * Discriminated on `reason`: `'suspend'` means the run should pause; the
  * non-`'suspend'` arms describe how it terminated, and an `'error'` outcome
  * always carries `error`.
  *
  * This is a *description of what the Vercel run resulted in*, not a command to
  * the SDK. The common case maps cleanly onto one transport action — `'suspend'`
- * → `Run.suspend()`, everything else → `Run.end()` — and to make that case a
+ * → `AgentRunTransport.suspend()`, everything else → `AgentRunTransport.end()` — and to make that case a
  * one-liner the non-`'suspend'` arms are deliberately assignable to
  * {@link RunEndParams}, so after a `suspend` guard the whole object passes
- * straight to `Run.end(outcome)`. That assignability is a convenience for this
+ * straight to `AgentRunTransport.end(outcome)`. That assignability is a convenience for this
  * adapter, not a constraint on what an outcome can mean: responding to an
  * outcome may also involve work outside this SDK (persisting a result,
  * notifying a human, triggering a downstream workflow), and the developer is
@@ -27,27 +27,27 @@ import { ErrorCode } from '../errors.js';
  * in what a developer must do in response. A different SDK's outcome type would
  * have different arms; hence each adapter names its own rather than sharing a
  * single core `RunOutcome`. The vocabulary it bottoms out in
- * ({@link RunEndParams}, `Run.suspend`/`Run.end`) is the shared, codec-agnostic
+ * ({@link RunEndParams}, `AgentRunTransport.suspend`/`AgentRunTransport.end`) is the shared, codec-agnostic
  * part that does live in core.
  */
 export type VercelRunOutcome =
   | {
       /**
        * The LLM requested tools the SDK did not auto-execute, so the run
-       * pauses rather than ending — call `Run.suspend()`.
+       * pauses rather than ending — call `AgentRunTransport.suspend()`.
        */
       reason: 'suspend';
       /** Never present for a suspend outcome. */
       error?: never;
     }
   | {
-      /** A non-error terminal reason; pass the outcome to `Run.end()`. */
+      /** A non-error terminal reason; pass the outcome to `AgentRunTransport.end()`. */
       reason: Exclude<RunEndReason, 'error'>;
       /** Never present for a non-error outcome. */
       error?: never;
     }
   | {
-      /** The run ended in error; pass the outcome to `Run.end()`. */
+      /** The run ended in error; pass the outcome to `AgentRunTransport.end()`. */
       reason: Extract<RunEndReason, 'error'>;
       /**
        * The terminal error: the underlying stream / `finishReason` failure
@@ -58,20 +58,20 @@ export type VercelRunOutcome =
 
 /**
  * Derive the {@link VercelRunOutcome} for a Vercel `streamText` response that
- * was piped through `Run.pipe` or `RunStep.pipe`. Preserves transport-level
+ * was piped through `AgentRunTransport.pipe` or `RunStepTransport.pipe`. Preserves transport-level
  * outcomes (`'cancelled'`, `'error'`) from the pipe result; when the pipe
  * completed naturally, awaits Vercel's `finishReason` and returns `'suspend'`
  * for `'tool-calls'` (the LLM requested tools the SDK did not auto-execute, so
  * the run should suspend rather than end), or `'complete'` otherwise.
  *
- * Inside a `RunStep`, a stream that errors makes `pipeResult.reason ===
+ * Inside a `RunStepTransport`, a stream that errors makes `pipeResult.reason ===
  * 'error'`, which both marks the step `failed` and yields an `'error'` outcome
  * here — so a `vercelRunOutcome(...) -> run.end(outcome)` flow keeps surfacing
- * the failure with no `try`/`catch`. `Run.pipe` surfaces the same `'error'`
+ * the failure with no `try`/`catch`. `AgentRunTransport.pipe` surfaces the same `'error'`
  * outcome (its implicit step closes `failed`).
  *
  * Surfaces the failure for both error shapes so the caller can forward it to
- * `Run.end(reason, error)`: a stream that threw (`pipeResult.error`) and a
+ * `AgentRunTransport.end({ reason, error })`: a stream that threw (`pipeResult.error`) and a
  * `finishReason` that rejected with a non-abort error (e.g.
  * `NoOutputGeneratedError`, network blow-ups). The error is wrapped as an
  * `Ably.ErrorInfo` (code `RunResponseStreamFailed`). A stream that already produced a
@@ -83,16 +83,16 @@ export type VercelRunOutcome =
  * is aborted before any step completes, and rejects with
  * `NoOutputGeneratedError` when the model produced nothing at all. Without
  * this guard the rejection would bubble out of the route handler's `after()`
- * block, skip the developer's `Run.end(...)` call, and leave the run with no
+ * block, skip the developer's `AgentRunTransport.end(...)` call, and leave the run with no
  * `ai-run-end` event on the channel — so observers' UIs stay stuck on
  * `streaming` indefinitely.
  *
  * Saves callers from interpreting Vercel domain semantics inline at the end
  * of every route handler.
- * @param pipeResult - The result returned by `Run.pipe`.
+ * @param pipeResult - The result returned by `AgentRunTransport.pipe`.
  * @param finishReason - The `finishReason` promise from a `streamText` result.
  * @returns The {@link VercelRunOutcome}: the terminal `reason` (or `'suspend'`)
- *   and, when `reason` is `'error'`, the wrapped `error` to pass to `Run.end`.
+ *   and, when `reason` is `'error'`, the wrapped `error` to pass to `AgentRunTransport.end`.
  */
 export const vercelRunOutcome = async (
   pipeResult: StreamResult,
@@ -135,9 +135,9 @@ export const vercelRunOutcome = async (
 
 /**
  * Wrap a caught stream / `finishReason` failure as an `Ably.ErrorInfo` so it
- * can be passed to `Run.end(reason, error)`. An error that is already an
+ * can be passed to `AgentRunTransport.end({ reason, error })`. An error that is already an
  * `Ably.ErrorInfo` is returned unchanged; anything else is wrapped with code
- * `RunResponseStreamFailed`, mirroring how `Run.pipe` wraps stream errors for `onError`.
+ * `RunResponseStreamFailed`, mirroring how `AgentRunTransport.pipe` wraps stream errors for `onError`.
  * @param error - The caught error (or `undefined` when the stream reported none).
  * @returns The error as an `Ably.ErrorInfo`.
  */

@@ -6,9 +6,7 @@ typedoc/
 .env
 .env.local
 .DS_Store
-*.vercel
 .idea
-.next
 
 # Extracted by .github/scripts/materialise-gate.sh in CI.
 .gate/

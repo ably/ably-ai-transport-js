@@ -1,4 +1,4 @@
-/** Steering surface types — outcome and result of `ClientRun.steer(...)`. */
+/** Steering surface types — outcome and result of `ClientTransport.steer(...)`. */
 
 import type { RunEndReason } from './shared.js';
 
@@ -27,25 +27,25 @@ export interface SteerOutcome {
   /**
    * Terminal reason of the run, present when the outcome was determined by an
    * `ai-run-end` event. Lets callers distinguish "consumed before cancel/error"
-   * from "lost to cancel/error" without inspecting the Tree. Absent when the
-   * outcome was determined by an `ai-run-suspend`.
+   * from "lost to cancel/error" without inspecting further events. Absent when
+   * the outcome was determined by an `ai-run-suspend`.
    */
   runTerminalReason?: RunEndReason;
 }
 
 /**
- * Result of `ClientRun.steer(...)`. Two promises:
+ * Result of `ClientTransport.steer(...)`. Two promises:
  *
  * - `published`: resolves when the steer message has been published to the
  *   channel. Carries the Ably-assigned `serial` of the publish for callers
  *   that want to confirm the publish landed. Rejects if the underlying publish
- *   (or the awaiting of `ClientRun.runId`) fails.
- * - `outcome`: resolves once the SDK has folded a terminal lifecycle event
+ *   (or the awaiting of the run-id promise) fails.
+ * - `outcome`: resolves once the SDK has observed a terminal lifecycle event
  *   (`ai-run-end`) — or `ai-run-suspend` for the suspending case — for this
  *   run, and can declare consumed/not-consumed by checking whether the steer's
  *   codec-message-id is in the union of `steer-codec-message-ids` stamps
- *   observed on the run's response messages. Rejects if the handle becomes dead
- *   before such an event arrives (e.g. the session closes).
+ *   observed on the run's response messages. Rejects if the steer can no
+ *   longer resolve before such an event arrives (e.g. the transport closes).
  */
 export interface SteerResult {
   /** Resolves when the steer publish lands on the channel. */

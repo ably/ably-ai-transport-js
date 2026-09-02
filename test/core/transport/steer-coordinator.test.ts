@@ -48,7 +48,7 @@ const makeHarness = (clientId: string | undefined = 'client-a'): Harness => {
   const coord = new SteerCoordinator<TestInput>({
     publish: async (input, opts) => publishImpl.fn(input, opts),
     clientId: () => clientId,
-    isSessionClosed: () => closed.value,
+    isTransportClosed: () => closed.value,
     logger: makeLogger({ logLevel: LogLevel.Silent }),
   });
   return { coord, publishCalls, publishImpl, closed };
@@ -140,7 +140,7 @@ describe('SteerCoordinator', () => {
       expect(h.publishCalls).toHaveLength(0);
     });
 
-    it('rejects with SessionClosed when isSessionClosed() returns true', async () => {
+    it('rejects with SessionClosed when isTransportClosed() returns true', async () => {
       const { coord, closed } = h;
       closed.value = true;
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });

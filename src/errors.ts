@@ -5,18 +5,13 @@ import * as Ably from 'ably';
  */
 export enum ErrorCode {
   /**
-   * The request was invalid.
-   */
-  BadRequest = 40000,
-
-  /**
    * Invalid argument provided.
    */
   InvalidArgument = 40003,
 
   /**
    * The operation was cancelled (Ably 40033) — the run was cancelled, the
-   * caller's abort signal fired, or the session began closing while the
+   * caller's abort signal fired, or the transport began closing while the
    * operation was in flight.
    */
   OperationCancelled = 40033,
@@ -45,7 +40,7 @@ export enum ErrorCode {
   StreamedMessageFinalizeFailed = 104000,
 
   /**
-   * The session could not subscribe to and attach its channel during
+   * The transport could not subscribe to and attach its channel during
    * `connect()`. Nothing sends or receives until the attach succeeds; whether a
    * retry helps depends on the `cause` (a transient disconnect clears, a
    * capability or auth rejection does not).
@@ -53,8 +48,10 @@ export enum ErrorCode {
   SessionSubscriptionFailed = 104001,
 
   /**
-   * The run's `onCancel` hook threw while the SDK was processing a cancel
-   * message. The SDK never reaches the abort, so the run is **not** cancelled.
+   * A cancel could not be honoured. Either the run's `onCancel` hook threw
+   * while the SDK was processing a cancel message — the SDK never reaches the
+   * abort — or routing the inbound cancel to its target run failed before any
+   * hook ran. Either way the run is **not** cancelled and keeps running.
    */
   RunCancelHandlerFailed = 104002,
 
@@ -68,15 +65,16 @@ export enum ErrorCode {
   RunLifecycleEventPublishFailed = 104003,
 
   /**
-   * An operation was attempted on a session, view, or encoder that has already
-   * been closed.
+   * An operation was attempted on a transport or encoder that has already been
+   * closed.
    */
   SessionClosed = 104004,
 
   /**
-   * A send failed — the channel publish failed, or (in the Vercel chat
-   * transport) the HTTP POST to the agent endpoint failed (network error or
-   * non-2xx response).
+   * A publish to the channel was rejected. Raised on the input and steer write
+   * paths; a capability rejection surfaces as
+   * {@link ErrorCode.InsufficientCapability} instead. The underlying Ably
+   * failure is the `cause`.
    */
   SessionSendFailed = 104005,
 
@@ -89,12 +87,6 @@ export enum ErrorCode {
   SessionContinuityNotGuaranteed = 104006,
 
   /**
-   * An operation was attempted but the channel is not in a usable state
-   * (not ATTACHED or ATTACHING).
-   */
-  SessionChannelNotReady = 104007,
-
-  /**
    * An error occurred while piping a response stream to the channel — either
    * the source event stream threw (e.g. LLM provider rate limit, model error,
    * network failure) or an underlying publish failed mid-stream. Also the
@@ -103,22 +95,12 @@ export enum ErrorCode {
   RunResponseStreamFailed = 104008,
 
   /**
-   * Processing an inbound channel message threw — the codec folding it into
-   * session state, or a session-level subscription callback. The subscription
-   * survives and the session keeps sending and receiving; only that one
-   * message's processing failed. The thrown value is the `cause`.
+   * Processing an inbound channel message threw — the codec decoding it, or a
+   * transport-level subscription callback. The subscription survives and the
+   * transport keeps sending and receiving; only that one message's processing
+   * failed. The thrown value is the `cause`.
    */
   SessionMessageProcessingFailed = 104009,
-
-  /**
-   * A fresh process adopting an open run via {@link AdoptedRun.load} waited for
-   * that run's `ai-run-start` to be observed on the channel — across the live
-   * subscription and the bounded history scan — but the `timeoutMs` bound lapsed
-   * (or the channel exhausted) without seeing it. Retryable: a workflow-ordering
-   * error where the open activity's run-start has not yet propagated. Any
-   * history-fetch failure is preserved as `cause`.
-   */
-  AdoptedRunStartNotObserved = 104010,
 
   /**
    * Channel history pagination failed after bounded retry — either the initial
@@ -131,17 +113,10 @@ export enum ErrorCode {
 
   /**
    * The run's `onSteer` hook threw while the SDK was notifying it that a
-   * steering message folded into the run. The steering message has already
-   * folded in by then, so the run is unaffected — only the notification failed.
+   * steering message arrived for the run. The steer is already recorded on the
+   * run by then, so the run is unaffected; only the notification failed.
    */
   RunSteerHandlerFailed = 104012,
-
-  /**
-   * Routing an inbound cancel message to its target run failed. Not a fault in
-   * a developer-supplied hook: the dispatch itself could not complete, so the
-   * cancel was neither honoured nor rejected and the run keeps running.
-   */
-  RunCancelRoutingFailed = 104013,
 }
 
 /**

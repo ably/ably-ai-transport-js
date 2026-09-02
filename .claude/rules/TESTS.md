@@ -1,45 +1,26 @@
 # Testing Strategy
 
-## Three tiers
+## Two tiers
 
-| Tier            | Command                     | Runs against          | What it proves                                        |
-| --------------- | --------------------------- | --------------------- | ----------------------------------------------------- |
-| **Unit**        | `pnpm test`                 | Mocks only            | Every code path works correctly in isolation          |
-| **Integration** | `pnpm run test:integration` | Real Ably channels    | Happy path works end-to-end over real Ably            |
-| **Temporal**    | `pnpm run test:temporal`    | A Temporal dev server | Shipped workflow code behaves inside the real sandbox |
+| Tier            | Command                     | Runs against       | What it proves                               |
+| --------------- | --------------------------- | ------------------ | -------------------------------------------- |
+| **Unit**        | `pnpm test`                 | Mocks only         | Every code path works correctly in isolation |
+| **Integration** | `pnpm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably   |
 
-Config: `vitest.config.ts` (unit, excludes both other tiers by filename),
-`vitest.config.integration.ts` (`*.integration.test.ts`) and
-`vitest.config.temporal.ts` (`*.temporal.test.ts`).
-
-### The Temporal tier
-
-Only for the workflow-side code in `src/temporal/workflow/`. Workflow code cannot
-be called directly — Temporal has to run it — so these boot a throwaway server
-via `TestWorkflowEnvironment` and bundle fixture workflows through a real
-`Worker`. That bundling is itself a test: a worker-side import leaking into the
-workflow half fails here, because the sandbox has no `ably` and no
-`@temporalio/activity`.
-
-Keep it to what only a real execution can prove: which activities get scheduled
-and in what order, cleanup firing on failure and surviving cancellation, and
-determinism on replay. Activity bodies are faked — their behaviour belongs in the
-unit tier. This tier needs no Ably credentials and touches no channel.
+Config: `vitest.config.ts` (unit, excludes the integration tier by filename)
+and `vitest.config.integration.ts` (`*.integration.test.ts`).
 
 ## Unit tests
 
 ### Scope
 
-Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage on non-React code, 80%+ on React hooks.
+Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage.
 
 ### Style
 
-- Mock writers that record calls (`createMockWriter`, `createMockChannel`)
+- Mock the channel and the writer rather than the Ably SDK; shared mocks live in `test/helper/`
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
-- `mockFetch.nextCall()` / `mockFetch.waitForCalls(n)` to await fire-and-forget POSTs
-- `mockChannel.waitForPublishes(n)` to await encoder publish operations
-- `simulateMessage()` for synchronous channel event simulation
-- For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain with `reader.read()`
+- For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain the reader
 
 ### What to unit test
 
@@ -47,7 +28,6 @@ Every exported function and every non-trivial internal module gets its own test 
 - Error handler isolation (one throwing handler doesn't kill others)
 - State machine transitions (run lifecycle, cancel routing)
 - Invalid input validation
-- React hook lifecycle (with `renderHook` / jsdom)
 
 ## Integration tests
 
@@ -58,7 +38,7 @@ Prove the system works over real Ably. Don't duplicate unit-test edge cases. Eac
 Integration tests can be written at two levels:
 
 - **Codec level**: Test encode/decode roundtrips over a real Ably channel without standing up a full transport. A codec-level test publishes encoded messages to a channel and verifies the decoder reconstructs the expected output. This validates the wire format and Ably message serialization without transport machinery.
-- **Transport level**: Test the full send → stream → receive lifecycle through `ClientSession` and `AgentSession`. This validates the complete system including run management, stream routing, and history hydration.
+- **Transport level**: exercise send → stream → receive through `ClientTransport` and `AgentTransport` over a real channel — run lifecycle, stream routing, steering, cancel, and history paging.
 
 ### Environment
 
@@ -79,28 +59,38 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
 - Clean up clients in `afterEach` via `closeAllClients()`
 - 30s test timeout; individual tests should complete in 2-5s
-- Integration helpers live in `test/integration/helpers.ts`
+- Shared test helpers live in `test/helper/`
 
-### Scenarios to cover
+### What the tier covers today
 
-Happy-path scenarios that validate the wire protocol and real Ably behavior:
+Codec level only, in `test/vercel/codec/wire-codec.integration.test.ts`: a text
+and tool-call roundtrip over a real channel, proving the wire format and Ably's
+message serialization.
 
-1. Text response roundtrip (codec level)
-2. Tool call roundtrip (codec level)
-3. Full transport: send -> stream -> receive
-4. Tool call through transport
-5. Cancel chain: client cancel -> server abort -> stream closes
-6. Multi-run sequential
-7. Concurrent runs
-8. History hydration: stream a run, new client hydrates conversation state from channel history
-9. Reconnect / resume: client disconnects mid-stream, reconnects, receives the rest
-10. Conversation tree / branching: send, regenerate (fork), verify tree from history
-11. Error propagation: server error mid-stream, client receives and stream closes cleanly
-12. Multi-client sync: two clients on the same channel both see the streamed response
+**Transport-level integration coverage is outstanding.** The suite that covered
+it was deleted with the session layer it exercised, and no replacement has been
+written. Treat the list below as the work to do, not a description of what
+exists — every row is currently untested over real Ably.
+
+1. Full transport: send → stream → receive
+2. Tool call through transport
+3. Cancel chain: client cancel → agent abort → stream closes
+4. Multi-run sequential, and concurrent runs
+5. Steering: a steer lands on an open run and its outcome resolves
+6. History paging: a fresh client pages backwards and receives chronological batches of classified events
+7. Attach boundary: a run streaming across the attach point yields one message's worth of events, not a duplicated prefix
+8. Durable cross-process re-entry: a second transport adopts an open run and ends it
+9. Error propagation: agent error mid-stream, client observes the run's error terminal
+10. Multi-client sync: two clients on the same channel both see the streamed response
+
+Until those land, the transport's contract rests on the unit tier, which drives
+both transports against a mock channel. `test/core/transport/codec-transport.test.ts`
+is the one unit test that composes a real codec with both real transports, so
+the encoder/decoder-to-transport seam has at least one guard that is not a
+double.
 
 ### What NOT to integration test
 
 - Encoding/decoding edge cases (unit tests)
 - Error handler isolation (unit tests)
 - Invalid input validation (unit tests)
-- React hook lifecycle (unit tests with jsdom)

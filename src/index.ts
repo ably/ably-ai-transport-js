@@ -1,32 +1,17 @@
 // Core transport
 export type {
-  AdoptedRun,
   AdoptRunOptions,
-  AgentRun,
   AgentRunTransport,
-  AgentSession,
-  AgentSessionContext,
-  AgentSessionOptions,
   AgentTransport,
   AgentTransportOptions,
-  BaseRun,
-  BranchHandle,
   CancelRequest,
-  ClientRun,
-  ClientSession,
-  ClientSessionOptions,
   ClientTransport,
   ClientTransportOptions,
-  ClientView,
-  ConversationNode,
   DeliverEventResult,
-  InputNode,
   InvocationData,
   LocatedInput,
-  OpenableRun,
   OpenRunHooks,
   OpenRunOptions,
-  OutputEvent,
   PipeSource,
   PublishInputOptions,
   PublishInputResult,
@@ -34,19 +19,12 @@ export type {
   RunEndParams,
   RunEndReason,
   RunIdentity,
-  RunInfo,
   RunLifecycleEvent,
-  RunNode,
-  RunNodeState,
-  RunStatus,
-  RunStep,
   RunStepTransport,
-  SendOptions,
   SteerOutcome,
   SteerResult,
   StepEndParams,
   StepEndReason,
-  StepInfo,
   StepLifecycleEvent,
   StepOptions,
   StreamResult,
@@ -54,32 +32,18 @@ export type {
   TransportHistoryOptions,
   TransportHistoryResult,
   TransportReceiver,
-  Tree,
-  View,
   WireMeta,
-  WithAgentSessionOptions,
 } from './core/transport/index.js';
-export type { LocatableRun, PageUntilLocatedOptions } from './core/transport/index.js';
 export {
   buildTransportHeaders,
-  createAgentSession,
   createAgentTransport,
-  createClientSession,
   createClientTransport,
   createReceiveTransport,
   Invocation,
-  pageUntilLocated,
-  withAgentSession,
 } from './core/transport/index.js';
 
 // Channel modes
-export { OBJECT_MODES } from './core/channel-options.js';
-
-// The session codec contract the sessions and the Tree consume. The generic
-// bounds are named by public signatures — `createAblyTransportPlugin` on
-// `@ably/ai-transport/temporal` constrains its parameters by them — and
-// `CodecMessage` is the shape every `getMessages` read returns.
-export type { CodecInputEvent, CodecMessage, CodecOutputEvent } from './core/transport/session-codec.js';
+export { AIT_BASE_MODES, OBJECT_MODES } from './core/channel-options.js';
 
 // Core codec
 export type {

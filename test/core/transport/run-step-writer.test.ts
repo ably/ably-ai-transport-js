@@ -1,13 +1,11 @@
 /**
- * createRunStepWriter unit tests — the Tree-decoupled write path.
+ * createRunStepWriter unit tests — the per-run write path.
  *
- * The writer no longer touches a Tree. It seeds its optimistic step-start /
- * step-end through the injected `emitStepLifecycle` callback, and re-derives the
- * sticky `stepClientId` through the injected `getPriorStepClientId` callback.
- * These tests exercise both seams over a real {@link createRunManager} and a
- * minimal codec double, so a regression that re-couples the writer to a Tree (or
- * breaks the step-client-id ladder) is caught here rather than only through the
- * full agent-session suite.
+ * The writer seeds its optimistic step-start / step-end through the injected
+ * `emitStepLifecycle` callback, and resolves the sticky `stepClientId` through
+ * the injected `getPriorStepClientId` callback. These tests exercise both seams
+ * over a real {@link createRunManager} and a minimal codec double, so a break
+ * in the optimistic bracket or the step-client-id ladder is caught here.
  */
 
 import type * as Ably from 'ably';

@@ -2,13 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Encoder, WriteOptions } from '../../../src/core/codec/types.js';
 import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
-import type { CodecInputEvent } from '../../../src/core/transport/session-codec.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-interface TestInput extends CodecInputEvent {
+interface TestInput {
   kind: 'test-input';
 }
 

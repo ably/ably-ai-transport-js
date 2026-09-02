@@ -144,7 +144,7 @@ describe('createEncoderCore', () => {
     });
 
     it('preserves default headers (e.g. step-id/step-client-id) under a per-write override that does not set them', async () => {
-      // `Run.createStep` stamps step-id/step-client-id as encoder defaults; a
+      // `AgentRunTransport.createStep` stamps step-id/step-client-id as encoder defaults; a
       // per-write override merges OVER the defaults, so an override that only
       // touches other headers leaves the step attribution intact.
       const core = createEncoderCore(writer, { extras: { headers: { 'step-id': 'S', 'step-client-id': 'C' } } });

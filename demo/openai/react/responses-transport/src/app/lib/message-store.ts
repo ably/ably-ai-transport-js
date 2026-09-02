@@ -40,12 +40,24 @@ export interface StoredConversation extends ThreadSnapshot {
 const store = new Map<string, StoredConversation>();
 
 /**
- * Replace a conversation's stored state.
+ * Fold a conversation's messages into the store, keyed by
+ * `transportMessageId`.
  *
- * The writer holds the whole merged thread — it seeded from the store and
- * added this turn — so a write is a replacement and needs no merge or upsert
- * of its own. The watermark only ever moves forward, so a slow or retried
- * write cannot pull it back over messages the store already accounts for.
+ * A writer holds the whole merged thread — it seeded from the store and added
+ * this turn — so a write looks like a replacement. It cannot be one, because
+ * two turns overlap: a client that answers a gated tool call wakes a second
+ * run while the first is still finishing its own write, and that second run
+ * seeded from a store the first had not written yet. Replacing wholesale lets
+ * the later write drop the earlier turn's messages, and the model then sees a
+ * `function_call_output` whose `function_call` has vanished.
+ *
+ * Folding by id is safe because a turn only ever adds messages or fills one in
+ * further, never removes one: a stored id the write also carries takes the
+ * incoming version, an id it does not carry stays, and an unseen id appends.
+ * Stored order is preserved, which keeps a call ahead of its output.
+ *
+ * The watermark only ever moves forward, so a slow or retried write cannot
+ * pull it back over messages the store already accounts for.
  *
  * Modelled as async — it resolves once the write is durable, as a real store
  * would.
@@ -60,8 +72,14 @@ export async function saveConversation(channelName: string, conversation: Stored
     conversation.latestSerial !== undefined &&
     (current?.latestSerial === undefined || conversation.latestSerial > current.latestSerial);
   const watermark = advanced ? conversation.latestSerial : current?.latestSerial;
+  const messages = [...(current?.messages ?? [])];
+  for (const message of conversation.messages) {
+    const index = messages.findIndex((held) => held.transportMessageId === message.transportMessageId);
+    if (index === -1) messages.push(message);
+    else messages[index] = message;
+  }
   store.set(channelName, {
-    messages: conversation.messages,
+    messages,
     ...(watermark === undefined ? {} : { latestSerial: watermark }),
   });
 }

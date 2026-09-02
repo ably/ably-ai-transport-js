@@ -1,8 +1,8 @@
 /**
  * Tests for the demo's server-owned conversation store: it holds the merged
  * thread — messages, no wire events and no run state — plus the channel serial
- * they are complete up to, replaces the messages wholesale on the next write,
- * and only ever moves the watermark forward.
+ * they are complete up to, folds each write in by `transportMessageId`, and
+ * only ever moves the watermark forward.
  *
  * The store is module-scoped, so each test uses its own channel name.
  */
@@ -54,12 +54,26 @@ describe('message store', () => {
     expect(loadConversation('ai:no-serial').latestSerial).toBe('s-1');
   });
 
-  it('replaces the conversation wholesale, because the writer holds all of it', async () => {
+  it('takes the incoming version of a message it already holds', async () => {
     await saveConversation('ai:replaced', conversation([message('cm-1', 'hello')]));
-    const whole = conversation([message('cm-1', 'hello'), message('cm-2', 'again')]);
+    const whole = conversation([message('cm-1', 'hello, again'), message('cm-2', 'and more')]);
 
     await saveConversation('ai:replaced', whole);
 
     expect(loadConversation('ai:replaced')).toEqual(whole);
+  });
+
+  it('keeps a message a later write never saw, so an overlapping turn cannot drop it', async () => {
+    // Two turns overlap: answering a gated tool call wakes a second run while
+    // the first is still finishing its write, so the second seeded from a
+    // store the first had not written to yet. Replacing wholesale would drop
+    // the first turn's message and leave the model a tool output whose call
+    // had vanished.
+    await saveConversation('ai:overlap', conversation([message('cm-1', 'prompt')]));
+    await saveConversation('ai:overlap', conversation([message('cm-1', 'prompt'), message('cm-2', 'the call')]));
+
+    await saveConversation('ai:overlap', conversation([message('cm-1', 'prompt'), message('cm-3', 'the answer')]));
+
+    expect(loadConversation('ai:overlap').messages.map((m) => m.transportMessageId)).toEqual(['cm-1', 'cm-2', 'cm-3']);
   });
 });

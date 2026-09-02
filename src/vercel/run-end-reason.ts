@@ -82,7 +82,7 @@ export type VercelRunOutcome =
  * outcome (its implicit step closes `failed`).
  *
  * Surfaces the failure for both error shapes so the caller can forward it to
- * `AgentRunTransport.end(reason, error)`: a stream that threw (`pipeResult.error`) and a
+ * `AgentRunTransport.end(params)`: a stream that threw (`pipeResult.error`) and a
  * `finishReason` that rejected with a non-abort error (e.g.
  * `NoOutputGeneratedError`, network blow-ups). The error is wrapped as an
  * `Ably.ErrorInfo` (code `RunResponseStreamFailed`). A stream that already produced a
@@ -146,7 +146,7 @@ export const vercelRunOutcome = async (
 
 /**
  * Wrap a caught stream / `finishReason` failure as an `Ably.ErrorInfo` so it
- * can be passed to `AgentRunTransport.end(reason, error)`. An error that is already an
+ * can be passed on `RunEndParams.error`. An error that is already an
  * `Ably.ErrorInfo` is returned unchanged; anything else is wrapped with code
  * `RunResponseStreamFailed`, mirroring how `AgentRunTransport.pipe` wraps stream errors for `onError`.
  * @param error - The caught error (or `undefined` when the stream reported none).

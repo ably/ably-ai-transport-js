@@ -30,9 +30,9 @@ const createMockEncoder = (): MockEncoder => {
     closed: false,
     streamsCancelled: false,
 
-    publishInput: vi.fn(async () => {
-      /* unused — pipeStream only invokes publishOutput */
-    }),
+    // Unused: pipeStream only invokes publishOutput.
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock
+    publishInput: vi.fn(async () => ({ serials: [] })),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     publishOutput: vi.fn(async (output: TestEvent, opts?: WriteOptions) => {
       mock.appendedEvents.push(output);

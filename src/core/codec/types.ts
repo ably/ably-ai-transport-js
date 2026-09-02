@@ -160,8 +160,9 @@ export interface EncoderOptions {
   /**
    * Fallback domain message id surfaced to output escape hatches as
    * `ctx.messageId` (e.g. the Vercel `start` hatch injects it when a chunk
-   * carries no `messageId` of its own). Unrelated to the wire
-   * transport-message-id transport header, which `WriteOptions.messageId` stamps.
+   * carries no `messageId` of its own). Unrelated to the `transport-message-id`
+   * wire header, which the transport tier owns and `WriteOptions.messageId`
+   * stamps.
    */
   messageId?: string;
 }
@@ -178,8 +179,11 @@ export interface Encoder<TInput, TOutput> {
    * Encode and publish a single client input on the `ai-input` wire.
    * Rejects if the codec cannot encode the given input
    * variant.
+   * @returns The publish acknowledgement — the Ably-assigned serials, one per
+   *   wire message the input produced (a batch input fans out), in publish
+   *   order.
    */
-  publishInput(input: TInput, options?: WriteOptions): Promise<void>;
+  publishInput(input: TInput, options?: WriteOptions): Promise<Ably.PublishResult>;
   /**
    * Encode and publish a single agent output on the `ai-output` wire.
    * Rejects if the codec cannot encode the given output

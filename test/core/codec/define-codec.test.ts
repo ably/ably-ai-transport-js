@@ -188,6 +188,17 @@ describe('defineCodec — encoder wiring', () => {
     expect(headersOf(msg).kind).toBe('noop');
   });
 
+  it('surfaces the channel publish acknowledgement from publishInput', async () => {
+    // The Encoder contract reports the ACK so a caller can record the serial
+    // its input landed on. defineCodec forwards it rather than dropping it.
+    const writer = createMockWriter();
+    const encoder = codec.createEncoder(writer);
+
+    const result = await encoder.publishInput({ kind: 'noop', transportMessageId: 'cm-1', payload: {} });
+
+    expect(result).toEqual({ serials: ['serial-1'] });
+  });
+
   it('round-trips an output event through encode then decode', async () => {
     const writer = createMockWriter();
     const encoder = codec.createEncoder(writer);

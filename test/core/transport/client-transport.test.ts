@@ -86,11 +86,12 @@ const createMockCodec = (
     opts?: { onAblyMessage?: (msg: Ably.Message) => void },
   ): Encoder<TestInput, TestOutput> => ({
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    publishInput: vi.fn(async (input: TestInput, options?: WriteOptions): Promise<void> => {
+    publishInput: vi.fn(async (input: TestInput, options?: WriteOptions): Promise<Ably.PublishResult> => {
       encoderCalls.push({ input, options });
       const msg: Ably.Message = { name: 'ai-input', extras: { ai: { transport: { ...options?.extras?.headers } } } };
       opts?.onAblyMessage?.(msg);
       hookMessages.push(msg);
+      return { serials: [`serial-input-${String(encoderCalls.length)}`] };
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     publishOutput: vi.fn(() => Promise.resolve()),

@@ -40,7 +40,7 @@ export const fSourceId = strField('sourceId', '');
 
 // --- input-side bindings (shared by the input descriptors' encode/decode) ---
 
-/** Domain message id (`message.id`) stamped on every user-message part — distinct from the wire transport-message-id transport header. */
+/** Domain message id (`message.id`) stamped on every user-message part — distinct from the `transport-message-id` wire header. */
 export const fMessageId = strField('messageId');
 /** Whether the user approved a tool execution — defaulted to total so an absent header reads `false`. */
 export const fApproved = boolField('approved', false);

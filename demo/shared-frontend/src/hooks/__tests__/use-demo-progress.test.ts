@@ -2,11 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
-import {
-  EVENT_CANCEL,
-  EVENT_RUN_START,
-  HEADER_RUN_CLIENT_ID,
-} from '@ably/ai-transport';
+import { EVENT_CANCEL, EVENT_RUN_START, HEADER_RUN_CLIENT_ID } from '@ably/ai-transport';
 
 import { useDemoProgress } from '../use-demo-progress';
 import type { Scenario } from '../../lib/progress-steps';

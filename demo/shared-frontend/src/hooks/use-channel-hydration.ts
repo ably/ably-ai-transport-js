@@ -58,9 +58,7 @@ export interface ChannelHydrationHandle {
 
 /** The hook's state: connecting/hydrating, ready, or failed. */
 export type ChannelHydrationState =
-  | { status: 'loading' }
-  | ({ status: 'ready' } & ChannelHydrationHandle)
-  | { status: 'error'; error: Error };
+  { status: 'loading' } | ({ status: 'ready' } & ChannelHydrationHandle) | { status: 'error'; error: Error };
 
 interface HydrationResult {
   initialMessages: UIMessage[];

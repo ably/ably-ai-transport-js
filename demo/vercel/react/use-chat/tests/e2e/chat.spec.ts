@@ -239,8 +239,61 @@ test.describe('use-chat demo - chat behaviour', () => {
     await expect(streamingMessages(page)).toHaveCount(0, { timeout: 30_000 });
   });
 
-  // checks: reloading mid-stream resumes the live run (useChat `resume: true`
-  // drives the adapter's reconnectToStream) and the reply completes.
+  // checks: a completed turn comes back from the server's store after a
+  // reload, exactly once, and a new turn appends on top of it. This is the
+  // store's whole point — nothing pages channel history to rebuild it.
+  test('store hydration: a reload reconstructs the conversation once and keeps going', async ({ page }, testInfo) => {
+    const url = freshChannelUrl(testInfo.title);
+    await page.goto(url);
+    await sendPrompt(page, 'Say "ZULU"');
+    await expect(assistantMessages(page).filter({ hasText: 'ZULU' })).toHaveCount(1, { timeout: 60_000 });
+
+    // Let the run end so the route's second store write has landed.
+    await awaitStreamingQuiesce(page);
+    await page.goto(url);
+
+    // Both turns come back, and stay one each — a duplicate would mean
+    // something other than the store contributed them too.
+    await expect(userMessages(page)).toHaveCount(1, { timeout: 60_000 });
+    await expect(assistantMessages(page).filter({ hasText: 'ZULU' })).toHaveCount(1, { timeout: 60_000 });
+    await awaitStreamingQuiesce(page);
+    await expect(userMessages(page)).toHaveCount(1);
+
+    await sendPrompt(page, 'Say "YANKEE"');
+    await expect(assistantMessages(page).filter({ hasText: 'YANKEE' })).toHaveCount(1, { timeout: 60_000 });
+    await expect(userMessages(page)).toHaveCount(2);
+    await expect(assistantMessages(page).filter({ hasText: 'ZULU' })).toHaveCount(1);
+  });
+
+  // checks: an approval left unanswered is in the store too — the route writes
+  // the turn as the run opens — so a reload brings the prompt back and
+  // answering it there continues the thread.
+  test('store hydration: an approval answered after a reload continues the thread', async ({ page }, testInfo) => {
+    const url = freshChannelUrl(testInfo.title);
+    await page.goto(url);
+    const input = page.getByPlaceholder('Type a message...');
+    await input.waitFor({ state: 'visible' });
+    await input.fill("what's the weather forecast for London?");
+    await input.press('Enter');
+
+    // Stop at approval-requested and reload without answering.
+    await expect(page.getByRole('button', { name: /Approve/i }).first()).toBeVisible({ timeout: 60_000 });
+    await awaitStreamingQuiesce(page);
+    await page.goto(url);
+
+    const approve = page.getByRole('button', { name: /Approve/i }).first();
+    await expect(approve).toBeVisible({ timeout: 60_000 });
+    await approve.click();
+
+    await expect(page.locator('text=/5-day forecast/i').first()).toBeVisible({ timeout: 60_000 });
+    await awaitStreamingQuiesce(page);
+    await expect(userMessages(page)).toHaveCount(1);
+    await expect(page.getByRole('button', { name: /Approve/i })).toHaveCount(0);
+  });
+
+  // checks: reloading mid-stream resumes the live run and the reply completes.
+  // The store names the open run, hydration passes it to resumeStream as a
+  // reconnect hint, and the adapter joins the run off the channel.
   test('resume: reloading mid-stream reconnects to the live run', async ({ page }, testInfo) => {
     await page.goto(freshChannelUrl(testInfo.title));
     const input = page.getByPlaceholder('Type a message...');

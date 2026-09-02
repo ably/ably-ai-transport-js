@@ -3,12 +3,21 @@
  *
  * The adapter publishes every input on the Ably channel first, then POSTs a
  * pointer `{channelName, eventId}` here to wake the agent. The route builds a
- * fresh agent transport on the named channel, locates the triggering input in
- * channel history, merges that history into the conversation, opens a run
- * anchored to the input, and answers 202. Streaming happens after the
- * response, inside `after()`, and reaches the client over Ably — the client
- * reads nothing from this HTTP response, including the run id, which it
- * resolves off the channel.
+ * fresh agent transport on the named channel, locates the triggering input,
+ * applies it to the conversation the store holds, opens a run anchored to the
+ * input, and answers 202. Streaming happens after the response, inside
+ * `after()`, and reaches the client over Ably — the client reads nothing from
+ * this HTTP response, including the run id, which it resolves off the channel.
+ *
+ * The route owns the conversation store (`lib/message-store.ts`). It writes
+ * twice per run: the turn plus the open run id as the run opens, so a page
+ * loading mid-run can hydrate and resume; then the finished conversation when
+ * the AI SDK's stream ends, which is where the assistant's message comes from.
+ * Nothing else writes, and no channel history is paged — by this route or by
+ * the client, which hydrates from `GET /api/messages`.
+ *
+ * A cancelled run keeps whatever the SDK's stream had produced when it
+ * stopped, because `onEnd` fires on an aborted stream too.
  *
  * Three tool execution patterns flow through here:
  * - Server-executed tools (getWeather, updateChecklist): streamText runs them
@@ -19,9 +28,9 @@
  *   fresh run — the resolution carries no run id.
  * - Approval-gated tools (getWeatherForecast): the turn ends at
  *   `approval-requested`; the client publishes the approval decision and POSTs
- *   a continuation. The new run's merged conversation carries the
- *   `approval-responded` part, so the tool's `needsApproval` returns false and
- *   streamText executes it without re-pausing.
+ *   a continuation. Applying that decision to the stored conversation leaves
+ *   the `approval-responded` part in place, so the tool's `needsApproval`
+ *   returns false and streamText executes it without re-pausing.
  */
 
 import { after } from 'next/server';
@@ -35,6 +44,7 @@ import { tools } from './tools';
 import { makeChecklistTool } from './checklist-tool';
 import { checklistFrom, type ChecklistItemRow, type ChecklistRoot } from '../../lib/checklist';
 import { getExistingMessages } from '../../lib/get-existing-messages';
+import { saveMessages, setActiveRun } from '../../lib/message-store';
 
 /**
  * The pointer body the useChat adapter POSTs. The adapter also sends `runId`
@@ -56,6 +66,7 @@ ${JSON.stringify(steps, null, 2)}`;
 
 export async function POST(req: Request) {
   const body = (await req.json()) as ChatRequestBody;
+  const { channelName } = body;
 
   // A fresh Ably client per request (trusted environment, API key direct).
   // The agent is ephemeral: it attaches the channel, locates the triggering
@@ -75,7 +86,7 @@ export async function POST(req: Request) {
   // modes. OBJECT_MODES requests the object channel modes alongside the modes
   // the transport always needs, so the checklist tool can write LiveObjects
   // through `channel.object`.
-  const channel = ably.channels.get(body.channelName, {
+  const channel = ably.channels.get(channelName, {
     params: { agent: channelAgent() },
     modes: resolveChannelModes(OBJECT_MODES),
   });
@@ -100,15 +111,22 @@ export async function POST(req: Request) {
       return Response.json({ error: 'input event not found' }, { status: 404 });
     }
 
-    // The conversation for the model, via the demo's swappable history source
-    // (see get-existing-messages.ts).
-    conversation = await getExistingMessages(transport);
+    // The conversation for the model: the store, plus the input that woke this
+    // invocation (see get-existing-messages.ts). No channel history is paged.
+    conversation = await getExistingMessages(channelName, located);
 
     // Opening from the located input anchors the run to its trigger, so
     // cancels route back here and the client can resolve the run id off the
     // channel. Every input the useChat adapter publishes carries no run id,
     // so each one starts a fresh run.
     run = transport.openRun({ input: located }, { signal: req.signal });
+
+    // Store the turn as the run opens, not only when it finishes. A page that
+    // loads mid-run hydrates from the store, so without this write it would
+    // show the reply arriving with nothing that prompted it. The open run goes
+    // in alongside, which is what lets that page resume the stream.
+    await saveMessages(channelName, conversation);
+    await setActiveRun(channelName, run.runId);
   } catch (error) {
     close();
     throw error;
@@ -139,7 +157,19 @@ export async function POST(req: Request) {
         stopWhen: stepCountIs(10),
       });
 
-      const pipeResult = await openedRun.pipe(toUIMessageStream({ stream: result.fullStream }));
+      // `originalMessages` puts the AI SDK in its own persistence mode: `onEnd`
+      // hands back the whole updated conversation, assistant message included,
+      // so the store write needs no merge of our own.
+      const pipeResult = await openedRun.pipe(
+        toUIMessageStream({
+          stream: result.fullStream,
+          originalMessages: messages,
+          generateMessageId: () => crypto.randomUUID(),
+          onEnd: ({ messages: updated }) => {
+            void saveMessages(channelName, updated);
+          },
+        }),
+      );
       const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
       // A turn that stopped on tool calls is still terminal here. The useChat
       // adapter publishes each resolution as a plain input carrying no run id,
@@ -159,6 +189,9 @@ export async function POST(req: Request) {
         error: new Ably.ErrorInfo(`unable to complete run; ${message}`, ErrorCode.RunResponseStreamFailed, 500),
       });
     } finally {
+      // The run is over either way, so nothing is left for a hydrating client
+      // to resume.
+      await setActiveRun(channelName, undefined);
       close();
     }
   });

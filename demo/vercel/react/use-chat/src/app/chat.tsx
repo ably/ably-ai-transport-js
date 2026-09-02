@@ -12,13 +12,13 @@ import {
   hasClientTool,
   runClientTool,
   stopAndCancel,
-  useChannelHydration,
   type CallbackLogEntry,
   type ClientToolLogEntry,
   type DemoStepId,
   type Scenario,
 } from '@ably-ai-demos/frontend';
 import { ChecklistWidget } from './components/checklist-widget';
+import { useStoredHydration } from './hooks/use-stored-hydration';
 
 // Pick shared scenarios by id, never by position: the shared list is edited
 // independently of this demo, and an index would silently change what the
@@ -45,17 +45,17 @@ const SCENARIOS: readonly Scenario[] = [
 ];
 
 /**
- * Hydrate the conversation from the channel, then render the chat.
+ * Hydrate the conversation from the server's store, then render the chat.
  *
- * This demo keeps no store: the channel is the whole record, so the walk runs
- * with no serial and covers it end to end. Running it is also what makes
- * `resume: true` work — `readSince` withholds a run that has not ended and
- * retains its events for `reconnectToStream`, and without that a page that
- * just loaded can only resume a run it watched start live, which it never
- * did.
+ * The store is the whole record: the agent route writes it as each run opens
+ * and again when the run's stream ends, so one `GET /api/messages` is the
+ * conversation. Nothing pages channel history. The store also names a run
+ * still streaming, which the chat resumes below — that is what makes
+ * `resume: true` work on a page that just loaded and never watched the run
+ * start.
  */
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const state = useChannelHydration();
+  const state = useStoredHydration({ channelName: chatId });
 
   if (state.status === 'loading') {
     return (
@@ -78,6 +78,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
       clientId={clientId}
       chatTransport={state.chatTransport}
       initialMessages={state.initialMessages}
+      activeRunId={state.activeRunId}
     />
   );
 }
@@ -87,11 +88,13 @@ function ChatInner({
   clientId,
   chatTransport,
   initialMessages,
+  activeRunId,
 }: {
   chatId: string;
   clientId?: string;
   chatTransport: ChatTransport;
   initialMessages: UIMessage[];
+  activeRunId: string | undefined;
 }) {
   // -- Callback & status logging for the debug pane -------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -116,16 +119,15 @@ function ChatInner({
     });
   }, []);
 
-  // useChat owns all message state from here: it starts from the hydrated
+  // useChat owns all message state from here: it starts from the stored
   // conversation, and the adapter turns its sends into channel publishes plus
-  // the wake-the-agent POST, with the reply streaming back off the channel.
-  // `resume: true` reconnects to a run still streaming after a reload, via the
-  // adapter's reconnectToStream.
-  const { messages, sendMessage, stop, status, addToolOutput, addToolApprovalResponse } = useChat({
+  // the wake-the-agent POST, with the reply streaming back off the channel. A
+  // run still streaming at page load is picked up by the resume effect below,
+  // which passes its id as a reconnect hint.
+  const { messages, sendMessage, stop, status, addToolOutput, addToolApprovalResponse, resumeStream } = useChat({
     id: chatId,
     transport: chatTransport,
     messages: initialMessages,
-    resume: true,
     // Auto-submit the continuation once addToolOutput resolves tool calls OR
     // addToolApprovalResponse resolves approvals. The resolution carries no
     // run id, so its POST wakes a fresh run that answers.
@@ -171,6 +173,16 @@ function ChatInner({
       setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'onError', summary: error.message }]);
     },
   });
+
+  // Resume the run the store said was streaming. The hint names it directly,
+  // so the adapter joins that run rather than guessing from what it has seen
+  // — which on a page that just loaded is nothing. Runs once per hydrated run
+  // id; a run that ends before this fires resumes to an already-closed stream,
+  // which the adapter answers with no chunks.
+  useEffect(() => {
+    if (activeRunId === undefined) return;
+    void resumeStream({ body: { runId: activeRunId } });
+  }, [activeRunId, resumeStream]);
 
   // Track status transitions for the debug pane. Recording a history of an
   // external value's transitions is the intended use of this effect — it

@@ -20,26 +20,31 @@ Element.prototype.scrollIntoView = () => {};
 
 const mockSendMessages = vi.fn<ChatTransport['sendMessages']>();
 const mockCancel = vi.fn<ChatTransport['cancel']>(async () => {});
+// null is the AI SDK's "nothing to resume".
+const mockReconnect = vi.fn<ChatTransport['reconnectToStream']>(async () => null);
 
-const mockChatTransport: ChatTransport = {
+/**
+ * A fresh adapter per test. The demo's hydration caches its store read per
+ * adapter instance (React Strict Mode re-runs the effect against the same
+ * one), so a shared object would hand every test the first test's
+ * conversation.
+ */
+const makeChatTransport = (): ChatTransport => ({
   sendMessages: mockSendMessages,
-  // null is the AI SDK's "nothing to resume".
-  reconnectToStream: async () => null,
+  reconnectToStream: mockReconnect,
   readSince: async () => ({ messages: [], exhausted: true }),
   cancel: mockCancel,
   close: () => {},
   streaming: false,
   onStreamingChange: () => () => {},
   onForeignRun: () => () => {},
-};
+});
 
-// The hydration hook connects the client transport before walking, so the
-// pair the provider hands out must include one.
-const mockTransport = { connect: async () => undefined };
+let mockChatTransport: ChatTransport = makeChatTransport();
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   useChatTransport: () => ({
-    transport: mockTransport,
+    transport: { connect: async () => undefined },
     chatTransport: mockChatTransport,
     error: undefined,
   }),
@@ -91,7 +96,16 @@ describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessages.mockReset();
     mockCancel.mockReset();
+    mockReconnect.mockClear();
+    mockChatTransport = makeChatTransport();
     mockSendMessages.mockResolvedValue(chunkStreamOf([]));
+    // Hydration reads the server's conversation store over HTTP. An empty
+    // conversation with no open run is the default; a test that wants a seed
+    // or a resume stubs its own answer.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(Response.json({ messages: [] }))),
+    );
   });
 
   // vitest isn't configured with globals, so @testing-library/react's
@@ -99,6 +113,51 @@ describe('<Chat>', () => {
   // queries don't match an earlier render.
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('seeds the conversation from the stored messages the server serves', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({
+            messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'stored prompt' }] }],
+          }),
+        ),
+      ),
+    );
+
+    render(<Chat chatId="ai:test" />);
+
+    expect(await screen.findByText('stored prompt')).not.toBeNull();
+    // The store is the whole record: nothing walks the channel for it.
+    await waitFor(() => {
+      expect(mockReconnect).not.toHaveBeenCalled();
+    });
+  });
+
+  it('resumes the run the store reports open, naming it as a reconnect hint', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(Response.json({ messages: [], activeRunId: 'run-open' }))),
+    );
+
+    render(<Chat chatId="ai:test" />);
+
+    await waitFor(() => {
+      expect(mockReconnect).toHaveBeenCalledTimes(1);
+    });
+    // The hint is what lets a page that never watched the run start still join
+    // it — the adapter has nothing of its own to resume from.
+    expect(mockReconnect.mock.calls[0]?.[0]).toMatchObject({ body: { runId: 'run-open' } });
+  });
+
+  it('resumes nothing when the store reports no open run', async () => {
+    render(<Chat chatId="ai:test" />);
+
+    await screen.findByPlaceholderText('Type a message...');
+    expect(mockReconnect).not.toHaveBeenCalled();
   });
 
   it('cancels the run on the channel when Stop is pressed', async () => {
@@ -106,7 +165,7 @@ describe('<Chat>', () => {
     mockSendMessages.mockResolvedValue(new ReadableStream<AI.UIMessageChunk>({ start: () => {} }));
 
     render(<Chat chatId="ai:test" />);
-    // Hydration walks the channel before the chat mounts.
+    // Hydration reads the store before the chat mounts.
     const input = await screen.findByPlaceholderText('Type a message...');
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
@@ -128,7 +187,7 @@ describe('<Chat>', () => {
 
     render(<Chat chatId="ai:test" />);
 
-    // Hydration walks the channel before the chat mounts.
+    // Hydration reads the store before the chat mounts.
     const input = await screen.findByPlaceholderText('Type a message...');
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');

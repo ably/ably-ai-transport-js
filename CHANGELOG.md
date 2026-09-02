@@ -91,7 +91,7 @@ This release adds first-class support for running AI Transport agents inside dur
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.3.0...0.4.0)
 
-This release introduces external data hydration: an app that owns its message store can seed a conversation from it and reconcile only the unstored tail off the Ably channel, instead of replaying the whole history. The new `View.loadUntil()` pages back to the newest message you already hold and returns just the missing tail, so you compose `[...stored, ...tail]` with no duplicates. See the [external hydration demo](https://github.com/ably/ably-ai-transport-js/tree/main/demo/vercel/react/use-chat-db). The release also includes a number of other improvements; see the full details below.
+This release introduces external data hydration: an app that owns its message store can seed a conversation from it and reconcile only the unstored tail off the Ably channel, instead of replaying the whole history. The new `View.loadUntil()` pages back to the newest message you already hold and returns just the missing tail, so you compose `[...stored, ...tail]` with no duplicates. See the [external hydration demo](https://github.com/ably/ably-ai-transport-js/tree/main/demo/vercel/react/use-chat). The release also includes a number of other improvements; see the full details below.
 
 ### Breaking Changes
 

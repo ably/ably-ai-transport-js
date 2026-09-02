@@ -1,19 +1,17 @@
 /**
- * Tests for getExistingMessages — the demo's swappable history source: it
- * pages a transport's history to exhaustion and merges the events through the
- * demo's merge helper. Swapping the channel for a database later means
- * reimplementing only this function, so what is pinned here is its contract:
- * every batch is paged, and batches arrive newest-first but merge oldest-first.
+ * Tests for getExistingMessages — the model context for one turn: the
+ * conversation the store holds, with the input that woke the agent applied.
+ * What is pinned here is that the two sources combine, and that nothing pages
+ * channel history to get there.
  */
 
 import { describe, expect, it } from 'vitest';
-import type { TransportEvent, TransportHistoryResult, WireMeta } from '@ably/ai-transport';
-import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
+import type { UIMessage } from 'ai';
+import type { LocatedInput, WireMeta } from '@ably/ai-transport';
+import type { VercelInput } from '@ably/ai-transport/vercel';
 
 import { getExistingMessages } from '../get-existing-messages';
-
-type Event = TransportEvent<VercelInput, VercelOutput>;
-type Batch = TransportHistoryResult<VercelInput, VercelOutput>;
+import { loadConversation, saveMessages } from '../message-store';
 
 const makeMeta = (transportMessageId: string): WireMeta => ({
   transport: {},
@@ -35,52 +33,37 @@ const makeMeta = (transportMessageId: string): WireMeta => ({
   steerTransportMessageIds: undefined,
 });
 
-const userEvent = (transportMessageId: string, id: string, text: string): Event => ({
-  kind: 'message',
-  meta: makeMeta(transportMessageId),
-  inputs: [{ kind: 'message', payload: { id, role: 'user', parts: [{ type: 'text', text }] } }],
-  outputs: [],
+const message = (id: string, text: string): UIMessage => ({
+  id,
+  role: 'user',
+  parts: [{ type: 'text', text }],
 });
 
-/** A transport stub serving scripted batches newest-first, as `history()` does. */
-const stubTransport = (batches: Batch[]) => {
-  let call = 0;
-  return {
-    calls: () => call,
-    history: async (): Promise<Batch> => {
-      const batch = batches[call] ?? { events: [], exhausted: true };
-      call += 1;
-      return batch;
-    },
-  };
-};
+const locatedMessage = (transportMessageId: string, id: string, text: string): LocatedInput<VercelInput> => ({
+  meta: makeMeta(transportMessageId),
+  inputs: [{ kind: 'message', payload: message(id, text) }],
+});
 
 describe('getExistingMessages', () => {
-  it('pages every batch and merges them oldest-first', async () => {
-    // history() walks backwards, so the newest batch comes first.
-    const transport = stubTransport([
-      { events: [userEvent('cm-2', 'u2', 'second')], exhausted: false },
-      { events: [userEvent('cm-1', 'u1', 'first')], exhausted: true },
-    ]);
+  it('returns the stored conversation with the triggering input appended', async () => {
+    await saveMessages('ai:context', [message('u1', 'first')]);
 
-    const messages = await getExistingMessages(transport);
+    const messages = await getExistingMessages('ai:context', locatedMessage('cm-2', 'u2', 'second'));
 
-    expect(transport.calls()).toBe(2);
     expect(messages.map((m) => m.id)).toEqual(['u1', 'u2']);
   });
 
-  it('stops at the first exhausted batch', async () => {
-    const transport = stubTransport([{ events: [userEvent('cm-1', 'u1', 'only')], exhausted: true }]);
+  it('returns just the triggering input for a conversation with nothing stored', async () => {
+    const messages = await getExistingMessages('ai:context-fresh', locatedMessage('cm-1', 'u1', 'only'));
 
-    const messages = await getExistingMessages(transport);
-
-    expect(transport.calls()).toBe(1);
     expect(messages.map((m) => m.id)).toEqual(['u1']);
   });
 
-  it('returns nothing for an empty channel', async () => {
-    const transport = stubTransport([{ events: [], exhausted: true }]);
+  it('leaves the store unchanged — the route decides when to write', async () => {
+    await saveMessages('ai:context-read-only', [message('u1', 'first')]);
 
-    await expect(getExistingMessages(transport)).resolves.toEqual([]);
+    await getExistingMessages('ai:context-read-only', locatedMessage('cm-2', 'u2', 'second'));
+
+    expect(loadConversation('ai:context-read-only').messages.map((m) => m.id)).toEqual(['u1']);
   });
 });

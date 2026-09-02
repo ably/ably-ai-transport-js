@@ -202,7 +202,6 @@ jobs:
       matrix:
         demo:
           - demo/vercel/react/use-chat
-          - demo/vercel/react/use-chat-db
           - demo/vercel/react/use-chat-wdk
           - demo/temporal/temporal-agent
           - demo/openai/react/responses-transport
@@ -252,8 +251,6 @@ jobs:
         include:
           - demo: demo/vercel/react/use-chat
             name: use-chat
-          - demo: demo/vercel/react/use-chat-db
-            name: use-chat-db
           - demo: demo/vercel/react/use-chat-wdk
             name: use-chat-wdk
           - demo: demo/openai/react/responses-transport

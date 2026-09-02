@@ -1,31 +1,27 @@
 /**
- * getExistingMessages — the demo's swappable history source for the agent
- * route's model context: page the transport's channel history to exhaustion
- * and merge it through the demo's merge helper. Swapping the channel for a
- * database later means reimplementing only this function.
+ * getExistingMessages — the model context for one turn.
+ *
+ * The store is the conversation, and the channel carries what has happened
+ * since the last write: the input that woke this invocation. So the context is
+ * the stored messages with that one input applied (see `apply-input.ts`). No
+ * channel history is paged, by either the agent or the client — the store is
+ * the demo's whole record.
  */
 
 import type { UIMessage } from 'ai';
-import type { AgentTransport, TransportEvent } from '@ably/ai-transport';
-import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
+import type { LocatedInput } from '@ably/ai-transport';
+import type { VercelInput } from '@ably/ai-transport/vercel';
 
-import { mergeMessages } from './merge-messages';
+import { applyInputs } from './apply-input';
+import { loadConversation } from './message-store';
 
 /**
- * Page the whole existing conversation off the channel and merge it.
- * @param transport - A connected transport whose `history()` to page.
- * @returns The merged conversation, oldest message first.
+ * Build the conversation for the model from the store and the triggering input.
+ * @param channelName - The conversation key (the channel name).
+ * @param located - The input that woke this invocation.
+ * @returns The conversation, oldest message first.
  */
 export const getExistingMessages = async (
-  transport: Pick<AgentTransport<VercelInput, VercelOutput>, 'history'>,
-): Promise<UIMessage[]> => {
-  // Each history() call returns the next older batch, so prepend.
-  let events: TransportEvent<VercelInput, VercelOutput>[] = [];
-  let exhausted = false;
-  while (!exhausted) {
-    const batch = await transport.history();
-    events = [...batch.events, ...events];
-    exhausted = batch.exhausted;
-  }
-  return mergeMessages(events);
-};
+  channelName: string,
+  located: LocatedInput<VercelInput>,
+): Promise<UIMessage[]> => applyInputs(loadConversation(channelName).messages, located.inputs);

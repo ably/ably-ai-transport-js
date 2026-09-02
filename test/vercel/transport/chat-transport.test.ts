@@ -835,22 +835,87 @@ describe('ChatTransport', () => {
 
   // -- a second walk ---------------------------------------------------------
 
-  describe('a second readSince', () => {
-    it('drops a retention the new walk no longer reports open', async () => {
+  describe('walked tool resolutions', () => {
+    it('folds a client-published tool output into the assistant it amends', async () => {
       const { fake, chat } = setup();
       fake.historyBatches = [
         {
           events: [
             runStartEvent('run-1', 'serial-10'),
-            outputEvent('run-1', 'wire-a1', [{ type: 'start', messageId: 'a1' }], 'serial-11'),
+            outputEvent(
+              'run-1',
+              'wire-a1',
+              [
+                { type: 'start', messageId: 'a1' },
+                { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getWeather', input: { city: 'Berlin' } },
+                { type: 'finish' },
+              ],
+              'serial-11',
+            ),
+            runEndEvent('run-1'),
+            // The client ran the tool and published its output against the
+            // assistant, which is how a client-side tool resolves.
+            messageEvent(
+              { runId: 'run-1', transportMessageId: 'wire-a1', serial: 'serial-12', versionSerial: 'serial-12' },
+              {
+                inputs: [
+                  {
+                    kind: 'chunk',
+                    payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 4 } },
+                  },
+                ],
+              },
+            ),
           ],
           exhausted: true,
         },
       ];
-      await chat.readSince();
 
-      // The second walk sees the run ended, so its message is the store's now
-      // and nothing is withheld for a stream.
+      const { messages } = await chat.readSince();
+
+      // Dropping the resolution would rebuild the assistant with its tool call
+      // stuck in `input-available`, so the UI shows a spinner for a tool that
+      // already answered and nothing reports the loss.
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.parts).toEqual([
+        {
+          type: 'tool-getWeather',
+          toolCallId: 'tc-1',
+          state: 'output-available',
+          input: { city: 'Berlin' },
+          output: { tempC: 4 },
+        },
+      ]);
+    });
+  });
+
+  describe('a malformed walked message', () => {
+    it('yields no message for it and still returns the rest of the conversation', async () => {
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            runStartEvent('run-1', 'serial-10'),
+            // A delta with no opener. Whether the reducer skips it or rejects
+            // it is the provider's business, so this asserts only what the
+            // adapter owes the consumer: the rest of the walk still arrives.
+            outputEvent('run-1', 'wire-bad', [{ type: 'text-delta', id: 't1', delta: 'orphan' }], 'serial-11'),
+            outputEvent('run-1', 'wire-a2', assistantChunks('a2', 'fine'), 'serial-12'),
+            runEndEvent('run-1'),
+          ],
+          exhausted: true,
+        },
+      ];
+
+      const { messages } = await chat.readSince();
+
+      expect(messages.map((m) => m.id)).toEqual(['a2']);
+    });
+  });
+
+  describe('a second readSince', () => {
+    it('still reports the conversation the first walk paged', async () => {
+      const { fake, chat } = setup();
       fake.historyBatches = [
         {
           events: [
@@ -861,11 +926,39 @@ describe('ChatTransport', () => {
           exhausted: true,
         },
       ];
-      const { messages } = await chat.readSince();
+      const first = await chat.readSince();
+      expect(first.messages.map((m) => m.id)).toEqual(['a1']);
 
-      expect(messages.map((m) => m.id)).toEqual(['a1']);
-      // eslint-disable-next-line unicorn/no-null -- the SDK contract is null
-      expect(await chat.reconnectToStream({ chatId: 'ai:test' })).toBe(null);
+      // The pager opens its cursor once and keeps it, so a second walk fetches
+      // no pages. Reporting an empty conversation here would hand useChat a
+      // blank history for a channel that has one, with no error to notice.
+      const second = await chat.readSince();
+      expect(second.messages.map((m) => m.id)).toEqual(['a1']);
+      expect(second.exhausted).toBe(true);
+    });
+
+    it('keeps a withheld message when the run ends live between the walks', async () => {
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            runStartEvent('run-1', 'serial-10'),
+            outputEvent('run-1', 'wire-a1', assistantChunks('a1', 'done'), 'serial-11'),
+          ],
+          exhausted: true,
+        },
+      ];
+      await chat.readSince();
+
+      // The run's end arrives on the channel, which is the only way a walk
+      // that already exhausted its cursor learns of it.
+      fake.emit(runEndEvent('run-1'));
+      await chat.readSince();
+
+      // The retention survives, so the withheld message is still delivered and
+      // the replayed terminal is what closes the stream.
+      const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
+      expect(await readAll(stream as ReadableStream<AI.UIMessageChunk>)).toEqual(assistantChunks('a1', 'done'));
     });
 
     it('delivers an event once when a re-walk overlaps the live buffer', async () => {
@@ -1154,6 +1247,39 @@ describe('ChatTransport', () => {
       const second = await chat.reconnectToStream({ chatId: 'ai:test' });
       expect(second).not.toBeNull();
       expect(await readAll(second as ReadableStream<AI.UIMessageChunk>)).toEqual([{ type: 'start', messageId: 'aa' }]);
+      expect(chat.streaming).toBe(false);
+    });
+
+    it('keeps live output that arrived before a run ended behind the walk', async () => {
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            runStartEvent('run-a', 'serial-20'),
+            outputEvent('run-a', 'wire-aa', [{ type: 'start', messageId: 'aa' }], 'serial-21'),
+          ],
+          exhausted: true,
+        },
+      ];
+      await chat.readSince();
+
+      // More of the run streams, and only then does it end. Both the deltas
+      // and the terminal are live deliveries; the terminal is also appended to
+      // the retention, so it exists twice.
+      fake.emit(outputEvent('run-a', 'wire-aa', [{ type: 'text-start', id: 't1' }], 'serial-22'));
+      fake.emit(outputEvent('run-a', 'wire-aa', [{ type: 'text-delta', id: 't1', delta: 'hi' }], 'serial-23'));
+      fake.emit(runEndEvent('run-a'));
+
+      const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
+
+      // Delivering a terminal closes the stream, so a replay that put the
+      // retained copy ahead of these deltas would drop them silently and hand
+      // useChat a truncated assistant message with no error.
+      expect(await readAll(stream as ReadableStream<AI.UIMessageChunk>)).toEqual([
+        { type: 'start', messageId: 'aa' },
+        { type: 'text-start', id: 't1' },
+        { type: 'text-delta', id: 't1', delta: 'hi' },
+      ]);
       expect(chat.streaming).toBe(false);
     });
 

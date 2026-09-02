@@ -364,6 +364,18 @@ const dropSupersededAttempts = <TMetadata, TDataParts extends AI.UIDataTypes, TT
  * @param events - The events to join, oldest first.
  * @returns The events with duplicate deliveries removed, order preserved.
  */
+/**
+ * Whether an event is a run's terminal (its `end` or `suspend` lifecycle).
+ *
+ * Delivering one closes the consumer's stream, so a replay has to order it
+ * after everything it should carry.
+ * @param event - The adapter event to classify.
+ * @returns True when the event ends or suspends its run.
+ */
+const isRunTerminal = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
+  event: AdapterEvent<TMetadata, TDataParts, TTools>,
+): boolean => event.kind === 'run-lifecycle' && (event.event.type === 'end' || event.event.type === 'suspend');
+
 const dedupeByDelivery = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
   events: AdapterEvent<TMetadata, TDataParts, TTools>[],
 ): AdapterEvent<TMetadata, TDataParts, TTools>[] => {
@@ -457,6 +469,15 @@ class DefaultChatTransport<
    */
   private readonly _retained = new Map<string, AdapterEvent<TMetadata, TDataParts, TTools>[]>();
   /**
+   * Every page {@link readSince} has walked so far, oldest first. The
+   * underlying pager opens its cursor once and keeps it, so a second walk
+   * fetches no pages — without this the re-walk would see an empty channel,
+   * report no messages and drop the retention the first walk built.
+   */
+  private _walkedPages: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
+  /** Whether the walk has reached the start of the channel. */
+  private _walkExhausted = false;
+  /**
    * Runs seen open on the channel — a `run-lifecycle` start with no end yet,
    * newest last. This is what lets a reconnect go live on a run the walk never
    * saw: the run another participant started after this client hydrated.
@@ -530,6 +551,8 @@ class DefaultChatTransport<
     this._pendingRunIds.clear();
     this._unendedRunIds.clear();
     this._retained.clear();
+    this._walkedPages = [];
+    this._walkExhausted = false;
     this._liveBuffer.length = 0;
     // Every closer ran `finish()` above, which decremented the counter and
     // emitted the transition at zero, so there is nothing left to reset here.
@@ -592,14 +615,18 @@ class DefaultChatTransport<
     // are strictly newer than every page; a re-walk's overlap is removed by
     // delivery at hand-off.
 
-    let all: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
-    let exhausted = false;
+    let all: AdapterEvent<TMetadata, TDataParts, TTools>[] = [...this._walkedPages];
+    let exhausted = this._walkExhausted;
     while (!exhausted) {
       const batch = await this._transport.history();
       all = [...batch.events, ...all];
       exhausted = batch.exhausted;
       if (latestSerial !== undefined && this._reached(all, latestSerial)) break;
     }
+    // Paging runs backwards, so each batch is prepended and the accumulated
+    // set stays chronological.
+    this._walkedPages = all;
+    this._walkExhausted = exhausted;
 
     // Everything at or before the store's serial is the store's to report.
     const walked =
@@ -657,12 +684,25 @@ class DefaultChatTransport<
 
     // Replay the withheld message on a reducer that holds nothing for it, then
     // the events the buffer holds. A re-walk can put one event in both, so the
-    // two are joined on serial. The canonical-attempt filter then runs over the
-    // whole replay, so a superseded attempt's output never reaches useChat.
+    // two are joined on delivery. The canonical-attempt filter then runs over
+    // the whole replay, so a superseded attempt's output never reaches useChat.
     // Awaited so the returned stream already holds its replay: useChat starts
     // reading a stream whose withheld message is buffered, not one that fills
     // in behind it.
-    await collector.awaitRunId(runId, dropSupersededAttempts(dedupeByDelivery([...retained, ...buffered])));
+    //
+    // The retained terminal goes last. A run that ended between the walk and
+    // this call has its terminal in both sequences, and delivering a terminal
+    // closes the stream — so a straight concatenation would put the retained
+    // copy ahead of the live deltas, the dedupe would keep that first copy,
+    // and every delta after it would be dropped on a closed stream. Ordering
+    // it last means the live copy wins when the buffer holds one, and the
+    // retained copy still closes the stream when the buffer has been trimmed.
+    const retainedTerminal = retained.filter((event) => isRunTerminal(event));
+    const retainedBody = retained.filter((event) => !isRunTerminal(event));
+    await collector.awaitRunId(
+      runId,
+      dropSupersededAttempts(dedupeByDelivery([...retainedBody, ...buffered, ...retainedTerminal])),
+    );
     return collector.stream;
   }
 
@@ -911,6 +951,20 @@ class DefaultChatTransport<
       if (runId !== undefined && openRuns.has(runId)) continue;
 
       for (const input of event.inputs) {
+        // A tool resolution is already a chunk in the SDK's own vocabulary,
+        // addressed to the assistant message it amends, so it folds into that
+        // assistant's bucket and the reducer applies it. Skipping it would
+        // rebuild the assistant with its tool call still unresolved.
+        if (input.kind === 'chunk') {
+          const bucket = buckets.get(transportMessageId);
+          if (bucket === undefined) {
+            order.push(transportMessageId);
+            buckets.set(transportMessageId, [input.payload]);
+          } else {
+            bucket.push(input.payload);
+          }
+          continue;
+        }
         if (input.kind !== 'message') continue;
         // The `message` batch explodes one UIMessage into one wire message per
         // part, and each decodes back as a one-part input, so the parts have
@@ -941,8 +995,19 @@ class DefaultChatTransport<
         messages.push(own);
         continue;
       }
-      const merged = await mergeBucket<TMetadata, TDataParts, TTools>(buckets.get(id) ?? []);
-      if (merged !== undefined) messages.push(merged);
+      // The bucket is wire data off a shared channel, so any client's
+      // malformed publish reaches the provider's reducer here. Contain a
+      // reducer failure to the one message: letting it out would reject the
+      // whole walk and leave the consumer with no conversation at all.
+      try {
+        const merged = await mergeBucket<TMetadata, TDataParts, TTools>(buckets.get(id) ?? []);
+        if (merged !== undefined) messages.push(merged);
+      } catch (error) {
+        this._logger.warn('ChatTransport.readSince(); dropping a message the reducer rejected', {
+          transportMessageId: id,
+          error,
+        });
+      }
     }
     return messages;
   }

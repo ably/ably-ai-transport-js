@@ -1,0 +1,16 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+/* Shared shadcn design tokens + custom utilities, owned by the shared package. */
+@import '@ably-ai-demos/frontend/styles/theme.css';
+@import '@ably-ai-demos/frontend/styles/base.css';
+
+/*
+ * Point Tailwind's content scanner at the shared package (the injected copy that
+ * Next actually transpiles) and at Streamdown, whose markdown utilities the
+ * shared Response renders. Tailwind v4 auto-detection skips node_modules, so
+ * both must be named explicitly.
+ */
+@source '../../node_modules/@ably-ai-demos/frontend/src';
+@source '../../node_modules/streamdown/dist/*.js';

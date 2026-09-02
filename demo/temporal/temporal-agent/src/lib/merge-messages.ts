@@ -1,8 +1,17 @@
 /**
  * Merge a channel's decoded transport events into the conversation's
- * `UIMessage[]`. The transport delivers classified events and merges nothing
- * itself; this helper is the demo's one merge, shared by the worker's
- * activities (model context assembly).
+ * `UIMessage[]` — the worker's model context for one turn.
+ *
+ * One caller: `loadConversation` in `src/worker/activities.ts`, which pages
+ * channel history to exhaustion at the start of every inference step and
+ * merges it into the messages that step hands the model. A worker activity is
+ * a fresh process holding no conversation state — it attaches, reads, runs one
+ * inference, and closes — and the transport classifies events without merging
+ * them, so this is where a turn's history becomes messages.
+ *
+ * The browser needs none of it. `useChat` owns the client's message list, and
+ * the SDK's chat transport replays chunks through the AI SDK's own reducer
+ * (see `src/app/chat.tsx`).
  *
  * How it merges:
  *

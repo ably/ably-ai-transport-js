@@ -1,62 +1,49 @@
 /**
- * Messages API route — the client's hydration source.
+ * Messages API route — the client's hydration source, over the demo's
+ * conversation store.
  *
- * Answers a GET with the conversation so far: the decoded transport events
- * (oldest first) plus the channel serial of the newest one, read through the
- * same `getExistingMessages` the chat route merges model context from — minus
- * any run that has not ended, which the client owns end to end. The
- * client merges the returned events itself, then pages its own transport's
- * history only for the gap newer than `latestSerial` — the seam between what
- * this response covered and where the client's live subscription attached.
- * Swapping the channel for a database later means reimplementing
- * `getExistingMessages` only; this route and its client keep their contract.
+ * GET answers with the conversation the store holds: the decoded transport
+ * events (oldest first) plus the channel serial they run up to. That read
+ * touches no Ably connection and no channel history, because it is standing in
+ * for the query an app would make against its own database. The client merges
+ * the returned events itself, then pages its own transport's history only for
+ * the gap newer than `latestSerial` — the seam between what the store covered
+ * and where its live subscription attached.
+ *
+ * POST saves a conversation. The client calls it once a run has ended, sending
+ * the completed runs it holds and the serial they run up to (see
+ * `hooks/use-responses-thread.ts`). Nothing that is still streaming is ever
+ * written, so the store never seeds a client with half a run.
  */
 
-import Ably from 'ably';
-import { channelAgent, createAgentTransport } from '@ably/ai-transport';
+import { loadConversation, saveConversation } from '../../lib/message-store';
+import type { ThreadEvent } from '../../lib/get-existing-messages';
 
-import { getExistingMessages, seedableEvents } from '../../lib/get-existing-messages';
-import { responsesCodec } from '../../lib/openai-thread';
-
-export async function GET(req: Request) {
+export function GET(req: Request) {
   const channelName = new URL(req.url).searchParams.get('channelName');
   if (!channelName) {
     return Response.json({ error: 'channelName is required' }, { status: 400 });
   }
+  return Response.json(loadConversation(channelName));
+}
 
-  const apiKey = process.env.ABLY_API_KEY;
-  if (!apiKey) {
-    return Response.json({ error: 'ABLY_API_KEY not set' }, { status: 500 });
+/** The save body the demo's client POSTs once a run has ended. */
+interface SaveRequestBody {
+  /** The conversation key (the channel name). */
+  channelName: string;
+  /** The conversation's decoded events, oldest first. */
+  events: ThreadEvent[];
+  /** The channel serial the events run up to. */
+  latestSerial?: string;
+}
+
+export async function POST(req: Request) {
+  // CAST: trust boundary — the POST body is the demo's own client's save
+  // request, narrowed by the shape guard below.
+  const body = (await req.json()) as SaveRequestBody;
+  if (typeof body.channelName !== 'string' || !Array.isArray(body.events)) {
+    return Response.json({ error: 'channelName and events are required' }, { status: 400 });
   }
-
-  // A fresh Ably client per request, like the chat route: the reader attaches,
-  // pages history, and closes.
-  const ably = new Ably.Realtime({
-    key: apiKey,
-    ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
-  });
-
-  try {
-    const channel = ably.channels.get(channelName, { params: { agent: channelAgent(responsesCodec) } });
-    const transport = createAgentTransport({ channel, codec: responsesCodec });
-    await transport.connect();
-    try {
-      const all = await getExistingMessages(transport);
-      // A run still streaming is left for the client's own walk and live
-      // subscription to own; seeding it as well would count its accumulated
-      // prefix twice. See `seedableEvents`.
-      const { events, latestSerial } = seedableEvents(all.events);
-      return Response.json({ events, latestSerial });
-    } finally {
-      transport.close();
-    }
-  } catch (error) {
-    // Without this the rejection escapes as an opaque 500 and the client
-    // quietly degrades to live-only, showing an empty conversation with no
-    // sign that hydration failed at all.
-    const message = error instanceof Error ? error.message : String(error);
-    return Response.json({ error: `unable to read the conversation; ${message}` }, { status: 500 });
-  } finally {
-    ably.close();
-  }
+  await saveConversation(body.channelName, body.events, body.latestSerial);
+  return Response.json({ ok: true });
 }

@@ -1,12 +1,16 @@
 /**
- * getExistingMessages — the demo's one swappable history source.
+ * getExistingMessages — the agent's model context, read off the channel.
  *
  * Pages a transport's channel history to exhaustion and merges it through the
- * same merge helper the frontend renders with. Both readers of the existing
- * conversation go through here: the chat route (model context) and the
- * messages endpoint (client hydration). Swapping the channel for a database
- * later means reimplementing only this function — its callers already consume
- * the returned shape.
+ * same merge helper the frontend renders with, so the model sees the
+ * conversation exactly as the UI does.
+ *
+ * The channel is the right source for the agent specifically. It is already
+ * attached, and the input that woke it was published there moments ago — a
+ * store the client writes after a run cannot hold it yet. The client hydrates
+ * the other way round, out of the demo's conversation store (see
+ * `message-store.ts`), which is why nothing in the read path of
+ * `GET /api/messages` touches Ably.
  */
 
 import type { AgentTransport, TransportEvent } from '@ably/ai-transport';
@@ -26,9 +30,7 @@ export interface ExistingMessages {
   messages: ThreadMessage[];
   /**
    * The channel serial of the newest event included, or `undefined` for an
-   * empty conversation. The model-context reader ignores it; the hydration
-   * reader takes its seam from {@link seedableEvents} instead, which moves it
-   * back past any run still streaming.
+   * empty conversation.
    */
   latestSerial: string | undefined;
 }
@@ -43,22 +45,22 @@ export const serialOf = (event: ThreadEvent): string | undefined =>
   event.kind === 'message' ? event.meta.serial : event.event.serial;
 
 /**
- * The events a hydrating client can safely be seeded with, and the seam that
- * goes with them.
+ * The events that can safely be stored for a later client to seed from, and
+ * the watermark that goes with them.
  *
  * A run that has not ended is deliberately withheld. Its output is still
- * arriving, and the client is already receiving it live — but the two sides
- * decode it with different decoder instances, and a decoder's first contact
- * with a stream in progress synthesises the whole accumulated prefix as one
- * delta. Seeding that prefix as well as receiving it live counts the text
- * twice, with nothing downstream able to tell the two apart. Leaving the open
- * run out means the client's own history walk and live subscription own it
- * end to end, decoded once.
+ * arriving, so a client that seeded it would also receive the rest live — and
+ * the two sides decode it with different decoder instances, where a decoder's
+ * first contact with a stream in progress synthesises the whole accumulated
+ * prefix as one delta. Seeding that prefix as well as receiving it live counts
+ * the text twice, with nothing downstream able to tell the two apart. Keeping
+ * the open run out of the store means the next client's own history walk and
+ * live subscription own it end to end, decoded once.
  *
- * The seam moves back accordingly: it is the newest serial among the events
- * that ARE seeded, so the client's gap walk picks the open run up.
+ * The watermark moves back accordingly: it is the newest serial among the
+ * events that ARE stored, so a client's gap walk picks the open run up.
  * @param events - Every decoded event, oldest first.
- * @returns The seedable events and the serial they run up to.
+ * @returns The storable events and the serial they run up to.
  */
 export const seedableEvents = (events: ThreadEvent[]): { events: ThreadEvent[]; latestSerial: string | undefined } => {
   const endedRuns = new Set<string>();

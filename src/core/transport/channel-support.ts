@@ -1,12 +1,16 @@
 /**
  * Shared channel lifecycle plumbing.
  *
- * Both transports gate their writes on `connect()` having run and react to
- * channel continuity loss with the same detection rule and error shape. These
- * helpers own that common machinery so the two transports cannot drift on the
- * connection guard or — most importantly — the continuity-loss predicate,
- * which encodes channel protocol semantics (Spec AIT-CT19 / AIT-ST12). Each
- * transport keeps its own divergent reaction to continuity loss.
+ * Both transports gate their writes on `connect()` having run and being open,
+ * and both watch the channel for continuity loss with the same detection rule
+ * and error shape. These helpers own that common machinery so the two cannot
+ * drift on the connection guard, the closed-state error, or — most importantly
+ * — the continuity-loss predicate, which encodes channel protocol semantics
+ * (Spec AIT-CT19 / AIT-ST12).
+ *
+ * Only the reaction to a loss differs, so {@link ContinuityWatcher} takes it as
+ * a callback: the agent aborts its registered runs, the client drains its
+ * in-flight waiters.
  */
 
 import * as Ably from 'ably';
@@ -218,6 +222,33 @@ export class ConnectGuard {
 }
 
 /**
+ * Build the terminal-state error every post-`close()` call on either transport
+ * rejects with. One definition so the two cannot drift on the code, status or
+ * wording a consumer switches on.
+ * @param method - The method name being guarded, named in the error message.
+ * @returns The error.
+ */
+export const closedError = (method: string): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
+
+/**
+ * Guard a transport verb: throw once closed, and otherwise require a
+ * successful `connect()` (the connect guard supplies the retry guidance on a
+ * failed one). The caller passes its own closed flag, which it also reads on
+ * paths that have nothing to do with connecting.
+ * @param closed - Whether the calling transport has been closed.
+ * @param guard - The calling transport's connect guard.
+ * @param method - The method name being guarded, named in the error message.
+ * @returns A promise that resolves once the verb may proceed.
+ * @throws {Ably.ErrorInfo} `SessionClosed` when closed, or the connect guard's
+ *   error when `connect()` was never called or failed.
+ */
+export const requireOpen = async (closed: boolean, guard: ConnectGuard, method: string): Promise<void> => {
+  if (closed) throw closedError(method);
+  await guard.requireConnected(method);
+};
+
+/**
  * Whether a channel state change breaks message continuity:
  * - FAILED, SUSPENDED, DETACHED — no more messages expected (or a gap)
  * - ATTACHED with `resumed: false` (an UPDATE) — messages were lost
@@ -251,3 +282,62 @@ export const continuityLostError = (stateChange: Ably.ChannelStateChange, verb: 
     stateChange.reason,
   );
 };
+
+/**
+ * Watch a channel for continuity loss and report each one to the owner.
+ *
+ * Owns the parts both transports had verbatim: the listener registration, the
+ * already-attached seed, the pre-attach gate, and the removal on close. Only
+ * the reaction differs between them, so that is the injected callback — the
+ * agent aborts its registered runs, the client drains its in-flight waiters.
+ */
+export class ContinuityWatcher {
+  private readonly _channel: Ably.RealtimeChannel;
+  private readonly _onLoss: (stateChange: Ably.ChannelStateChange) => void;
+  /** One bound reference, so `dispose()` removes the same listener it registered. */
+  private readonly _listener: Ably.channelEventCallback;
+  /**
+   * Whether the channel has attached at least once. State changes before the
+   * first attach are the transport coming up, not continuity being lost.
+   */
+  private _hasAttachedOnce: boolean;
+  private _disposed = false;
+
+  /**
+   * @param channel - The transport's channel.
+   * @param onLoss - Called with each continuity-breaking state change, after
+   *   the pre-attach gate. Never called once disposed.
+   */
+  constructor(channel: Ably.RealtimeChannel, onLoss: (stateChange: Ably.ChannelStateChange) => void) {
+    this._channel = channel;
+    this._onLoss = onLoss;
+    // A caller-owned channel can already be ATTACHED, and attaching an
+    // attached channel emits no state change — seed from the current state or
+    // the first continuity loss is swallowed as "not attached yet".
+    this._hasAttachedOnce = channel.state === 'attached';
+    this._listener = (stateChange: Ably.ChannelStateChange) => {
+      this._handle(stateChange);
+    };
+    // Registered on construction, not in connect(): connect() is idempotent
+    // and retryable, and ably-js keeps listeners in an array with no dedup, so
+    // a retried connect would report each continuity loss once per attempt.
+    channel.on(this._listener);
+  }
+
+  /** Remove the listener and stop reporting. Idempotent. */
+  dispose(): void {
+    if (this._disposed) return;
+    this._disposed = true;
+    this._channel.off(this._listener);
+  }
+
+  private _handle(stateChange: Ably.ChannelStateChange): void {
+    if (this._disposed) return;
+    if (!this._hasAttachedOnce) {
+      if (stateChange.current === 'attached') this._hasAttachedOnce = true;
+      return;
+    }
+    if (!isContinuityLost(stateChange)) return;
+    this._onLoss(stateChange);
+  }
+}

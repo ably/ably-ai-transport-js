@@ -2,8 +2,8 @@
  * Core codec interfaces — the wire tier.
  *
  * A codec encodes and decodes: it describes the wire as a flat stream of
- * TInput / TOutput values and does nothing else. Folding events into messages
- * is the application's job; this tier defines encode and decode only.
+ * TInput / TOutput values and does nothing else. Merging events into messages
+ * is the application's job, so no reducer or projection contract lives here.
  *
  * All types are framework-agnostic. Domain codecs (e.g. the Vercel codec)
  * choose concrete shapes for TInput / TOutput.
@@ -53,7 +53,7 @@ export interface Extras {
 export interface WriteOptions {
   /** Override the default extras for this write. */
   extras?: Extras;
-  /** Message identity for consumer-side routing. Stamped as `codec-message-id`. */
+  /** Message identity for consumer-side routing. Stamped as `transport-message-id`. */
   messageId?: string;
 }
 
@@ -160,8 +160,9 @@ export interface EncoderOptions {
   /**
    * Fallback domain message id surfaced to output escape hatches as
    * `ctx.messageId` (e.g. the Vercel `start` hatch injects it when a chunk
-   * carries no `messageId` of its own). Unrelated to the wire
-   * codec-message-id transport header, which `WriteOptions.messageId` stamps.
+   * carries no `messageId` of its own). Unrelated to the
+   * `transport-message-id` wire header, which the transport tier owns and
+   * `WriteOptions.messageId` stamps.
    */
   messageId?: string;
 }
@@ -178,8 +179,11 @@ export interface Encoder<TInput, TOutput> {
    * Encode and publish a single client input on the `ai-input` wire.
    * Rejects if the codec cannot encode the given input
    * variant.
+   * @returns The publish acknowledgement — the Ably-assigned serials, one per
+   *   wire message the input produced (a batch input fans out), in publish
+   *   order.
    */
-  publishInput(input: TInput, options?: WriteOptions): Promise<void>;
+  publishInput(input: TInput, options?: WriteOptions): Promise<Ably.PublishResult>;
   /**
    * Encode and publish a single agent output on the `ai-output` wire.
    * Rejects if the codec cannot encode the given output
@@ -218,7 +222,7 @@ export interface DecodedMessage<TInput, TOutput> {
  * Stateful decoder for a single channel subscription. Maintains internal
  * stream-tracker state across messages so that mid-stream join (history
  * compaction, partial-history page boundary, rewind miss) synthesizes any
- * missing start events before deltas leave the decoder — a consumer's fold
+ * missing start events before deltas leave the decoder — a consumer's merge
  * (the provider's own strict reducer included) always sees a clean
  * `(start, delta*, end)` sequence. That repair is a contract, not a
  * convenience: the provider reducers throw on a delta with no opener.
@@ -226,16 +230,16 @@ export interface DecodedMessage<TInput, TOutput> {
  * Trackers are version-guarded: a delivery whose `Message.version.serial`
  * is at or below the version already incorporated decodes to nothing. One
  * decoder instance can therefore be shared by the live subscription and
- * a backwards history walk — whichever route delivers a message's content first
+ * history hydration — whichever route delivers a message's content first
  * wins, and the other route's covered deliveries are no-ops.
  *
- * An update that does not extend what the decoder has accumulated is not
- * rendered: the missing piece sits inside content the fold already delivered,
- * and a provider reducer can only append to an open part, so no emittable
- * delta exists. The wire's content is authoritative — a fresh decode of the
- * message (history, or a refold with a new decoder) yields it in full — and a
- * terminal status on such an update still closes the group so the consumer's
- * open part ends rather than staying open.
+ * One decode contract a consumer has to know: an update whose content does not
+ * extend what the decoder accumulated yields no delta. A provider reducer can
+ * only append to an open part, so there is no emittable change — the message's
+ * wire content stays authoritative, and a fresh decode (history, or a re-merge
+ * with a new decoder) yields it in full. A terminal status on such an update
+ * still closes the group, so a consumer's open part ends rather than streaming
+ * forever.
  */
 export interface Decoder<TInput, TOutput> {
   /** Decode one Ably inbound message into the input/output halves. */
@@ -248,8 +252,9 @@ export interface Decoder<TInput, TOutput> {
 
 /**
  * A codec: encode and decode, nothing else. This is the whole contract the
- * transports require — they publish inputs and classify inbound messages, so
- * they stay parameterized by `TInput` / `TOutput` alone. The transport carries both as opaque values and never
+ * transports require — they publish inputs and classify inbound messages
+ * without ever merging a projection, so they stay parameterized by `TInput` /
+ * `TOutput` alone. The transport carries both as opaque values and never
  * inspects them; a codec's `TInput` is simply its own body union.
  * @template TInput - The union of input bodies the client publishes on the
  *   `ai-input` wire.
@@ -257,6 +262,13 @@ export interface Decoder<TInput, TOutput> {
  *   `ai-output` wire.
  */
 export interface WireCodec<TInput, TOutput> {
+  /**
+   * Optional Ably-Agent identifier. When present, the caller stamps it on the
+   * channel alongside this SDK's own agent, so traffic is attributed to this
+   * codec; when absent, the codec opts out. Read by `channelAgent`, which
+   * renders the `params.agent` string.
+   */
+  readonly adapterTag?: string;
   /** Create a stateful encoder bound to the given channel. */
   createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
   /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */

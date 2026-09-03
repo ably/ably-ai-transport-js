@@ -54,7 +54,7 @@ const mockCore = () => {
   return { core, startStream, appendStream, closeStream, publishDiscrete };
 };
 
-const ctx: OutputEncodeContext = { messageId: 'cm-1', opts: undefined };
+const ctx: OutputEncodeContext = { messageId: 'tm-1', opts: undefined };
 
 const { stream } = outputBuilder<U>();
 

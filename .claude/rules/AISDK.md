@@ -22,7 +22,7 @@ adds fails loudly at runtime rather than being dropped silently.
 value from it — `getToolName` in `src/vercel/tool-registry.ts` — so any value
 imported from `ai` must exist with the same signature in both supported majors.
 `test-ai-peer-range` in CI is the only thing checking that. Assembling chunks
-into messages is not this package's job at all: a consumer folds the event
+into messages is not this package's job at all: a consumer merges the event
 stream with the provider's own reducer (`readUIMessageStream`).
 
 **Do not assert the AI SDK's internal accounting.** Callback call-counts, log

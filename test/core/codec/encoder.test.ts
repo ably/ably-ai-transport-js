@@ -2,11 +2,11 @@ import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { createEncoderCore } from '../../../src/core/codec/encoder.js';
 import type { ChannelWriter, MessagePayload, StreamPayload } from '../../../src/core/codec/types.js';
@@ -144,7 +144,7 @@ describe('createEncoderCore', () => {
     });
 
     it('preserves default headers (e.g. step-id/step-client-id) under a per-write override that does not set them', async () => {
-      // `AgentRunTransport.createStep` stamps step-id/step-client-id as encoder defaults; a
+      // `Run.createStep` stamps step-id/step-client-id as encoder defaults; a
       // per-write override merges OVER the defaults, so an override that only
       // touches other headers leaves the step attribution intact.
       const core = createEncoderCore(writer, { extras: { headers: { 'step-id': 'S', 'step-client-id': 'C' } } });
@@ -396,6 +396,45 @@ describe('createEncoderCore', () => {
       expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
     });
 
+    it('recovery message includes initial startStream data in accumulation', async () => {
+      writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
+
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text', data: 'prefix-' }));
+      core.appendStream('s1', 'suffix');
+
+      await core.closeStream('s1', streamPayload({ name: 'text' }));
+
+      expect(first(writer.updateCalls).data).toBe('prefix-suffix');
+    });
+
+    it('recovery message preserves persistent headers and serial', async () => {
+      writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
+
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-codec': 'val' } }));
+      core.appendStream('s1', 'data');
+
+      await core.closeStream('s1', streamPayload({ name: 'text' }));
+
+      const recovery = first(writer.updateCalls);
+      expect(recovery.serial).toBe('serial-1');
+      expect(headersOf(recovery)['x-codec']).toBe('val');
+      expect(headersOf(recovery)[HEADER_STREAM]).toBe('true');
+    });
+
+    it('cancelAllStreams uses cancelled status in recovery', async () => {
+      writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
+
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text' }));
+      core.appendStream('s1', 'data');
+
+      await core.cancelAllStreams();
+
+      expect(headersOf(first(writer.updateCalls))[HEADER_STATUS]).toBe('cancelled');
+    });
+
     it('recovers a still-open stream with status streaming, so subscribers keep it open', async () => {
       // `_pending` is shared by every stream: closing s1 flushes s2's failed
       // append too, and s2 — still streaming — must not be stamped `complete`,
@@ -445,45 +484,6 @@ describe('createEncoderCore', () => {
       const recovery = first(writer.updateCalls);
       expect(recovery.data).toBe('abc');
       expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
-    });
-
-    it('recovery message includes initial startStream data in accumulation', async () => {
-      writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
-
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', data: 'prefix-' }));
-      core.appendStream('s1', 'suffix');
-
-      await core.closeStream('s1', streamPayload({ name: 'text' }));
-
-      expect(first(writer.updateCalls).data).toBe('prefix-suffix');
-    });
-
-    it('recovery message preserves persistent headers and serial', async () => {
-      writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
-
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-codec': 'val' } }));
-      core.appendStream('s1', 'data');
-
-      await core.closeStream('s1', streamPayload({ name: 'text' }));
-
-      const recovery = first(writer.updateCalls);
-      expect(recovery.serial).toBe('serial-1');
-      expect(headersOf(recovery)['x-codec']).toBe('val');
-      expect(headersOf(recovery)[HEADER_STREAM]).toBe('true');
-    });
-
-    it('cancelAllStreams uses cancelled status in recovery', async () => {
-      writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
-
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text' }));
-      core.appendStream('s1', 'data');
-
-      await core.cancelAllStreams();
-
-      expect(headersOf(first(writer.updateCalls))[HEADER_STATUS]).toBe('cancelled');
     });
 
     it('closeStream throws when recovery also fails', async () => {
@@ -588,33 +588,33 @@ describe('createEncoderCore', () => {
   // -- WriteOptions.messageId -------------------------------------------------
 
   describe('WriteOptions.messageId', () => {
-    it('stamps codec-message-id on discrete publishes', async () => {
+    it('stamps transport-message-id on discrete publishes', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload(), { messageId: 'msg-1' });
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
     });
 
-    it('stamps codec-message-id on streamed messages via persistent headers', async () => {
+    it('stamps transport-message-id on streamed messages via persistent headers', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s-1', streamPayload(), { messageId: 'msg-2' });
 
       const startMsg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(startMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
+      expect(headersOf(startMsg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-2');
 
-      // Appends carry persistent headers, so should include codec-message-id
+      // Appends carry persistent headers, so should include transport-message-id
       core.appendStream('s-1', 'delta');
       const appendMsg = first(writer.appendCalls);
-      expect(headersOf(appendMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
+      expect(headersOf(appendMsg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-2');
     });
 
-    it('does not stamp codec-message-id when messageId is not provided', async () => {
+    it('does not stamp transport-message-id when messageId is not provided', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload());
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBeUndefined();
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBeUndefined();
     });
   });
 });

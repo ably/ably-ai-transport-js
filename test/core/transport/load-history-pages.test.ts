@@ -2,9 +2,9 @@
  * Unit tests for the shared `loadHistoryPages` primitive.
  *
  * `loadHistoryPages` is the cursor-based pagination engine consumed by
- * `ClientTransport.history` and by the agent transport's `locateInput` scan
- * and `history` paging. These tests verify the contract independently of
- * either consumer:
+ * `HistoryPager` (behind both transports' `history()`) and by the agent
+ * transport's `locateInput` scan. These tests verify the contract
+ * independently of either consumer:
  *
  *  - cursor `hasNext()` reflects the underlying paginated result
  *  - `next()` returns wires newest-first within each page

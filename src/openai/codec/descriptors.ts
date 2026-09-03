@@ -38,7 +38,7 @@
  *
  * Input side: the user message is a `batch` that fans the user message's
  * content parts out into one `ai-input` event per part (one for a plain text prompt),
- * reassembled by a consumer merging parts by codec-message-id — see {@link inputs}.
+ * reassembled by a consumer merging parts by transport-message-id — see {@link inputs}.
  *
  * Hosted tools are added by adding entries here; the codec/transport split is
  * unaffected.
@@ -451,7 +451,7 @@ export const outputs = ({
   // --- server-executed tool result (codec's own output event) --------------
   // Not a Responses stream event: OpenAI surfaces tool output only as model
   // input on the next turn, so the agent publishes this after running the
-  // tool. A consumer folds the item into the message its codec-message-id
+  // tool. A consumer folds the item into the message its transport-message-id
   // names (paired with its function_call by call_id at render time). Like the
   // item envelopes above, the item is carried under the `item` key of its wire
   // `data` envelope (see that note for the rationale).
@@ -507,10 +507,10 @@ export const outputs = ({
  * The message turn is a `batch`: a single message item whose content parts
  * (`input_text`, and when we've done AIT-1120 `input_image` / `input_file`)
  * are fanned out into one `ai-input` event per part, all sharing `kind:
- * message` and the message's codec-message-id, each carrying its `partType`
+ * message` and the message's transport-message-id, each carrying its `partType`
  * and the message's `role` — so a body large enough to need splitting still
  * fits the wire. A consumer groups the parts by their shared
- * codec-message-id. A message with no encodable part still emits one empty
+ * transport-message-id. A message with no encodable part still emits one empty
  * text part so it round-trips. The tool resolution carries OpenAI's own
  * `function_call_output` item as its wire data; the approval decision is
  * field-mapped.

@@ -15,7 +15,7 @@ import type { Encoder, EncoderOptions } from '../../src/core/codec/types.js';
  */
 export const createMockEncoder = <TInput, TOutput>(opts?: EncoderOptions): Encoder<TInput, TOutput> => ({
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  publishInput: vi.fn(() => Promise.resolve()),
+  publishInput: vi.fn(() => Promise.resolve({ serials: ['serial-input-1'] })),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   publishOutput: vi.fn(() => {
     const msg: Ably.Message = { name: 'ai-output', extras: { ai: { transport: { ...opts?.extras?.headers } } } };

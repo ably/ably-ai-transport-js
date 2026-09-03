@@ -20,7 +20,7 @@ import type { Responses } from 'openai/resources/responses/responses';
  * surfaces tool output only as model *input* on the next turn — so the codec
  * gives it its own output event. The agent emits it between `/responses` calls
  * in its agentic loop; a consumer folds it into the {@link OpenAIMessage}
- * named by its codec-message-id. Because each `pipe`/`send` mints a fresh id,
+ * named by its transport-message-id. Because each `pipe`/`send` mints a fresh id,
  * an output published on its own `send` lands in its own message, separate from
  * the one holding the `function_call`; a renderer pairs them by `call_id`.
  */
@@ -41,7 +41,7 @@ export interface FunctionCallOutputEvent {
  * over the raw `function_call`, so this event carries the same fields — a
  * client can render the approval prompt from the request alone, without having
  * received the streamed `function_call`. A consumer folds it into the
- * per-`call_id` tool-call state of the message its codec-message-id names,
+ * per-`call_id` tool-call state of the message its transport-message-id names,
  * marking the call `pending`. The client answers with an
  * {@link OpenAIApprovalDecision}.
  */
@@ -290,7 +290,7 @@ export type OpenAIItem =
 /**
  * One message's worth of OpenAI items, tagged with the message's role — the
  * shape a consumer's fold renders and a turn body carries. A single run can
- * produce several of these, one per distinct codec-message-id the agent
+ * produce several of these, one per distinct transport-message-id the agent
  * publishes (each `pipe`/`send` mints one), the same way a run over the Vercel
  * codec produces several `AI.UIMessage`s; a prompt produces one user message.
  * System/developer instructions are server-side configuration and never appear
@@ -374,7 +374,7 @@ export interface OpenAIMessageInput {
 /**
  * A tool resolution: the body is OpenAI's own `function_call_output` input
  * item, published against the assistant message holding the `function_call`
- * (addressed by the publish options' `codecMessageId`). A failure or a denial
+ * (addressed by the publish options' `transportMessageId`). A failure or a denial
  * is the same item with the failure or denial recorded in its `output` — the
  * item is what the next `/responses` call consumes either way.
  */
@@ -387,7 +387,7 @@ export interface OpenAIItemInput {
 
 /**
  * A tool-approval decision, published against the assistant message whose
- * tool call it gates (addressed by the publish options' `codecMessageId`).
+ * tool call it gates (addressed by the publish options' `transportMessageId`).
  * See {@link OpenAIApprovalDecision} for why this body is codec-defined.
  */
 export interface OpenAIApprovalInput {

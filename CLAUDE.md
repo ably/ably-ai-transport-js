@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`@ably/ai-transport` — an Ably transport and the wire codecs for building AI applications on it. The transport carries runs, steps and codec events over one Ably channel and holds no conversation state; the application folds the event stream into its own messages. Ships as a single npm package with three entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
+`@ably/ai-transport` — an Ably transport and the wire codecs for building AI applications on it. The transport carries runs, steps and codec events over one Ably channel and holds no conversation state; the application merges the event stream into its own messages. Ships as a single npm package with four entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
 
 ## Commands
 
@@ -40,7 +40,8 @@ Additional conventions not covered by rule files:
 
 - **Channel state names in prose**: When referring to Ably channel states as state names (in comments, commit messages, documentation, and test descriptions), write them in UPPERCASE: INITIALIZED, ATTACHING, ATTACHED, DETACHING, DETACHED, SUSPENDED, FAILED. Do not use backticks or quotes — the capitalisation makes them self-evident. Keep lowercase when the word is used as a verb (e.g. "before re-attaching").
 - **Imports**: Always include `.js` extension. Import peer dependency types as namespaces (`import type * as Ably from "ably"`, `import type * as AI from "ai"`).
-- **JSDoc on exported types**: Every property and method on an exported interface or type must have a JSDoc comment. Exported interfaces themselves should also have a JSDoc comment describing their purpose. JSDoc comments must describe the **contract** — what the caller or implementor needs to know — not just restate the name. For callbacks, state whether they are called with a value to observe, to mutate in place, or to return a replacement.
+- **JSDoc on exported types**: Every property and method on an exported interface or type must have a JSDoc comment. Exported interfaces themselves should also have a JSDoc comment describing their purpose. JSDoc comments must describe the **contract** — what the caller or implementor needs to know — not just restate the name. For callbacks and hooks, state whether they are called with a value to observe, to mutate in place, or to return a replacement.
+- **React hook types**: Every hook's parameter object must be a named `{HookName}Options` interface (e.g. `UseClientTransportOptions`). When the hook returns a structured object, name it `{HookNameWithoutUse}Handle` (e.g. `ClientTransportHandle`). Both types must be exported from the entry-point `index.ts`. Hooks that return primitives or library types (arrays, Maps) need no wrapper Handle type.
 
 ## Workflow rules
 

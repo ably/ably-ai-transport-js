@@ -6,7 +6,7 @@
  * `event` publishes one discrete message (fields/data lensed onto the member's
  * `payload`, or kind-only when `wireOnly`); a `batch` explodes the domain
  * message into one wire event per part and publishes them atomically, with a
- * built-in ≥1-event guarantee so the codec-message-id and role survive an empty
+ * built-in ≥1-event guarantee so the transport-message-id and role survive an empty
  * decomposition. Headers are always built through the descriptor's declared
  * fields ({@link writeFields}), so the imperative paths can't drift.
  */
@@ -31,10 +31,11 @@ export interface InputDescriptorEncoder<U> {
    * Encode one input through its descriptor.
    * @param input - The input to encode.
    * @param core - The input encoder core to publish through.
-   * @param ctx - Per-write context (write options, carrying the codec-message-id).
-   * @returns A promise resolving when the publish operation completes.
+   * @param ctx - Per-write context (write options, carrying the transport-message-id).
+   * @returns The publish acknowledgement — the Ably-assigned serials, one per
+   *   wire message the input produced, in publish order.
    */
-  encode(input: U, core: InputEncoderCore, ctx: InputEncodeContext): Promise<void>;
+  encode(input: U, core: InputEncoderCore, ctx: InputEncodeContext): Promise<Ably.PublishResult>;
 }
 
 // Layer the batch's per-message transport headers onto a part payload, if any.
@@ -62,14 +63,13 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
     input: U,
     core: InputEncoderCore,
     ctx: InputEncodeContext,
-  ): Promise<void> => {
+  ): Promise<Ably.PublishResult> => {
     if (descriptor.wireOnly) {
-      // Kind only: no fields, no data — the parent/target ride transport headers.
-      await core.publishDiscrete(
+      // Kind only: no fields, no data — the signal is its kind.
+      return core.publishDiscrete(
         { name: wireName, data: '', codecHeaders: { [KIND_HEADER]: descriptor.kind } },
         ctx.opts,
       );
-      return;
     }
     // A non-wireOnly input nests its domain data under `payload` — fields and
     // data are authored against it. Fail fast on a payload-less member instead
@@ -84,7 +84,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
     }
     const codecHeaders = writeFields(descriptor.fields, descriptor.kind, source);
     const data = descriptor.data ? descriptor.data.encode(source) : '';
-    await core.publishDiscrete({ name: wireName, data, codecHeaders }, ctx.opts);
+    return core.publishDiscrete({ name: wireName, data, codecHeaders }, ctx.opts);
   };
 
   const encodeBatch = async (
@@ -92,7 +92,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
     input: U,
     core: InputEncoderCore,
     ctx: InputEncodeContext,
-  ): Promise<void> => {
+  ): Promise<Ably.PublishResult> => {
     // Per-message headers (e.g. message id, role) are stamped on every part so
     // the decode side can reconstruct the shared message envelope from any one.
     const message = descriptor.messageHeaders?.(input);
@@ -129,7 +129,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
       );
     }
 
-    await core.publishDiscreteBatch(payloads, ctx.opts);
+    return core.publishDiscreteBatch(payloads, ctx.opts);
   };
 
   return {
@@ -142,9 +142,9 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
           400,
         );
       }
-      await (descriptor.construct === 'event'
+      return descriptor.construct === 'event'
         ? encodeEvent(descriptor, input, core, ctx)
-        : encodeBatch(descriptor, input, core, ctx));
+        : encodeBatch(descriptor, input, core, ctx);
     },
   };
 };

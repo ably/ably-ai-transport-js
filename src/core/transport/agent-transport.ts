@@ -80,9 +80,11 @@ import type {
 import { wireMetaFromMessage } from './wire-meta.js';
 
 /**
- * Maximum number of cancels buffered for runs not yet opened (see
- * {@link AgentTransport.openRun}'s deferred-cancel pull). FIFO-evicts the
- * oldest beyond this.
+ * Per-registry cap on the cancel-routing state. All three registries are bound
+ * by it independently, each FIFO-evicting its own oldest entry beyond this: the
+ * cancels buffered for runs not yet opened (see {@link AgentTransport.openRun}'s
+ * deferred-cancel pull), the run-ids already opened, and the run-ids a cancel
+ * was honoured for.
  */
 const DEFERRED_CANCEL_LIMIT = 200;
 
@@ -167,20 +169,24 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
 
   /** Open runs by run-id — the cancel-routing registry. */
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
-  /** Cancels whose target run is not registered yet (a cancel can race its run's `openRun`), for `openRun` to pull. */
+  /** Cancels whose target run is not registered yet (a cancel can race its run's `openRun`), for `openRun` to pull. FIFO-evicted at {@link DEFERRED_CANCEL_LIMIT}, alongside the other cancel-routing registries. */
   private readonly _deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
   /**
-   * Run-ids this process has opened, for a cancel that arrives after the run
-   * is gone. A run that ended for any reason other than a cancel does not
-   * buffer one: holding it would abort the next `adoptRun` of the same id,
-   * which is how a durable agent re-enters a run, and no cancel was ever
-   * honoured against it. An id whose opening publish failed is removed again,
-   * because that run never ran and its retry still needs the cancel.
+   * Run-ids this process has opened. A cancel naming an id in here arrives
+   * after that run is already gone, so it is dropped rather than buffered for
+   * a run that will never pull it: buffering it would abort the next
+   * `adoptRun` of the same id — which is how a durable agent re-enters a run —
+   * and no cancel was ever honoured against this one.
+   *
+   * An id whose opening publish failed is removed again, because that run
+   * never ran and its retry still needs the cancel.
    *
    * A run that WAS cancelled is tracked separately in {@link _cancelledRunIds}
-   * and behaves the opposite way.
+   * and behaves the opposite way. FIFO-evicted at
+   * {@link DEFERRED_CANCEL_LIMIT}, alongside the other cancel-routing
+   * registries.
    */
-  private readonly _seenRunIds = new Map<string, true>();
+  private readonly _seenRunIds = new Set<string>();
   /**
    * Run-ids this process honoured a cancel for. A cancel is sticky: a run is
    * cancelled once and stays cancelled, so a later `openRun` or `adoptRun`
@@ -192,7 +198,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * Only a cancel that was actually honoured lands here; one a run's
    * `onCancel` vetoed did not cancel the run and does not bind its successors.
    * FIFO-evicted at {@link DEFERRED_CANCEL_LIMIT}, alongside the other
-   * cancel-routing maps.
+   * cancel-routing registries.
    */
   private readonly _cancelledRunIds = new Map<string, Ably.InboundMessage>();
   /** Steering-message transport-message-ids observed before their run was opened, keyed by run-id. */
@@ -457,7 +463,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // buffer, so a cancel arriving after this run ends is dropped rather than
     // held for the next adoption of the same id.
     evictOldestIfFull(this._seenRunIds, runId, DEFERRED_CANCEL_LIMIT);
-    this._seenRunIds.set(runId, true);
+    this._seenRunIds.add(runId);
 
     /**
      * Remove this run from the routing maps: the registry, the pre-open steer

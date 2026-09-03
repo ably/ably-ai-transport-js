@@ -1,5 +1,6 @@
 /**
- * Unit tests for the FIFO-bounded-map eviction helper.
+ * Unit tests for the FIFO-bounded eviction helper, over both collections it
+ * serves: a `Map` whose values the caller sets, and a `Set` of bare keys.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -48,5 +49,15 @@ describe('evictOldestIfFull', () => {
     }
     // a and b evicted as c and d were added; newest two remain in order.
     expect([...map.keys()]).toEqual(['c', 'd']);
+  });
+
+  it('evicts a Set the same way, so a bare key registry needs no value', () => {
+    const set = new Set(['a', 'b']);
+
+    expect(evictOldestIfFull(set, 'b', 2)).toBeUndefined();
+    expect(evictOldestIfFull(set, 'c', 2)).toBe('a');
+    set.add('c');
+
+    expect([...set]).toEqual(['b', 'c']);
   });
 });

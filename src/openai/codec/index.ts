@@ -1,48 +1,166 @@
 /**
- * OpenAI Responses codec — `ResponsesCodec`.
+ * OpenAI Responses codec — `createResponsesCodec`.
  *
- * Assembled by `defineCodec` from the codec's parts: the declarative
- * output/input descriptor tables and the decode lifecycle policy.
- * `defineCodec` builds the generic encoder/decoder from these.
+ * The output direction is assembled by `defineCodec` from the declarative
+ * output descriptor table and the decode lifecycle policy: it streams
+ * assistant text, refusals, reasoning (summary and raw text) and function-call
+ * arguments, handles server-side function calls (results and human-approval
+ * requests), and repairs mid-stream joins via `decoderSynthesiseLifecycle`.
+ * Hosted tools (web / file search, code interpreter, image gen, MCP, custom
+ * tools) are not yet supported (AIT-1121).
  *
- * It streams assistant text, refusals, reasoning (summary and raw text) and
- * function-call arguments, handles a message turn and both server-side
- * and client-side function calls (results, failures, and human approvals), and
- * repairs mid-stream joins via `decoderSynthesiseLifecycle`. Hosted tools (web /
- * file search, code interpreter, image gen, MCP, custom tools) are not yet
- * supported (AIT-1121).
+ * The input direction is a passthrough parameterized by the application's own
+ * input type: any JSON-serialisable body a client publishes rides one
+ * discrete `ai-input` message and decodes back verbatim as `TInput`. The
+ * factory's type parameter is the application's declaration, not a validated
+ * contract — the codec asserts it at the decode trust boundary, so an
+ * application sharing its channel with other publishers should still validate
+ * at its merge boundary. The responses-transport demo carries a worked
+ * example (its `OpenAIInput` union and `asOpenAIInput` validator).
  *
  * ```ts
- * import { ResponsesCodec } from '@ably/ai-transport/openai';
+ * import { createResponsesCodec } from '@ably/ai-transport/openai';
  *
- * const decoder = ResponsesCodec.createDecoder();
+ * const codec = createResponsesCodec<MyInput>();
  * ```
  */
 
-import { defineCodec } from '../../core/codec/index.js';
+import * as Ably from 'ably';
+
+import { EVENT_AI_INPUT } from '../../constants.js';
+import {
+  type ChannelWriter,
+  createEncoderCore,
+  type Decoder,
+  defineCodec,
+  type Encoder,
+  type EncoderOptions,
+  type WireCodec,
+  type WriteOptions,
+} from '../../core/codec/index.js';
+import { ErrorCode } from '../../errors.js';
+import { errorMessage, hasAiEnvelope } from '../../utils.js';
 import { createResponsesDecodeLifecycle } from './decode-lifecycle.js';
-import { inputs, outputs } from './descriptors.js';
-import type { OpenAIInput, OpenAIOutput } from './events.js';
+import { outputs } from './descriptors.js';
+import type { OpenAIOutput } from './events.js';
 
 /**
- * OpenAI Responses codec implementing `WireCodec<OpenAIInput, OpenAIOutput>`.
+ * The codec's wire tag, stamped by the encoder and read by `channelAgent`.
+ * One constant so the two can never diverge silently.
  */
-export const ResponsesCodec = defineCodec<OpenAIInput, OpenAIOutput>()({
-  adapterTag: 'openai-responses',
+const ADAPTER_TAG = 'openai-responses';
+
+/**
+ * The output half, assembled from the descriptor table. Its input table is
+ * empty (`never`): the passthrough wrapper below owns the input direction and
+ * intercepts `ai-input` wires before this decoder sees them.
+ */
+const outputCodec = defineCodec<never, OpenAIOutput>()({
+  adapterTag: ADAPTER_TAG,
   output: outputs,
-  input: inputs,
+  input: () => [],
   decoderSynthesiseLifecycle: createResponsesDecodeLifecycle,
 });
 
-export type {
-  OpenAIApprovalDecision,
-  OpenAIApprovalInput,
-  OpenAIInput,
-  OpenAIItem,
-  OpenAIItemInput,
-  OpenAIMessage,
-  OpenAIMessageInput,
-  OpenAIOutput,
-  OpenAIToolCallState,
-  ToolApprovalRequestEvent,
-} from './events.js';
+/**
+ * Build an OpenAI Responses codec implementing `WireCodec<TInput, OpenAIOutput>`.
+ * Outputs are OpenAI's own stream events plus the codec's two authored
+ * events; inputs pass through as JSON typed by the application's `TInput`
+ * (see the module header).
+ * @template TInput - The application's input-event type. Asserted at decode, never validated — on a channel you share, validate the decoded body yourself.
+ * @returns The codec.
+ */
+export const createResponsesCodec = <TInput = unknown>(): WireCodec<TInput, OpenAIOutput> => ({
+  adapterTag: ADAPTER_TAG,
+
+  createEncoder: (channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, OpenAIOutput> => {
+    const inner = outputCodec.createEncoder(channel, options);
+    // The input direction publishes through its own core so it shares the
+    // header stamping (transport-message-id from opts.messageId, the caller's
+    // extras) every codec input gets.
+    const inputCore = createEncoderCore(channel, options ?? {});
+    return {
+      publishInput: async (input: TInput, opts?: WriteOptions): Promise<Ably.PublishResult> => {
+        // `JSON.stringify` fails two ways on a body it cannot serialise: it
+        // returns undefined (undefined / function / symbol) and it throws
+        // (circular structure, BigInt). Both are the caller's mistake, so both
+        // become the same coded error rather than a raw TypeError the publish
+        // path would rewrap as an internal fault. Reading the result through
+        // `unknown` is what lets the guard narrow it.
+        let raw: unknown;
+        try {
+          raw = JSON.stringify(input);
+        } catch (error) {
+          throw new Ably.ErrorInfo(
+            `unable to publish input; the input must be JSON-serialisable; ${errorMessage(error)}`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        if (typeof raw !== 'string') {
+          throw new Ably.ErrorInfo(
+            'unable to publish input; the input must be JSON-serialisable',
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        const data = raw;
+        return inputCore.publishDiscrete({ name: EVENT_AI_INPUT, data, codecHeaders: {} }, opts);
+      },
+      publishOutput: async (output: OpenAIOutput, opts?: WriteOptions): Promise<void> =>
+        inner.publishOutput(output, opts),
+      cancelStreams: async (): Promise<void> => inner.cancelStreams(),
+      close: async (): Promise<void> => {
+        await inner.close();
+        await inputCore.close();
+      },
+    };
+  },
+
+  createDecoder: (): Decoder<TInput, OpenAIOutput> => {
+    const inner = outputCodec.createDecoder();
+    return {
+      decode: (msg: Ably.InboundMessage): { inputs: TInput[]; outputs: OpenAIOutput[] } => {
+        // The passthrough input path: our own `ai-input` wires carry the
+        // published body as JSON. A same-named message without the SDK's
+        // `extras.ai` envelope is foreign and decodes to nothing. A malformed
+        // body throws at this trust boundary — the receive path drops the one
+        // message and surfaces the error. It is the peer's mistake, not ours,
+        // so it carries InvalidArgument rather than the internal-fault code a
+        // raw SyntaxError would be wrapped as.
+        if (msg.name === EVENT_AI_INPUT) {
+          if (!hasAiEnvelope(msg)) return { inputs: [], outputs: [] };
+          // Only a create carries an input body. The passthrough publishes one
+          // discrete message per input and never appends, updates or deletes,
+          // so any other action on this name came from elsewhere on the shared
+          // channel and decodes to nothing — reading its `data` would throw on
+          // a delete, and the receive path would turn that into an error event
+          // over a message that is not ours to interpret.
+          if (msg.action !== 'message.create') return { inputs: [], outputs: [] };
+          if (typeof msg.data !== 'string') {
+            throw new Ably.ErrorInfo(
+              'unable to decode input; the wire body is not a JSON string',
+              ErrorCode.InvalidArgument,
+              400,
+            );
+          }
+          try {
+            // CAST: wire trust boundary — the body is the JSON a client
+            // published, asserted to the application's declared TInput; the
+            // codec does not validate the shape (see the module header).
+            return { inputs: [JSON.parse(msg.data) as TInput], outputs: [] };
+          } catch (error) {
+            throw new Ably.ErrorInfo(
+              `unable to decode input; the wire body is not valid JSON; ${errorMessage(error)}`,
+              ErrorCode.InvalidArgument,
+              400,
+            );
+          }
+        }
+        return inner.decode(msg);
+      },
+    };
+  },
+});
+
+export type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput, ToolApprovalRequestEvent } from './events.js';

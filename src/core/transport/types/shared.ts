@@ -15,6 +15,21 @@ import type * as Ably from 'ably';
 export type RunEndReason = 'complete' | 'cancelled' | 'error';
 
 /**
+ * The lifecycle status of a run, derivable from its observed lifecycle
+ * events.
+ *
+ * - `active` — the run is in flight (streaming), or not yet observed on the
+ *   channel (a freshly-created run whose run-start has not been observed yet).
+ * - `suspended` — the run is paused awaiting input (it published
+ *   `ai-run-suspend`); a later continuation re-activates it.
+ * - `complete` / `cancelled` / `error` — terminal {@link RunEndReason}s; an
+ *   `error` run-end additionally carries terminal error detail.
+ *
+ * This is the single source of truth for the run status value set.
+ */
+export type RunStatus = 'active' | 'suspended' | 'complete' | 'cancelled' | 'error';
+
+/**
  * Why a step attempt ended (the `step-reason` on `ai-step-end`).
  *
  * Narrower than {@link RunEndReason}: a step has no `error` arm (a step that

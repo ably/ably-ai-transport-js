@@ -32,10 +32,18 @@ const noopUnsubscribe = (): void => {
  */
 const channelsGet = (name: string, options?: Ably.ChannelOptions): unknown => ({ name, options });
 
+/**
+ * One client for the whole suite. `useAbly` reads the client off a context, so
+ * the real hook returns the same object every render; the provider rebuilds its
+ * transport when the client changes, and a fresh object per call would rebuild
+ * it on every render.
+ */
+const fakeAblyClient = { channels: { get: channelsGet } };
+
 vi.mock('ably/react', async () => {
   const { createElement: h, Fragment } = await import('react');
   return {
-    useAbly: () => ({ channels: { get: channelsGet } }),
+    useAbly: () => fakeAblyClient,
     ChannelProvider: ({ children }: { children?: ReactNode }) => h(Fragment, undefined, children),
   };
 });

@@ -1476,6 +1476,30 @@ describe('createAgentTransport', () => {
       expect(channel.publishNames()).toContain('ai-step-end');
     });
 
+    it('opens the step on a later pipe after its first ai-step-start publish failed', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      await run.opened;
+      const step = run.createStep();
+
+      channel.publish.mockRejectedValueOnce(new Error('step-start boom'));
+      await expect(step.pipe(streamOf({ type: 'text', text: 'first' }))).rejects.toBeErrorInfo({
+        code: ErrorCode.RunLifecycleEventPublishFailed,
+        message: 'unable to publish step-start for run run-1; step-start boom',
+      });
+      expect(channel.publishNames()).not.toContain('ai-step-start');
+
+      // The failed start is not latched, so the step stays usable: without
+      // that, every later pipe would re-await the same rejection and the
+      // caller could do nothing about it, because the surface has no start().
+      await step.pipe(streamOf({ type: 'text', text: 'second' }));
+      expect(channel.publishNames()).toContain('ai-step-start');
+
+      const result = await step.end({});
+      expect(result.serial).toBeDefined();
+    });
+
     it('emits the step-lifecycle seed on the transport receive stream', async () => {
       const { transport, events } = await setup();
 

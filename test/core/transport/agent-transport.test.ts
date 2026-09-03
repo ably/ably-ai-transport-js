@@ -40,7 +40,7 @@ import {
   HEADER_STEER_TRANSPORT_MESSAGE_IDS,
   HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
-import type { ChannelWriter, Decoder, Encoder, EncoderOptions, WireCodec } from '../../../src/core/codec/types.js';
+import type { ChannelWriter, Encoder, EncoderOptions, WireCodec } from '../../../src/core/codec/types.js';
 import { createAgentTransport } from '../../../src/core/transport/agent-transport.js';
 import type { CancelRequest, LocatedInput, TransportEvent } from '../../../src/core/transport/types.js';
 import { wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
@@ -48,45 +48,31 @@ import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createMockEncoder } from '../../helper/mock-encoder.js';
+import {
+  createNameAwareDecoder,
+  type TestInput as SharedTestInput,
+  type TestOutput,
+} from '../../helper/name-aware-decoder.js';
 import { flushMicrotasks, pausedStream, streamOf } from '../../helper/streams.js';
 import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
-interface TestInput {
-  kind: string;
+interface TestInput extends SharedTestInput {
   content?: string;
-}
-interface TestOutput {
-  type: string;
-  text?: string;
 }
 
 type TestEvent = TransportEvent<TestInput, TestOutput>;
 
 /**
- * A codec double whose decoder classifies by message name: `boom` throws (an
- * undecodable wire for the skip / error paths), `ai-output` yields one output
- * from the wire's data, `ai-input` yields the fixed input array so
- * `locateInput`'s decode step is observable, and anything else (a cancel
- * envelope) yields nothing.
+ * A codec double over the shared name-aware decoder, whose `ai-input` arm
+ * yields the fixed input array so `locateInput`'s decode step is observable.
+ * Its own encoder is the shared mock, which runs the header-stamping hook.
  * @param decoded - The inputs the decoder yields for `ai-input` messages.
  * @returns The codec double.
  */
 const createMockCodec = (decoded: TestInput[] = []): WireCodec<TestInput, TestOutput> => ({
   createEncoder: (_channel: ChannelWriter, opts?: EncoderOptions): Encoder<TestInput, TestOutput> =>
     createMockEncoder<TestInput, TestOutput>(opts),
-  createDecoder: (): Decoder<TestInput, TestOutput> => ({
-    decode: (msg: Ably.InboundMessage): { inputs: TestInput[]; outputs: TestOutput[] } => {
-      if (msg.name === 'boom') throw new Error('malformed payload');
-      if (msg.name === 'ai-output') {
-        // CAST: the test wires carry string data.
-        return { inputs: [], outputs: [{ type: 'out', text: msg.data as string }] };
-      }
-      if (msg.name === 'ai-input') {
-        return { inputs: decoded, outputs: [] };
-      }
-      return { inputs: [], outputs: [] };
-    },
-  }),
+  createDecoder: () => createNameAwareDecoder<TestInput>(() => decoded),
 });
 
 const wireMsg = (headers: Record<string, string>): Ably.InboundMessage =>

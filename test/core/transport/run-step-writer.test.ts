@@ -22,15 +22,12 @@ import type { StepLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createMockEncoder } from '../../helper/mock-encoder.js';
+import type { TestOutput } from '../../helper/name-aware-decoder.js';
 import { streamOf } from '../../helper/streams.js';
 
 interface TestInput {
   kind: 'user-message';
   message: { id: string; content: string };
-}
-interface TestOutput {
-  type: string;
-  text?: string;
 }
 
 const createMockCodec = (): WireCodec<TestInput, TestOutput> => ({

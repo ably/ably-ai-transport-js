@@ -46,19 +46,19 @@ import type { TransportEvent } from '../../../src/core/transport/types/transport
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import {
+  createNameAwareDecoder,
+  type TestInput as SharedTestInput,
+  type TestOutput,
+} from '../../helper/name-aware-decoder.js';
 import { flushMicrotasks } from '../../helper/streams.js';
 import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
-interface TestInput {
-  kind: string;
+interface TestInput extends SharedTestInput {
   content?: string;
   parent?: string;
   target?: string;
   transportMessageId?: string;
-}
-interface TestOutput {
-  type: string;
-  text?: string;
 }
 
 type TestEvent = TransportEvent<TestInput, TestOutput>;
@@ -69,10 +69,10 @@ interface EncoderCall {
 }
 
 /**
- * A codec double whose decoder classifies by message name (`ai-input` yields
- * one input, `ai-output` one output, `boom` throws, anything else is empty)
- * and whose encoder records `publishInput` calls and runs the `onAblyMessage`
- * hook so user-header stamping is exercised.
+ * A codec double over the shared name-aware decoder, whose `ai-input` arm
+ * derives one input from the wire's data. Its encoder is local because it
+ * records `publishInput` calls and runs the `onAblyMessage` hook, so
+ * user-header stamping is exercised.
  * @param encoderCalls - Array the encoder appends each `publishInput` call to.
  * @param hookMessages - Array the encoder appends each hook-run message to.
  * @returns The codec double.
@@ -100,20 +100,9 @@ const createMockCodec = (
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     close: vi.fn(() => Promise.resolve()),
   }),
-  createDecoder: () => ({
-    decode: (msg: Ably.InboundMessage): { inputs: TestInput[]; outputs: TestOutput[] } => {
-      if (msg.name === 'boom') throw new Error('malformed payload');
-      if (msg.name === 'ai-input') {
-        // CAST: the test wires carry string data.
-        return { inputs: [{ kind: 'user-message', content: msg.data as string }], outputs: [] };
-      }
-      if (msg.name === 'ai-output') {
-        // CAST: the test wires carry string data.
-        return { inputs: [], outputs: [{ type: 'out', text: msg.data as string }] };
-      }
-      return { inputs: [], outputs: [] };
-    },
-  }),
+  // CAST: the test wires carry string data.
+  createDecoder: () =>
+    createNameAwareDecoder<TestInput>((msg) => [{ kind: 'user-message', content: msg.data as string }]),
 });
 
 /**

@@ -25,12 +25,28 @@ import { useTransportEvents } from '../../src/react/use-transport-events.js';
 import { flushMicrotasks } from '../helper/streams.js';
 
 /**
- * A provider tree on one channel, for asserting what a channelName change does.
- * @param channelName - The channel the provider resolves.
+ * A provider tree, with an inert codec stub — the provider hands the codec
+ * straight to the mocked transport factory, so nothing reads it.
+ * @param props - The provider's props.
+ * @param props.channelName - The channel the provider resolves.
+ * @param props.channelModes - Extra modes to request on the channel, if any.
+ * @param props.children - The tree to render under the provider.
  * @returns The element to render.
  */
-const providerTree = (channelName: string): ReactNode =>
-  createElement(ClientTransportProvider, { channelName, codec: {} as never, children: undefined });
+const provider = ({
+  channelName = 'ai:test',
+  channelModes,
+  children,
+}: {
+  channelName?: string;
+  channelModes?: readonly Ably.ChannelMode[];
+  children?: ReactNode;
+}): ReactNode =>
+  createElement(
+    ClientTransportProvider,
+    { channelName, codec: {} as never, ...(channelModes ? { channelModes } : {}) },
+    children,
+  );
 
 /** Inert unsubscribe for the fake's unhandled events. */
 const noopUnsubscribe = (): void => {
@@ -113,25 +129,30 @@ vi.mock('../../src/core/transport/client-transport.js', () => ({
   createClientTransport: (options: unknown) => createClientTransportMock(options),
 }));
 
-// Provider on channelName "ai:test" with an inert codec stub.
-const wrapDefault = ({ children }: { children: ReactNode }): ReactNode =>
-  createElement(ClientTransportProvider, { channelName: 'ai:test', codec: {} as never }, children);
+// The default wrapper: one provider on channelName "ai:test".
+const wrapDefault = ({ children }: { children?: ReactNode }): ReactNode => provider({ children });
 
 // Provider requesting the LiveObjects mode set.
-const wrapWithModes = ({ children }: { children: ReactNode }): ReactNode =>
-  createElement(
-    ClientTransportProvider,
-    { channelName: 'ai:test', codec: {} as never, channelModes: OBJECT_MODES },
-    children,
-  );
+const wrapWithModes = ({ children }: { children?: ReactNode }): ReactNode =>
+  provider({ channelModes: OBJECT_MODES, children });
 
 // Nested providers for the named-lookup case.
-const wrapNested = ({ children }: { children: ReactNode }): ReactNode =>
-  createElement(
-    ClientTransportProvider,
-    { channelName: 'ai:outer', codec: {} as never },
-    createElement(ClientTransportProvider, { channelName: 'ai:inner', codec: {} as never }, children),
-  );
+const wrapNested = ({ children }: { children?: ReactNode }): ReactNode =>
+  provider({
+    channelName: 'ai:outer',
+    children: provider({ channelName: 'ai:inner', children }),
+  });
+
+/**
+ * Register a fresh fake as the transport the mocked factory builds, and return
+ * it so the test can read its call counts.
+ * @returns The registered fake.
+ */
+const arrangeFake = (): FakeTransport => {
+  const fake = createFakeTransport();
+  createClientTransportMock.mockImplementation(() => fake);
+  return fake;
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -167,8 +188,7 @@ describe('ClientTransportProvider', () => {
   });
 
   it('connects the transport once mounted', async () => {
-    const fake = createFakeTransport();
-    createClientTransportMock.mockImplementation(() => fake);
+    const fake = arrangeFake();
 
     renderHook(() => useClientTransport(), { wrapper: wrapDefault });
     await act(flushMicrotasks);
@@ -177,10 +197,9 @@ describe('ClientTransportProvider', () => {
   });
 
   it('survives a Strict-Mode remount without closing the transport', async () => {
-    const fake = createFakeTransport();
-    createClientTransportMock.mockImplementation(() => fake);
+    const fake = arrangeFake();
 
-    const view = render(createElement(StrictMode, undefined, createElement(wrapDefault, { children: undefined })));
+    const view = render(createElement(StrictMode, undefined, provider({})));
     await act(flushMicrotasks);
 
     expect(createClientTransportMock).toHaveBeenCalledTimes(1);
@@ -191,10 +210,9 @@ describe('ClientTransportProvider', () => {
   });
 
   it('closes the transport on a true unmount', async () => {
-    const fake = createFakeTransport();
-    createClientTransportMock.mockImplementation(() => fake);
+    const fake = arrangeFake();
 
-    const view = render(createElement(wrapDefault, { children: undefined }));
+    const view = render(provider({}));
     view.unmount();
     await act(flushMicrotasks);
 
@@ -206,10 +224,10 @@ describe('ClientTransportProvider', () => {
     const second = createFakeTransport();
     createClientTransportMock.mockImplementationOnce(() => first).mockImplementationOnce(() => second);
 
-    const view = render(providerTree('ai:one'));
+    const view = render(provider({ channelName: 'ai:one' }));
     expect(createClientTransportMock).toHaveBeenCalledTimes(1);
 
-    view.rerender(providerTree('ai:two'));
+    view.rerender(provider({ channelName: 'ai:two' }));
     await act(flushMicrotasks);
 
     // A second transport is built for the new channel, and the superseded one
@@ -290,8 +308,7 @@ describe('ClientTransportProvider', () => {
 
 describe('useClientTransport', () => {
   it('returns the provider transport and no error', () => {
-    const fake = createFakeTransport();
-    createClientTransportMock.mockImplementation(() => fake);
+    const fake = arrangeFake();
 
     const { result } = renderHook(() => useClientTransport(), { wrapper: wrapDefault });
 
@@ -323,8 +340,7 @@ describe('useClientTransport', () => {
 
 describe('useTransportEvents', () => {
   it('delivers classified events to the handler and unsubscribes on unmount', () => {
-    const fake = createFakeTransport();
-    createClientTransportMock.mockImplementation(() => fake);
+    const fake = arrangeFake();
     const seen: TransportEvent<unknown, unknown>[] = [];
 
     const { unmount } = renderHook(
@@ -353,8 +369,7 @@ describe('useTransportEvents', () => {
   });
 
   it('reads the latest handler without resubscribing', () => {
-    const fake = createFakeTransport();
-    createClientTransportMock.mockImplementation(() => fake);
+    const fake = arrangeFake();
     const first: string[] = [];
     const second: string[] = [];
     let target = first;
@@ -384,8 +399,7 @@ describe('useTransportEvents', () => {
 
 describe('useAblyMessages', () => {
   it('accumulates raw messages in arrival order', () => {
-    const fake = createFakeTransport();
-    createClientTransportMock.mockImplementation(() => fake);
+    const fake = arrangeFake();
 
     const { result } = renderHook(() => useAblyMessages(), { wrapper: wrapDefault });
 

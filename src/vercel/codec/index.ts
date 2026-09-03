@@ -50,6 +50,7 @@ export const createUIMessageCodec = <
   // `parts` at the type level only — so assemble the codec once at the
   // SDK-default instantiation.
   const codec = defineCodec<VercelInput, VercelOutput>()({
+    // Registers this codec as an Ably agent.
     adapterTag: 'vercel-ai-sdk-ui-message',
     output: outputs,
     input: inputs,

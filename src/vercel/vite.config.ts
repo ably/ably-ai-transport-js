@@ -8,6 +8,7 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
+      exclude: ['react/**'],
     }),
   ],
   build: {

@@ -85,7 +85,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ai: ['^6', '^7']
+        include:
+          - ai: '^6'
+            ai-sdk-react: '^3'
+          - ai: '^7'
+            ai-sdk-react: '^4'
     name: test ai@${{ matrix.ai }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -98,8 +102,10 @@ jobs:
           node-version: ${{ env.BASE_NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # `@ai-sdk/react` majors move in lockstep with `ai` (ai 6 -> react 3,
+      # ai 7 -> react 4), so both are pinned per matrix row.
       - name: install ai@${{ matrix.ai }}
-        run: pnpm add -D "ai@${{ matrix.ai }}"
+        run: pnpm add -D "ai@${{ matrix.ai }}" "@ai-sdk/react@${{ matrix.ai-sdk-react }}"
       - name: verify the resolved major
         run: node -e "console.log('ai', require('ai/package.json').version)"
       - run: pnpm run typecheck
@@ -126,3 +132,146 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run test:integration
+
+  demo-shared-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    name: demo shared-frontend
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.BASE_NODE_VERSION }}
+          cache: pnpm
+      # The shared-frontend links `@ably/ai-transport` from the repo root
+      # (`link:../..`), so typechecking / testing here needs the SDK's `dist/`
+      # (`.d.ts` files) built first.
+      - name: pnpm install (lib)
+        run: pnpm install --frozen-lockfile
+      - name: pnpm run build (lib)
+        run: pnpm run build
+      - name: pnpm install (shared-frontend)
+        run: pnpm install --frozen-lockfile
+        working-directory: demo/shared-frontend
+      - name: pnpm run typecheck (shared-frontend)
+        run: pnpm run typecheck
+        working-directory: demo/shared-frontend
+      - name: pnpm run format:check (shared-frontend)
+        run: pnpm run format:check
+        working-directory: demo/shared-frontend
+      - name: pnpm run lint (shared-frontend)
+        run: pnpm run lint
+        working-directory: demo/shared-frontend
+      - name: pnpm test (shared-frontend)
+        run: pnpm test
+        working-directory: demo/shared-frontend
+
+  demo-app:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        demo:
+          - demo/vercel/react/use-chat
+          - demo/vercel/react/use-chat-wdk
+    name: demo ${{ matrix.demo }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.BASE_NODE_VERSION }}
+          cache: pnpm
+      - name: pnpm install (lib)
+        run: pnpm install --frozen-lockfile
+      - name: pnpm run build (lib)
+        run: pnpm run build
+      # The shared-frontend workspace-linked package is a peer install-target
+      # for every demo that consumes it. Installing here (rather than gating on
+      # matrix.demo) is a no-op for demos that don't link it in, and keeps the
+      # matrix rows uniform.
+      - name: pnpm install (shared-frontend)
+        run: pnpm install --frozen-lockfile
+        working-directory: demo/shared-frontend
+      - name: pnpm install (demo)
+        run: pnpm install --frozen-lockfile
+        working-directory: ${{ matrix.demo }}
+      - name: pnpm run build (demo)
+        run: pnpm run build
+        working-directory: ${{ matrix.demo }}
+        # Dummy keys for Next.js build - module-level SDK client initialization
+        # runs during bundling even though the routes are never called at build time
+        env:
+          ABLY_API_KEY: dummy:key
+      - name: pnpm run lint (demo)
+        run: pnpm run lint
+        working-directory: ${{ matrix.demo }}
+      - name: pnpm test (demo)
+        run: pnpm test
+        working-directory: ${{ matrix.demo }}
+
+  demo-e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - demo: demo/vercel/react/use-chat
+            name: use-chat
+          - demo: demo/vercel/react/use-chat-wdk
+            name: use-chat-wdk
+    name: demo-e2e ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.BASE_NODE_VERSION }}
+          cache: pnpm
+      - name: pnpm install (lib)
+        run: pnpm install --frozen-lockfile
+      - name: pnpm run build (lib)
+        run: pnpm run build
+      # The shared-frontend workspace-linked package is a peer install-target
+      # for every demo that consumes it. Installing here (rather than gating on
+      # matrix.demo) is a no-op for demos that don't link it in, and keeps the
+      # matrix rows uniform.
+      - name: pnpm install (shared-frontend)
+        run: pnpm install --frozen-lockfile
+        working-directory: demo/shared-frontend
+      - name: pnpm install (demo)
+        run: pnpm install --frozen-lockfile
+        working-directory: ${{ matrix.demo }}
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: ${{ matrix.demo }}
+      # Drives the demo over a real Ably sandbox channel with a deterministic
+      # mock LLM. The runner provisions a throwaway sandbox app (no secrets) and
+      # the Next.js dev server it starts needs no API keys. This job runs the
+      # demo via `next dev` and does not type-check it; the parallel `demo-app`
+      # job (`tsc --noEmit && next build`) covers type safety.
+      - name: Run e2e (mock LLM + Ably sandbox)
+        run: pnpm run test:e2e
+        working-directory: ${{ matrix.demo }}
+      - name: Upload Playwright artifacts on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-results-${{ matrix.name }}
+          path: ${{ matrix.demo }}/test-results/
+          retention-days: 7

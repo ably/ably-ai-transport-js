@@ -1,0 +1,14 @@
+.next/
+node_modules/
+.env.local
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Local WDK run state (see README: `pnpm dev` writes run state here)
+.workflow-data/
+
+# Playwright e2e output
+test-results/
+playwright-report/
+.next-e2e/
+/.swc

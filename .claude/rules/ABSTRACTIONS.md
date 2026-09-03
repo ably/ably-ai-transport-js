@@ -104,11 +104,20 @@ current surface.
 ## Composition, not inheritance
 
 Transports are assembled from composable parts, not class hierarchies.
-`createAgentTransport` is the worked example: it composes the run-manager
-lifecycle publisher, the step and pipe writer, a codec decoder wrapped in a
-receive transport, and the steer tracker. There is no base class anywhere in
-the chain — each part is constructed and injected, and the transport wires
-them together.
+`createAgentTransport` is the worked example. It composes the run-manager
+lifecycle publisher, a codec decoder wrapped in a receive transport, the shared
+channel plumbing (the connect guard and the continuity watcher), and a run
+handle per open run; that handle in turn composes the step and pipe writer and
+the run's steer tracker. There is no base class anywhere in the chain — each
+part is constructed and injected, and each layer wires the layer below it.
+
+The split follows what a part's state is scoped to. Anything that outlives a
+single run — identity resolution, the cancel-routing registries, the receive
+path — belongs to the transport; anything scoped to one run belongs to the run
+handle. Where two parts have to read the same mutable state (a run's publish
+gate is read by both the handle and its writer), that state becomes its own
+small object both are given, rather than the two being constructed in terms of
+each other.
 
 ## Dependency injection
 

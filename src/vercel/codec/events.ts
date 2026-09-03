@@ -13,11 +13,10 @@
  *   through one code path. The approval decision is the one action with no
  *   provider-typed body, so the codec defines a small body of its own.
  *
- * Transport addressing never rides an input body: the publish options carry
- * the `transportMessageId` (and a continuation's `runId`), and `WireMeta`
- * reports them on the way back. A body may still name a message as domain
- * data — `regenerate` carries the id it redoes — but the transport does not
- * read it, and it addresses nothing.
+ * A `transportMessageId` is wire addressing, minted by the transport, and it
+ * never carries a domain id. An input that amends an existing message names
+ * that message inside its own body instead: `chunk`, `approval` and
+ * `regenerate` each carry a `UIMessage.id` as domain data.
  */
 
 import type * as AI from 'ai';
@@ -47,8 +46,8 @@ export interface VercelApprovalDecision {
    * The `UIMessage.id` of the assistant message holding the gated tool call.
    * The application's merge routes the decision onto that message by this id,
    * the same way it routes a `tool-output-*` chunk. Domain data in the same
-   * class as {@link toolCallId}, deliberately carried in the body rather than
-   * as wire addressing.
+   * class as {@link toolCallId}, carried in the body rather than as wire
+   * addressing.
    */
   messageId: string;
   /** The tool call the decision concerns. */
@@ -98,17 +97,29 @@ export interface VercelRegenerateInput {
 }
 
 /**
- * A tool resolution: the body is the AI SDK's own tool-output chunk, published
- * against the assistant message it amends (addressed by the publish options'
- * `transportMessageId`). Two resolutions on one assistant address distinct tool
- * calls, matched inside the body by `toolCallId`, so last-writer-wins per part
- * merges them without contest.
+ * A tool resolution: the body names the assistant message it amends and
+ * carries the AI SDK's own tool-output chunk. Two resolutions on one assistant
+ * address distinct tool calls, matched inside the chunk by `toolCallId`, so
+ * last-writer-wins per part merges them without contest.
+ *
+ * The id sits beside the chunk rather than inside it, because the chunk is the
+ * provider's own type and travels unmodified. {@link VercelApprovalInput}
+ * carries the same id inside its body, because that body is codec-defined.
  */
 export interface VercelChunkInput {
   /** Discriminator. */
   kind: 'chunk';
-  /** The tool-resolution chunk, in the AI SDK's own chunk vocabulary. */
-  payload: VercelToolOutputChunk;
+  /** The addressed message and the resolution it carries. */
+  payload: {
+    /**
+     * The `UIMessage.id` of the assistant message holding the resolved tool
+     * call. The application's merge routes the resolution onto that message by
+     * this id. Domain data carried in the body, never wire addressing.
+     */
+    messageId: string;
+    /** The tool-resolution chunk, in the AI SDK's own chunk vocabulary. */
+    chunk: VercelToolOutputChunk;
+  };
 }
 
 /**

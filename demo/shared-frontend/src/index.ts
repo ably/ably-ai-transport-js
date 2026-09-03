@@ -49,3 +49,4 @@ export type { Scenario, DemoStepId } from './lib/progress-steps';
 export { generateChannelSlug, generateClientName } from './lib/channel-name';
 export { clientColor } from './lib/client-color';
 export { stopAndCancel } from './lib/stop-and-cancel';
+export { assembleWalkedMessages } from './lib/assemble-messages';

@@ -75,24 +75,31 @@ describe('Vercel wire-codec provider-reducer roundtrip', () => {
     const messageId = 'asst-1';
 
     // The application's demultiplexing: bucket chunks by transport-message-id, in
-    // wire order. Inputs whose bodies are provider chunks land in the same
-    // bucket as the outputs, so one merge covers both directions.
+    // wire order. A tool resolution names the assistant it amends in its own
+    // body, so it joins that bucket rather than the one its own wire message
+    // opened, and one merge then covers both directions.
     const buckets = new Map<string, AI.UIMessageChunk[]>();
     let resolveToolOutput: () => void;
     const toolOutputSeen = new Promise<void>((r) => {
       resolveToolOutput = r;
     });
 
+    const bucketFor = (key: string): AI.UIMessageChunk[] => {
+      const existing = buckets.get(key);
+      if (existing) return existing;
+      const fresh: AI.UIMessageChunk[] = [];
+      buckets.set(key, fresh);
+      return fresh;
+    };
+
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
       const id = getTransportHeaders(msg)[HEADER_TRANSPORT_MESSAGE_ID];
       if (id === undefined) return;
-      const bucket = buckets.get(id) ?? [];
-      buckets.set(id, bucket);
-      bucket.push(...decoded.outputs);
+      bucketFor(id).push(...decoded.outputs);
       for (const input of decoded.inputs) {
         if (input.kind === 'chunk') {
-          bucket.push(input.payload);
+          bucketFor(input.payload.messageId).push(input.payload.chunk);
           resolveToolOutput();
         }
       }
@@ -115,14 +122,19 @@ describe('Vercel wire-codec provider-reducer roundtrip', () => {
     await encoder.close();
 
     // The client's half: the tool resolution, published as the provider's own
-    // chunk against the assistant's transport-message-id.
+    // chunk, naming the assistant message it amends.
     const clientEncoder = codec.createEncoder(pubChannel);
     await clientEncoder.publishInput(
       {
         kind: 'chunk',
-        payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 21 }, dynamic: true },
+        payload: {
+          messageId,
+          chunk: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 21 }, dynamic: true },
+        },
       },
-      { messageId },
+      // Its own wire id, as the transport mints for every publish. The
+      // assistant it amends is named in the body, not by the wire id.
+      { messageId: 'wire-resolution' },
     );
     await clientEncoder.close();
 

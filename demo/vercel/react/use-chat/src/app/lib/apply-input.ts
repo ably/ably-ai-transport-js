@@ -7,10 +7,11 @@
  *
  * - `kind: 'message'` carries a whole `UIMessage` (a user turn), so it
  *   replaces the message of that id or appends as a new one.
- * - `kind: 'chunk'` is a client's tool resolution, a `tool-output-*` chunk in
- *   the AI SDK's own vocabulary. It replays through the SDK's reducer
- *   (`readUIMessageStream`) onto the message holding that `toolCallId`, so the
- *   SDK decides what a resolved tool part looks like.
+ * - `kind: 'chunk'` is a client's tool resolution: the assistant message it
+ *   amends, plus a `tool-output-*` chunk in the AI SDK's own vocabulary. The
+ *   chunk replays through the SDK's reducer (`readUIMessageStream`) onto the
+ *   message the body names, so the SDK decides what a resolved tool part looks
+ *   like.
  * - `kind: 'approval'` names its assistant message and tool call directly.
  *   The SDK has no stream part for a decision, which is why the codec defines
  *   the body — but it does have a `tool-approval-response` chunk, so the
@@ -27,10 +28,6 @@
 import { isDynamicToolUIPart, isToolUIPart, readUIMessageStream } from 'ai';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import type { VercelInput } from '@ably/ai-transport/vercel';
-
-/** Whether a message holds a tool part for the given call. */
-const holdsToolCall = (message: UIMessage, toolCallId: string): boolean =>
-  message.parts.some((part) => (isToolUIPart(part) || isDynamicToolUIPart(part)) && part.toolCallId === toolCallId);
 
 /**
  * The approval id the SDK keys a decision on: the one it minted on the tool
@@ -84,12 +81,12 @@ export async function applyInputs(stored: UIMessage[], inputs: VercelInput[]): P
         break;
       }
       case 'chunk': {
-        const at = messages.findIndex((message) => holdsToolCall(message, input.payload.toolCallId));
+        const at = messages.findIndex((message) => message.id === input.payload.messageId);
         const target = at === -1 ? undefined : messages[at];
-        // A resolution for a call this conversation never held addresses
+        // A resolution for a message this conversation never held addresses
         // nothing — a foreign publisher, or a store write that never landed.
         if (target === undefined) break;
-        messages[at] = await applyChunk(target, input.payload);
+        messages[at] = await applyChunk(target, input.payload.chunk);
         break;
       }
       case 'approval': {

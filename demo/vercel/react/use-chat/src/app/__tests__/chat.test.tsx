@@ -140,8 +140,21 @@ describe('<Chat>', () => {
         ),
       ),
     );
+    // readSince hands back the events it walked; the hydration hook assembles
+    // them through the provider's reducer.
     mockReadSince.mockResolvedValue({
-      messages: [{ id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'walked reply' }] }],
+      messages: [
+        {
+          id: 'a1',
+          events: [
+            { direction: 'output', event: { type: 'start', messageId: 'a1' } },
+            { direction: 'output', event: { type: 'text-start', id: 't1' } },
+            { direction: 'output', event: { type: 'text-delta', id: 't1', delta: 'walked reply' } },
+            { direction: 'output', event: { type: 'text-end', id: 't1' } },
+            { direction: 'output', event: { type: 'finish' } },
+          ],
+        },
+      ],
       exhausted: true,
     });
 

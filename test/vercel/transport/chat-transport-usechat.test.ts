@@ -137,9 +137,13 @@ describe('ChatTransport drives useChat with no external message state', () => {
     const action = fake.published.find((p) => p.event.kind === 'chunk');
     expect(action?.event).toEqual({
       kind: 'chunk',
-      payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { city: 'Berlin' }, dynamic: true },
+      payload: {
+        messageId: 'a1',
+        chunk: { type: 'tool-output-available', toolCallId: 'call-1', output: { city: 'Berlin' }, dynamic: true },
+      },
     });
-    expect(action?.opts).toEqual({ transportMessageId: 'a1' });
+    // The assistant is named in the body; the wire id is the transport's own.
+    expect(action?.opts?.transportMessageId).not.toBe('a1');
 
     await flush();
     fake.emit(

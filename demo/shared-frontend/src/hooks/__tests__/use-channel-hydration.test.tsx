@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { StrictMode, type ReactNode } from 'react';
 import type { UIMessage } from 'ai';
+import type { WalkedMessage } from '@ably/ai-transport/vercel';
 
 let fakeTransport: { connect: ReturnType<typeof vi.fn> } | undefined;
 let fakeChatTransport: { readSince: ReturnType<typeof vi.fn> } | undefined;
@@ -30,7 +31,14 @@ const strictModeWrapper = ({ children }: { children: ReactNode }) => <StrictMode
 
 const message = (id: string): UIMessage => ({ id, role: 'user', parts: [{ type: 'text', text: id }] });
 
-const walked = (messages: UIMessage[], exhausted: boolean) => vi.fn().mockResolvedValue({ messages, exhausted });
+/** What the walk returns for a client turn: one `message` input, as the wire carried it. */
+const group = (id: string): WalkedMessage => ({
+  id,
+  events: [{ direction: 'input', event: { kind: 'message', payload: message(id) } }],
+});
+
+const walked = (ids: string[], exhausted: boolean) =>
+  vi.fn().mockResolvedValue({ messages: ids.map(group), exhausted });
 
 const renderHydration = (options: UseChannelHydrationOptions = {}) =>
   renderHook(() => useChannelHydration(options), { wrapper: strictModeWrapper });
@@ -45,7 +53,7 @@ describe('useChannelHydration', () => {
 
   it('walks the whole channel when the demo keeps no store', async () => {
     if (!fakeChatTransport) throw new Error('no adapter');
-    fakeChatTransport.readSince = walked([message('m1')], true);
+    fakeChatTransport.readSince = walked(['m1'], true);
 
     const { result } = renderHydration();
 
@@ -58,7 +66,7 @@ describe('useChannelHydration', () => {
 
   it('reads the store first and walks from the serial it reports', async () => {
     if (!fakeChatTransport) throw new Error('no adapter');
-    fakeChatTransport.readSince = walked([message('m2')], false);
+    fakeChatTransport.readSince = walked(['m2'], false);
     const loadStored = vi.fn().mockResolvedValue({ messages: [message('m1')], latestSerial: '01ABC@7' });
 
     const { result } = renderHydration({ loadStored });
@@ -73,7 +81,7 @@ describe('useChannelHydration', () => {
   it('drops a walked message the store already holds', async () => {
     if (!fakeChatTransport) throw new Error('no adapter');
     // The watermark is a lower bound, so the walk can re-return a stored turn.
-    fakeChatTransport.readSince = walked([message('m1'), message('m2')], true);
+    fakeChatTransport.readSince = walked(['m1', 'm2'], true);
     const loadStored = vi.fn().mockResolvedValue({ messages: [message('m1')], latestSerial: '01ABC@7' });
 
     const { result } = renderHydration({ loadStored });
@@ -109,7 +117,7 @@ describe('useChannelHydration', () => {
     const readSince = vi
       .fn()
       .mockRejectedValueOnce(new Error('walk failed'))
-      .mockResolvedValue({ messages: [message('m1')], exhausted: true });
+      .mockResolvedValue({ messages: [group('m1')], exhausted: true });
     fakeChatTransport.readSince = readSince;
 
     const first = renderHydration();

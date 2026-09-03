@@ -138,7 +138,10 @@ describe('mergeMessages', () => {
           inputs: [
             {
               kind: 'chunk',
-              payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { latitude: 51 } },
+              payload: {
+                messageId: 'a1',
+                chunk: { type: 'tool-output-available', toolCallId: 'call-1', output: { latitude: 51 } },
+              },
             },
           ],
         },

@@ -77,18 +77,27 @@ describe('applyInputs', () => {
     const stored = [userMessage('u1', 'where am i'), assistantWithCall('a1', 'call-1')];
 
     const messages = await applyInputs(stored, [
-      { kind: 'chunk', payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { latitude: 51.5 } } },
+      {
+        kind: 'chunk',
+        payload: {
+          messageId: 'a1',
+          chunk: { type: 'tool-output-available', toolCallId: 'call-1', output: { latitude: 51.5 } },
+        },
+      },
     ]);
 
     const toolPart = messages[1]?.parts.find((part) => isToolUIPart(part));
     expect(toolPart).toMatchObject({ state: 'output-available', output: { latitude: 51.5 } });
   });
 
-  it('ignores a resolution for a tool call the conversation never held', async () => {
+  it('ignores a resolution for a message the conversation never held', async () => {
     const stored = [userMessage('u1', 'hello')];
 
     const messages = await applyInputs(stored, [
-      { kind: 'chunk', payload: { type: 'tool-output-available', toolCallId: 'unknown', output: {} } },
+      {
+        kind: 'chunk',
+        payload: { messageId: 'never-stored', chunk: { type: 'tool-output-available', toolCallId: 'x', output: {} } },
+      },
     ]);
 
     expect(messages).toEqual(stored);
@@ -157,7 +166,13 @@ describe('applyInputs', () => {
     const stored = [assistantWithCall('a1', 'call-1')];
 
     const messages = await applyInputs(stored, [
-      { kind: 'chunk', payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { latitude: 1 } } },
+      {
+        kind: 'chunk',
+        payload: {
+          messageId: 'a1',
+          chunk: { type: 'tool-output-available', toolCallId: 'call-1', output: { latitude: 1 } },
+        },
+      },
       messageInput(userMessage('u2', 'and now?')),
     ]);
 

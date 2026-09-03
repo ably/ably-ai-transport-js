@@ -11,9 +11,11 @@
  * Here it only decides which stream a chunk belongs on: chunks are forwarded
  * unchanged and in wire order, routed on transport metadata alone.
  *
- * On the **hydration path** it does read content. {@link ChatTransport.readSince}
- * walks channel history and merges it into `UIMessage`s through the provider's
- * own reducer, and holds the events of any run that has not ended so
+ * On the **hydration path** {@link ChatTransport.readSince} walks channel
+ * history and groups the events it finds by the message each belongs to,
+ * handing every event back as it was published. Turning a group into a
+ * `UIMessage` is the application's job, through the provider's own reducer.
+ * The walk also holds the events of any run that has not ended so
  * {@link ChatTransport.reconnectToStream} can replay them. That retention is
  * the one piece of conversation state the adapter carries, and it is bounded.
  *
@@ -22,8 +24,8 @@
  * - **Regenerate** (`trigger: 'regenerate-message'`): publish the regenerate
  *   input naming the message to regenerate from.
  * - **Continuation** (`options.messageId` names an assistant holding tool parts
- *   the user just resolved): publish one action per resolved part, each
- *   addressed by that assistant's `UIMessage.id`.
+ *   the user just resolved): publish one action per resolved part, each naming
+ *   that assistant's `UIMessage.id` in its body.
  * - **Fresh send** (anything else): publish the new user message.
  *
  * Every path publishes to the channel first and POSTs second, because the
@@ -41,7 +43,6 @@ import type * as AI from 'ai';
 // `import-x/namespace` rule can't verify a namespaced generic there. Everywhere
 // else the `AI.*` namespace is used.
 import type { ChatTransport as SdkChatTransport } from 'ai';
-import { readUIMessageStream } from 'ai';
 
 import type { ClientTransport, PublishInputResult, TransportEvent } from '../../core/transport/types.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
@@ -91,6 +92,66 @@ type AdapterEvent<TMetadata, TDataParts extends AI.UIDataTypes, TTools extends A
 >;
 
 /**
+ * One walked event, tagged with the direction it travelled.
+ *
+ * The tag is on the wrapper because the payload cannot be probed for it: a
+ * codec input carries a `kind` field, and so does v7's `custom` output chunk.
+ * The wire separates the two by message name, and this preserves that.
+ * @template TMetadata - Per-message metadata type.
+ * @template TDataParts - Custom data-part types.
+ * @template TTools - Tool set typing tool parts.
+ */
+export type WalkedEvent<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> =
+  | {
+      /** Discriminator for a body a client published. */
+      direction: 'input';
+      /** The decoded input, exactly as it was published. */
+      event: VercelInput<TMetadata, TDataParts, TTools>;
+    }
+  | {
+      /** Discriminator for a chunk the agent published. */
+      direction: 'output';
+      /** The decoded chunk, exactly as it was published. */
+      event: VercelOutput<TMetadata, TDataParts>;
+    };
+
+/**
+ * The events of one message, in wire order.
+ *
+ * Assembling them into an `AI.UIMessage` is the application's job. Feed a
+ * group's output chunks to the provider's own reducer, one call per group,
+ * because `readUIMessageStream` holds the state of a single message and a
+ * second `start` in the same call inherits the first message's parts.
+ * @template TMetadata - Per-message metadata type.
+ * @template TDataParts - Custom data-part types.
+ * @template TTools - Tool set typing tool parts.
+ */
+export interface WalkedMessage<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> {
+  /**
+   * The message's domain `UIMessage.id`, or the wire id of the events when
+   * nothing in the group named one (a stream joined mid-flight).
+   */
+  id: string;
+  /**
+   * The group's events, each exactly as it was published.
+   *
+   * Wire order within each publish, and publish order between them. A message
+   * assembled from more than one publish therefore reads as the first
+   * publish's events then the second's, which is chronological because a
+   * publish's events are contiguous on the channel.
+   */
+  events: WalkedEvent<TMetadata, TDataParts, TTools>[];
+}
+
+/**
  * What {@link ChatTransport.readSince} walked off the channel.
  * @template TMetadata - Per-message metadata type.
  * @template TDataParts - Custom data-part types.
@@ -102,12 +163,12 @@ export interface ReadSinceResult<
   TTools extends AI.UITools = AI.UITools,
 > {
   /**
-   * The walked messages, oldest first, ready to append to the stored ones.
+   * The walked events, grouped by the message they belong to, oldest first.
    * Excludes any message whose run has not ended — those belong to
    * {@link ChatTransport.reconnectToStream}, so that each message has exactly
    * one producer.
    */
-  messages: AI.UIMessage<TMetadata, TDataParts, TTools>[];
+  messages: WalkedMessage<TMetadata, TDataParts, TTools>[];
   /** True when the walk reached the channel start, so there is no older history to page. */
   exhausted: boolean;
 }
@@ -175,8 +236,12 @@ export interface ChatTransport<
 > extends SdkChatTransport<AI.UIMessage<TMetadata, TDataParts, TTools>> {
   /**
    * Walk the channel backwards from the attach point down to `latestSerial`
-   * and return the messages found there, for the application to append to its
-   * stored ones with `setMessages`.
+   * and return the events found there, grouped by the message each belongs to.
+   *
+   * Every event comes back as it was published. The application assembles a
+   * group into an `AI.UIMessage` with the provider's own reducer and appends
+   * the result to its stored messages with `setMessages`; see
+   * {@link WalkedMessage} for why the reducer takes one call per group.
    *
    * Subscribes before it pages, so nothing published during the walk is lost.
    * Withholds any message whose run has not ended and retains its events for
@@ -187,7 +252,7 @@ export interface ChatTransport<
    * hint and no run seen open since construction, reconnecting before the walk
    * has run returns `null`.
    * @param latestSerial - The channel serial of the newest message the application's store holds. Every message at or before it must be complete in the store. Omit to walk to the channel start.
-   * @returns The walked messages and whether the walk reached the channel start.
+   * @returns The walked groups and whether the walk reached the channel start.
    */
   readSince(latestSerial?: string): Promise<ReadSinceResult<TMetadata, TDataParts, TTools>>;
   /**
@@ -423,30 +488,47 @@ const dedupeByDelivery = <TMetadata, TDataParts extends AI.UIDataTypes, TTools e
 };
 
 /**
- * Merge one bucket of chunks through the provider's own reducer.
+ * The message a client input names, when it names one.
  *
- * The SDK owns the merge; the only work here is the demultiplexing a provider
- * reducer cannot do for itself, which the caller has already done by bucketing
- * on transport-message-id.
- * @param chunks - The bucket's chunks, in wire order.
- * @returns The last message state the reducer yields, or `undefined` for a bucket that produced none.
+ * A whole turn IS a message and answers with its own id. An input that amends
+ * an existing message carries that message's id in its body. A `regenerate`
+ * names a message it does not belong to, so it answers `undefined` and groups
+ * with the wire message it arrived on.
+ * @param input - The decoded input.
+ * @returns The domain message id, or `undefined` when the input names none it belongs to.
  */
-const mergeBucket = async <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
-  chunks: AI.UIMessageChunk[],
-): Promise<AI.UIMessage<TMetadata, TDataParts, TTools> | undefined> => {
-  const stream = new ReadableStream<AI.UIMessageChunk>({
-    start: (controller) => {
-      for (const chunk of chunks) controller.enqueue(chunk);
-      controller.close();
-    },
-  });
-  let last: AI.UIMessage<TMetadata, TDataParts, TTools> | undefined;
-  for await (const message of readUIMessageStream({ stream })) {
-    // CAST: the reducer is typed for the SDK's default UIMessage; the chunks
-    // fed to it came off this codec's parameterized output type.
-    last = message as AI.UIMessage<TMetadata, TDataParts, TTools>;
+const inputMessageId = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
+  input: VercelInput<TMetadata, TDataParts, TTools>,
+): string | undefined => {
+  switch (input.kind) {
+    case 'message': {
+      return input.payload.id;
+    }
+    case 'chunk':
+    case 'approval': {
+      return input.payload.messageId;
+    }
+    default: {
+      return undefined;
+    }
   }
-  return last;
+};
+
+/**
+ * The message an output chunk names, when it names one.
+ *
+ * Only `start` carries the id, which is what makes it the join key for two
+ * publishes of one assistant message.
+ * @param output - The decoded chunk.
+ * @returns The domain message id, or `undefined` for every other chunk.
+ */
+const outputMessageId = <TMetadata, TDataParts extends AI.UIDataTypes>(
+  output: VercelOutput<TMetadata, TDataParts>,
+): string | undefined => {
+  if (output.type !== 'start') return undefined;
+  // `VercelOutput` resolves through `AI.InferUIMessageChunk`, and a conditional
+  // type does not narrow its members on `type`, so read the field structurally.
+  return 'messageId' in output && typeof output.messageId === 'string' ? output.messageId : undefined;
 };
 
 class DefaultChatTransport<
@@ -695,7 +777,7 @@ class DefaultChatTransport<
     const openRuns = this._openRunsIn(walked);
     this._retain(walked, openRuns);
 
-    const messages = await this._mergeWalked(walked, openRuns);
+    const messages = this._groupWalked(walked, openRuns);
     this._logger.debug('ChatTransport.readSince(); walk complete', {
       messages: messages.length,
       withheldRuns: openRuns.size,
@@ -783,7 +865,7 @@ class DefaultChatTransport<
    * Publish one action per resolved tool part on the assistant useChat named,
    * then wake the agent.
    *
-   * Each action is addressed by the assistant's own `UIMessage.id` and carries
+   * Each action names the assistant's `UIMessage.id` in its body and carries
    * no run id: a resolution opens a new run like any other input, so nothing
    * here depends on a run surviving a page refresh.
    * @param assistant - The assistant message useChat named through `options.messageId`.
@@ -804,7 +886,9 @@ class DefaultChatTransport<
     }
     // The last publish is the one the POST points at: the agent locates that
     // input and the earlier actions are already on the channel ahead of it.
-    const transportMessageId = this._claimInputId(assistant.id);
+    // The wire id is minted like any other publish; each action names the
+    // assistant it amends inside its own body.
+    const transportMessageId = this._claimInputId();
     return this._send(abortSignal, async () => {
       let sent = await this._transport.publishInput(first, { transportMessageId });
       for (const action of rest) {
@@ -895,10 +979,13 @@ class DefaultChatTransport<
           actions.push({
             kind: 'chunk',
             payload: {
-              type: 'tool-output-available',
-              toolCallId: part.toolCallId,
-              output: part.output,
-              ...(part.type === 'dynamic-tool' ? { dynamic: true } : {}),
+              messageId: assistant.id,
+              chunk: {
+                type: 'tool-output-available',
+                toolCallId: part.toolCallId,
+                output: part.output,
+                ...(part.type === 'dynamic-tool' ? { dynamic: true } : {}),
+              },
             },
           });
           break;
@@ -907,10 +994,13 @@ class DefaultChatTransport<
           actions.push({
             kind: 'chunk',
             payload: {
-              type: 'tool-output-error',
-              toolCallId: part.toolCallId,
-              errorText: part.errorText,
-              ...(part.type === 'dynamic-tool' ? { dynamic: true } : {}),
+              messageId: assistant.id,
+              chunk: {
+                type: 'tool-output-error',
+                toolCallId: part.toolCallId,
+                errorText: part.errorText,
+                ...(part.type === 'dynamic-tool' ? { dynamic: true } : {}),
+              },
             },
           });
           break;
@@ -985,22 +1075,46 @@ class DefaultChatTransport<
   }
 
   /**
-   * Merge the walked events into messages, skipping the withheld runs.
+   * Group the walked events by the message they belong to, skipping the
+   * withheld runs.
    *
-   * Client inputs are already whole `UIMessage`s and pass straight through.
-   * Agent output is bucketed by transport-message-id — the demultiplexing a
-   * provider reducer cannot do for itself — and each bucket merged by the SDK.
+   * Two stages, because neither key works alone. A wire message carries a
+   * `transport-message-id` scoped to one publish of one logical message, which
+   * groups an assistant turn's `start`, its streams and its `finish`. It does
+   * not join two publishes of the SAME assistant message, which is what an
+   * approval does: the agent opens the message in one run, and a second run
+   * continues it after the decision arrives. So the buckets are joined again on
+   * the domain `messageId` their `start` chunk carries.
+   *
+   * A bucket whose `start` names no message stays on its own, keyed by its wire
+   * id. That is honest: a client that joined mid-stream genuinely does not know
+   * which message its chunks belong to.
+   *
+   * Client inputs that name a message land in that message's group. An input
+   * that names one this walk never saw becomes its own group, so nothing
+   * published is dropped.
    * @param walked - The walked events, oldest first.
    * @param openRuns - The runs whose messages are withheld.
-   * @returns The messages, oldest first.
+   * @returns The groups, oldest first.
    */
-  private async _mergeWalked(
+  private _groupWalked(
     walked: AdapterEvent<TMetadata, TDataParts, TTools>[],
     openRuns: Set<string>,
-  ): Promise<AI.UIMessage<TMetadata, TDataParts, TTools>[]> {
+  ): WalkedMessage<TMetadata, TDataParts, TTools>[] {
     const order: string[] = [];
-    const buckets = new Map<string, AI.UIMessageChunk[]>();
-    const direct = new Map<string, AI.UIMessage<TMetadata, TDataParts, TTools>>();
+    const buckets = new Map<string, WalkedEvent<TMetadata, TDataParts, TTools>[]>();
+    // The domain message id each wire bucket turned out to belong to.
+    const domainOf = new Map<string, string>();
+
+    const push = (key: string, entry: WalkedEvent<TMetadata, TDataParts, TTools>): void => {
+      const bucket = buckets.get(key);
+      if (bucket === undefined) {
+        order.push(key);
+        buckets.set(key, [entry]);
+        return;
+      }
+      bucket.push(entry);
+    };
 
     for (const event of dropSupersededAttempts(walked)) {
       if (event.kind !== 'message') continue;
@@ -1009,65 +1123,40 @@ class DefaultChatTransport<
       if (runId !== undefined && openRuns.has(runId)) continue;
 
       for (const input of event.inputs) {
-        // A tool resolution is already a chunk in the SDK's own vocabulary,
-        // addressed to the assistant message it amends, so it folds into that
-        // assistant's bucket and the reducer applies it. Skipping it would
-        // rebuild the assistant with its tool call still unresolved.
-        if (input.kind === 'chunk') {
-          const bucket = buckets.get(transportMessageId);
-          if (bucket === undefined) {
-            order.push(transportMessageId);
-            buckets.set(transportMessageId, [input.payload]);
-          } else {
-            bucket.push(input.payload);
-          }
-          continue;
-        }
-        if (input.kind !== 'message') continue;
-        // The `message` batch explodes one UIMessage into one wire message per
-        // part, and each decodes back as a one-part input, so the parts have
-        // to be concatenated rather than overwritten: a message with a file
-        // and some text arrives as two events and must not lose the file.
-        const existing = direct.get(input.payload.id);
-        if (existing === undefined) {
-          order.push(input.payload.id);
-          direct.set(input.payload.id, { ...input.payload, parts: [...input.payload.parts] });
-          continue;
-        }
-        existing.parts.push(...input.payload.parts);
+        // An input that amends an existing message names it in its own body,
+        // so it groups with that message rather than with the wire message it
+        // arrived on. A whole client turn IS a message and keys on its own id.
+        const named = inputMessageId(input);
+        push(named ?? transportMessageId, { direction: 'input', event: input });
       }
-      if (event.outputs.length === 0) continue;
-      const bucket = buckets.get(transportMessageId);
-      if (bucket === undefined) {
-        order.push(transportMessageId);
-        buckets.set(transportMessageId, [...event.outputs]);
-      } else {
-        bucket.push(...event.outputs);
+      for (const output of event.outputs) {
+        push(transportMessageId, { direction: 'output', event: output });
+        // `start` is the only chunk that names the message, so remember it for
+        // the join below. First writer wins: a re-`start` of the same wire
+        // bucket cannot rename what the earlier chunks already belong to.
+        const named = outputMessageId(output);
+        if (named !== undefined && !domainOf.has(transportMessageId)) domainOf.set(transportMessageId, named);
       }
     }
 
-    const messages: AI.UIMessage<TMetadata, TDataParts, TTools>[] = [];
-    for (const id of order) {
-      const own = direct.get(id);
-      if (own !== undefined) {
-        messages.push(own);
+    // Join the wire buckets that turned out to be one message, keeping each
+    // message at the position its oldest bucket held.
+    const groups: WalkedMessage<TMetadata, TDataParts, TTools>[] = [];
+    const byId = new Map<string, WalkedMessage<TMetadata, TDataParts, TTools>>();
+    for (const key of order) {
+      const id = domainOf.get(key) ?? key;
+      const existing = byId.get(id);
+      const events = buckets.get(key) ?? [];
+      if (existing === undefined) {
+        const group = { id, events };
+        byId.set(id, group);
+        groups.push(group);
         continue;
       }
-      // The bucket is wire data off a shared channel, so any client's
-      // malformed publish reaches the provider's reducer here. Contain a
-      // reducer failure to the one message: letting it out would reject the
-      // whole walk and leave the consumer with no conversation at all.
-      try {
-        const merged = await mergeBucket<TMetadata, TDataParts, TTools>(buckets.get(id) ?? []);
-        if (merged !== undefined) messages.push(merged);
-      } catch (error) {
-        this._logger.warn('ChatTransport.readSince(); dropping a message the reducer rejected', {
-          transportMessageId: id,
-          error,
-        });
-      }
+      existing.events.push(...events);
     }
-    return messages;
+    this._logger.debug('ChatTransport.readSince(); grouped', { groups: groups.length });
+    return groups;
   }
 
   // -------------------------------------------------------------------------

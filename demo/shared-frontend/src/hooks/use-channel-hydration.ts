@@ -7,6 +7,11 @@
  * the channel back as far as the serial the store is complete up to. A demo
  * with no store omits `loadStored` and the walk covers the whole channel.
  *
+ * `readSince` hands back the events it walked, grouped by the message each
+ * belongs to, and this hook assembles them through the provider's own reducer
+ * (`assembleWalkedMessages`). The transport demultiplexes; the application
+ * reduces.
+ *
  * Running the walk is what makes `useChat({ resume: true })` work across a
  * reload. `readSince` withholds any message whose run has not ended and
  * retains its events for `reconnectToStream`; without the walk the adapter has
@@ -23,6 +28,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { UIMessage } from 'ai';
 import type { ChatTransport } from '@ably/ai-transport/vercel';
 import { useChatTransport } from '@ably/ai-transport/vercel/react';
+
+import { assembleWalkedMessages } from '../lib/assemble-messages';
 
 /** What an application store hands back for the walk to continue from. */
 export interface StoredConversation {
@@ -100,11 +107,14 @@ export function useChannelHydration(options: UseChannelHydrationOptions = {}): C
         const [, stored] = await Promise.all([transport.connect(), loadStoredRef.current?.()]);
         const seed = stored?.messages ?? [];
         const walk = await chatTransport.readSince(stored?.latestSerial);
+        // The transport groups the events it walked; assembling a group into a
+        // message is the application's job (see `assembleWalkedMessages`).
+        const walked = await assembleWalkedMessages(walk.messages);
         // The walk can re-return a turn the store already holds — its
         // watermark is a lower bound, not an exact seam — so dedupe by domain
         // id with the store winning.
         const seedIds = new Set(seed.map((message) => message.id));
-        const fresh = walk.messages.filter((message) => !seedIds.has(message.id));
+        const fresh = walked.filter((message) => !seedIds.has(message.id));
         return { initialMessages: [...seed, ...fresh], hasOlder: !walk.exhausted };
       })();
       hydrations.set(chatTransport, pass);

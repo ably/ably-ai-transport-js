@@ -60,20 +60,27 @@ const mergeMessages = async (events: Event[]): Promise<AI.UIMessage[]> => {
     message?: AI.UIMessage;
   }
   const buckets = new Map<string, Bucket>();
+  const bucketFor = (key: string): Bucket => {
+    const existing = buckets.get(key);
+    if (existing) return existing;
+    const fresh: Bucket = { chunks: [] };
+    buckets.set(key, fresh);
+    return fresh;
+  };
   for (const event of events) {
     if (event.kind !== 'message') continue;
     const id = event.meta.transportMessageId;
     if (id === undefined) continue;
-    const bucket = buckets.get(id) ?? { chunks: [] };
-    buckets.set(id, bucket);
+    const bucket = bucketFor(id);
     bucket.chunks.push(...event.outputs);
     for (const input of event.inputs) {
       // A chunk-shaped action merges through the provider reducer with the
-      // outputs; a message body is already whole — merge its parts (the wire
-      // fans one part out per event), deduped by part equality so a
-      // redelivered event adds nothing.
+      // outputs, and it names the assistant it amends, so it joins that
+      // bucket rather than the one its own wire message opened. A message body
+      // is already whole — merge its parts (the wire fans one part out per
+      // event), deduped by part equality so a redelivered event adds nothing.
       if (input.kind === 'chunk') {
-        bucket.chunks.push(input.payload);
+        bucketFor(input.payload.messageId).chunks.push(input.payload.chunk);
       } else if (input.kind === 'message') {
         if (bucket.message === undefined) {
           bucket.message = structuredClone(input.payload);
@@ -279,9 +286,12 @@ describe('standalone transport integration', () => {
     await client.publishInput(
       {
         kind: 'chunk',
-        payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { city: 'Berlin' }, dynamic: true },
+        payload: {
+          messageId: assistantId,
+          chunk: { type: 'tool-output-available', toolCallId: 'tc-1', output: { city: 'Berlin' }, dynamic: true },
+        },
       },
-      { transportMessageId: assistantId, runId: run.runId },
+      { runId: run.runId },
     );
 
     await waitFor((all) => all.some((e) => e.kind === 'message' && e.inputs.some((input) => input.kind === 'chunk')));

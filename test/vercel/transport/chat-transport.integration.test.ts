@@ -197,8 +197,11 @@ describe('chat transport over a real channel', () => {
     const { messages } = await observerChat.readSince();
 
     // Both sides come back, and the run has ended so nothing is withheld.
-    expect(messages.map((message) => message.role)).toEqual(['user', 'assistant']);
-    expect(messages[1]?.parts).toContainEqual(expect.objectContaining({ type: 'text', text: 'first answer' }));
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.events.every((walked) => walked.direction === 'input')).toBe(true);
+    expect(messages[1]?.events.map((walked) => walked.event)).toContainEqual(
+      expect.objectContaining({ type: 'text-delta', delta: 'first answer' }),
+    );
     // eslint-disable-next-line unicorn/no-null -- the SDK contract is null
     expect(await observerChat.reconnectToStream({ chatId: channelName })).toBe(null);
   }, 30_000);
@@ -257,8 +260,10 @@ describe('chat transport over a real channel', () => {
 
     const { messages } = await observerChat.readSince();
     // The assistant message belongs to a run with no end, so the walk withholds
-    // it and the stream is its only producer.
-    expect(messages.map((message) => message.role)).toEqual(['user']);
+    // it and the stream is its only producer. Only the client's own turn is
+    // reported, and every event in it is an input.
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.events.every((walked) => walked.direction === 'input')).toBe(true);
 
     const resumed = await observerChat.reconnectToStream({ chatId: channelName });
     expect(resumed).not.toBeNull();

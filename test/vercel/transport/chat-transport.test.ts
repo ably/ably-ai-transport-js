@@ -524,15 +524,15 @@ describe('ChatTransport', () => {
 
       await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: assistant.id }));
 
-      expect(fake.published).toEqual([
-        {
-          event: {
-            kind: 'approval',
-            payload: { messageId: 'a1', toolCallId: 'tc-1', approved: true },
-          },
-          opts: { transportMessageId: 'a1' },
-        },
-      ]);
+      // The body names the assistant; the wire id is minted like any other
+      // publish and never carries a domain id.
+      expect(fake.published).toHaveLength(1);
+      expect(fake.published[0]?.event).toEqual({
+        kind: 'approval',
+        payload: { messageId: 'a1', toolCallId: 'tc-1', approved: true },
+      });
+      expect(fake.published[0]?.opts?.transportMessageId).toBeTypeOf('string');
+      expect(fake.published[0]?.opts?.transportMessageId).not.toBe('a1');
     });
 
     it('publishes the provider tool-output chunk for a client-executed tool', async () => {
@@ -542,15 +542,15 @@ describe('ChatTransport', () => {
 
       await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: assistant.id }));
 
-      expect(fake.published).toEqual([
-        {
-          event: {
-            kind: 'chunk',
-            payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 4 } },
-          },
-          opts: { transportMessageId: 'a1' },
+      expect(fake.published).toHaveLength(1);
+      expect(fake.published[0]?.event).toEqual({
+        kind: 'chunk',
+        payload: {
+          messageId: 'a1',
+          chunk: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 4 } },
         },
-      ]);
+      });
+      expect(fake.published[0]?.opts?.transportMessageId).not.toBe('a1');
     });
 
     it('publishes the tool-output-error chunk for a failed client tool', async () => {
@@ -572,12 +572,11 @@ describe('ChatTransport', () => {
 
       await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: assistant.id }));
 
-      expect(fake.published).toEqual([
-        {
-          event: { kind: 'chunk', payload: { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'boom' } },
-          opts: { transportMessageId: 'a1' },
-        },
-      ]);
+      expect(fake.published).toHaveLength(1);
+      expect(fake.published[0]?.event).toEqual({
+        kind: 'chunk',
+        payload: { messageId: 'a1', chunk: { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'boom' } },
+      });
     });
 
     it('carries no run id — a resolution opens a new run like any other input', async () => {
@@ -617,7 +616,11 @@ describe('ChatTransport', () => {
       await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: assistant.id }));
 
       expect(fake.published.map((p) => p.event.kind)).toEqual(['chunk', 'approval']);
-      expect(fake.published.every((p) => p.opts?.transportMessageId === 'a1')).toBe(true);
+      // Both actions share one wire id, because they are one continuation, and
+      // both name the assistant in their own body.
+      const wireIds = new Set(fake.published.map((p) => p.opts?.transportMessageId));
+      expect(wireIds.size).toBe(1);
+      expect(wireIds.has('a1')).toBe(false);
       // The POST points at the last publish: the earlier actions are already
       // on the channel ahead of it when the agent locates this one.
       const init = fetchMock.mock.calls[0]?.[1] as { body?: string } | undefined;
@@ -699,7 +702,11 @@ describe('ChatTransport', () => {
 
       expect(exhausted).toBe(true);
       expect(messages.map((message) => message.id)).toEqual(['u1', 'a1']);
-      expect(messages[1]?.parts).toContainEqual({ type: 'text', text: 'It is 4C', state: 'done' });
+      // The events come back as published; assembling them is the caller's job.
+      expect(messages[1]?.events).toContainEqual({
+        direction: 'output',
+        event: { type: 'text-delta', id: 'a1-t', delta: 'It is 4C' },
+      });
     });
 
     it('withholds a message whose run has not ended', async () => {
@@ -789,10 +796,13 @@ describe('ChatTransport', () => {
 
       const { messages } = await chat.readSince();
 
+      // The wire fans one message out per part, so the group holds one input
+      // per part and the caller concatenates them.
       expect(messages).toHaveLength(1);
-      expect(messages[0]?.parts).toEqual([
-        { type: 'text', text: 'look at ' },
-        { type: 'text', text: 'this' },
+      expect(messages[0]?.id).toBe('u1');
+      expect(messages[0]?.events.map((walked) => walked.event)).toEqual([
+        { kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'look at ' }] } },
+        { kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'this' }] } },
       ]);
     });
 
@@ -864,7 +874,10 @@ describe('ChatTransport', () => {
                 inputs: [
                   {
                     kind: 'chunk',
-                    payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 4 } },
+                    payload: {
+                      messageId: 'a1',
+                      chunk: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 4 } },
+                    },
                   },
                 ],
               },
@@ -876,32 +889,175 @@ describe('ChatTransport', () => {
 
       const { messages } = await chat.readSince();
 
-      // Dropping the resolution would rebuild the assistant with its tool call
-      // stuck in `input-available`, so the UI shows a spinner for a tool that
-      // already answered and nothing reports the loss.
+      // The resolution names the assistant it amends, so it groups with that
+      // assistant's own chunks. Putting it anywhere else would rebuild the
+      // assistant with its tool call stuck in `input-available`, so the UI
+      // shows a spinner for a tool that already answered.
       expect(messages).toHaveLength(1);
-      expect(messages[0]?.parts).toEqual([
-        {
-          type: 'tool-getWeather',
-          toolCallId: 'tc-1',
-          state: 'output-available',
-          input: { city: 'Berlin' },
-          output: { tempC: 4 },
+      expect(messages[0]?.id).toBe('a1');
+      expect(messages[0]?.events.at(-1)).toEqual({
+        direction: 'input',
+        event: {
+          kind: 'chunk',
+          payload: {
+            messageId: 'a1',
+            chunk: { type: 'tool-output-available', toolCallId: 'tc-1', output: { tempC: 4 } },
+          },
         },
-      ]);
+      });
     });
   });
 
-  describe('a malformed walked message', () => {
-    it('yields no message for it and still returns the rest of the conversation', async () => {
+  describe('grouping the walk', () => {
+    it('joins two publishes of one assistant message on the id their start chunks carry', async () => {
+      // The approval flow: the agent opens the message in one run, pauses at
+      // the request, and a second run continues the SAME message after the
+      // decision. Keying on the wire id alone splits it in two.
       const { fake, chat } = setup();
       fake.historyBatches = [
         {
           events: [
             runStartEvent('run-1', 'serial-10'),
-            // A delta with no opener. Whether the reducer skips it or rejects
-            // it is the provider's business, so this asserts only what the
-            // adapter owes the consumer: the rest of the walk still arrives.
+            outputEvent(
+              'run-1',
+              'wire-a',
+              [
+                { type: 'start', messageId: 'ui-1' },
+                { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getForecast', input: {} },
+                { type: 'tool-approval-request', approvalId: 'ap-1', toolCallId: 'tc-1' },
+                { type: 'finish' },
+              ],
+              'serial-11',
+            ),
+            runEndEvent('run-1'),
+            runStartEvent('run-2', 'serial-12'),
+            outputEvent(
+              'run-2',
+              'wire-b',
+              [
+                { type: 'start', messageId: 'ui-1' },
+                { type: 'tool-output-available', toolCallId: 'tc-1', output: { days: 5 } },
+                { type: 'finish' },
+              ],
+              'serial-13',
+            ),
+            runEndEvent('run-2'),
+          ],
+          exhausted: true,
+        },
+      ];
+
+      const { messages } = await chat.readSince();
+
+      expect(messages.map((message) => message.id)).toEqual(['ui-1']);
+      // Both publishes' chunks, in wire order, so one reducer call rebuilds
+      // the resolved tool call.
+      expect(
+        messages[0]?.events.flatMap((walked) => (walked.direction === 'output' ? [walked.event.type] : [])),
+      ).toEqual([
+        'start',
+        'tool-input-available',
+        'tool-approval-request',
+        'finish',
+        'start',
+        'tool-output-available',
+        'finish',
+      ]);
+    });
+
+    it('groups an approval decision with the assistant its body names', async () => {
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            runStartEvent('run-1', 'serial-10'),
+            outputEvent(
+              'run-1',
+              'wire-a',
+              [
+                { type: 'start', messageId: 'ui-1' },
+                { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getForecast', input: {} },
+                { type: 'tool-approval-request', approvalId: 'ap-1', toolCallId: 'tc-1' },
+                { type: 'finish' },
+              ],
+              'serial-11',
+            ),
+            runEndEvent('run-1'),
+            // The client's decision rides its own wire message, and names the
+            // assistant it answers.
+            messageEvent(
+              { transportMessageId: 'wire-decision', serial: 'serial-12' },
+              { inputs: [{ kind: 'approval', payload: { messageId: 'ui-1', toolCallId: 'tc-1', approved: true } }] },
+            ),
+          ],
+          exhausted: true,
+        },
+      ];
+
+      const { messages } = await chat.readSince();
+
+      expect(messages.map((message) => message.id)).toEqual(['ui-1']);
+      expect(messages[0]?.events.at(-1)).toEqual({
+        direction: 'input',
+        event: { kind: 'approval', payload: { messageId: 'ui-1', toolCallId: 'tc-1', approved: true } },
+      });
+    });
+
+    it('keeps an input naming a message this walk never saw', async () => {
+      // Dropping it would lose a resolution the store may well hold the
+      // assistant for.
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            messageEvent(
+              { transportMessageId: 'wire-orphan', serial: 'serial-10' },
+              { inputs: [{ kind: 'approval', payload: { messageId: 'gone', toolCallId: 'tc-9', approved: false } }] },
+            ),
+          ],
+          exhausted: true,
+        },
+      ];
+
+      const { messages } = await chat.readSince();
+
+      expect(messages.map((message) => message.id)).toEqual(['gone']);
+    });
+
+    it('groups a regenerate under the wire message it arrived on', async () => {
+      // `regenerate` names a message it does not belong to, so folding it into
+      // that message would put an unrelated signal in the middle of it.
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            outputEvent('run-1', 'wire-a', assistantChunks('ui-1', 'hi'), 'serial-10'),
+            runEndEvent('run-1'),
+            messageEvent(
+              { transportMessageId: 'wire-regen', serial: 'serial-11' },
+              { inputs: [{ kind: 'regenerate', payload: { messageId: 'ui-1' } }] },
+            ),
+          ],
+          exhausted: true,
+        },
+      ];
+
+      const { messages } = await chat.readSince();
+
+      expect(messages.map((message) => message.id)).toEqual(['ui-1', 'wire-regen']);
+    });
+  });
+
+  describe('a walked message that names no id', () => {
+    it('groups it under its wire id and reports it alongside the rest', async () => {
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            runStartEvent('run-1', 'serial-10'),
+            // A delta with no opener, so nothing in the group names a message.
+            // Whether the reducer can make anything of it is the application's
+            // business; the walk reports what was published either way.
             outputEvent('run-1', 'wire-bad', [{ type: 'text-delta', id: 't1', delta: 'orphan' }], 'serial-11'),
             outputEvent('run-1', 'wire-a2', assistantChunks('a2', 'fine'), 'serial-12'),
             runEndEvent('run-1'),
@@ -912,7 +1068,7 @@ describe('ChatTransport', () => {
 
       const { messages } = await chat.readSince();
 
-      expect(messages.map((m) => m.id)).toEqual(['a2']);
+      expect(messages.map((m) => m.id)).toEqual(['wire-bad', 'a2']);
     });
   });
 

@@ -19,6 +19,8 @@ export type {
   ReconnectHint,
   VercelAgentTransportOptions,
   VercelClientTransportOptions,
+  WalkedEvent,
+  WalkedMessage,
 } from './transport/index.js';
 export { createAgentTransport, createChatTransport, createClientTransport } from './transport/index.js';
 

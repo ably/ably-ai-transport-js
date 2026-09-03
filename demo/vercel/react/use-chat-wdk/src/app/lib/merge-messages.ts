@@ -178,7 +178,7 @@ export async function mergeMessages(events: WdkTransportEvent[], opts?: MergeMes
           bucketFor(key).message = mergeMessage(bucketFor(key).message, input.payload);
           break;
         case 'chunk':
-          routeChunk(input.payload, key);
+          routeChunk(input.payload.chunk, key);
           break;
         case 'approval': {
           // The decision has no chunk shape of its own; synthesize the AI

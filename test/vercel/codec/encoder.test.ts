@@ -611,11 +611,14 @@ describe('Vercel encoder', () => {
       });
       await encoder.publishInput({
         kind: 'chunk',
-        payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 1 } },
+        payload: {
+          messageId: 'asst-1',
+          chunk: { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 1 } },
+        },
       });
       await encoder.publishInput({
         kind: 'chunk',
-        payload: { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'x' },
+        payload: { messageId: 'asst-1', chunk: { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'x' } },
       });
       await encoder.publishInput({ kind: 'regenerate', payload: { messageId: 'asst-1' } });
 

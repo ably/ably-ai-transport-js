@@ -93,8 +93,12 @@ export enum ErrorCode {
   /**
    * An error occurred while piping a response stream to the channel — either
    * the source event stream threw (e.g. LLM provider rate limit, model error,
-   * network failure) or an underlying publish failed mid-stream. Also the
-   * fallback code when a run-end reports an error without a code on the wire.
+   * network failure) or an underlying publish failed mid-stream.
+   *
+   * Also the fallback a consumer sees for an errored run-end whose `error-code`
+   * header it cannot use — absent, or present but not a positive integer. So a
+   * run that failed for an unrelated reason still surfaces under this code when
+   * its terminal did not carry a usable one.
    */
   RunResponseStreamFailed = 104008,
 

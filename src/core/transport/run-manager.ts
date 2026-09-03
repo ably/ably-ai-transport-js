@@ -1,8 +1,9 @@
 /**
  * Server-side run state management and lifecycle event publishing.
  *
- * Owns the authoritative run lifecycle. Tracks active runs with their
- * AbortControllers and clientIds. Publishes run-start, run-resume, run-suspend, and
+ * Owns the authoritative run lifecycle. Tracks each active run's owning
+ * clientId; the abort controllers live with the agent transport's own
+ * registration. Publishes run-start, run-resume, run-suspend, and
  * run-end events on the Ably channel so all clients can react to run
  * state changes.
  */
@@ -23,15 +24,16 @@ import type { RunEndReason, StepEndReason } from './types.js';
 
 /**
  * Per-invocation metadata carried on a run's opening lifecycle event. A
- * continuation (re-entering an existing run) sets `continuation`.
+ * continuation (re-entering an existing run) sets `continuation`, which
+ * publishes `ai-run-resume` in place of `ai-run-start`.
  */
 interface StartRunMetadata {
   /** Agent-minted invocation id, carried on the lifecycle event. */
   invocationId?: string;
-  /** ClientId of the triggering input's publisher, re-stamped as `input-client-id`. */
+  /** ClientId of the triggering input event. */
   inputClientId?: string;
-  /** Codec-message-id of the triggering input event. */
-  inputCodecMessageId?: string;
+  /** Transport-message-id of the triggering input event. */
+  inputTransportMessageId?: string;
   /** When true, publish `ai-run-resume` (re-entry) instead of `ai-run-start`. */
   continuation?: boolean;
 }
@@ -59,14 +61,33 @@ export interface StepClientScopes {
 // Interface
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-invocation attribution stamped on a run's terminal lifecycle event.
+ * Both terminals carry the same set, because a suspend is the terminal event
+ * of the suspending invocation just as a run-end is of an ending one.
+ */
+export interface RunTerminalAttribution {
+  /** Agent-minted invocation id, carried on the terminal event. */
+  invocationId?: string;
+  /** ClientId of the triggering input's publisher, re-stamped as `input-client-id`. */
+  inputClientId?: string;
+  /** Transport-message-id of the triggering input, re-stamped as `input-transport-message-id`. */
+  inputTransportMessageId?: string;
+  /**
+   * Transport-message-ids of every input the run's output has considered,
+   * stamped as the `input-transport-message-ids` bracket receipt when non-empty.
+   */
+  consideredInputIds?: string[];
+}
+
 /** Manages active runs and publishes run lifecycle events on the channel. */
 export interface RunManager {
   /**
-   * Seed a run's owner entry WITHOUT publishing any lifecycle event. Records the
-   * run's `clientId` in the active-run set so the per-output `run-client-id`
-   * ({@link getClientId}) and the terminal ({@link endRun} / {@link suspendRun})
-   * stamp the real owner. The `clientId` defaults to the empty string when
-   * omitted.
+   * Seed a run's owner entry WITHOUT publishing any lifecycle event. Records
+   * the run's `clientId` in the active-run set so the per-output
+   * `run-client-id` ({@link getClientId}) and the terminal ({@link endRun} /
+   * {@link suspendRun}) stamp the real owner. The `clientId` defaults to the
+   * empty string when omitted.
    *
    * This is the seed-only half of {@link startRun}: a process that adopts an
    * already-open run for publishing needs the owner entry but must NOT re-emit
@@ -85,43 +106,38 @@ export interface RunManager {
   startRun(runId: string, clientId?: string, metadata?: StartRunMetadata): Promise<void>;
   /**
    * Suspend a run. Publishes run-suspend on the channel and drops the run's
-   * active-run entry — the agent process terminates on suspend, so there is no
-   * live AbortController to retain. A cancel arriving during suspension is a
-   * no-op; the resuming invocation re-registers the run via {@link startRun}.
+   * active-run entry. The agent transport keeps its own registration, so a
+   * cancel addressed to a suspended run still fires its abort signal; the
+   * resuming invocation re-publishes the run's opening event via
+   * {@link startRun}.
    * Carries the same per-invocation attribution as {@link endRun}
-   * (`invocationId`, `inputClientId`), since a suspend is the terminal event
-   * of the suspending invocation just as run-end is of an ending one. When
-   * `consideredInputIds` is supplied and non-empty, it is stamped as the
-   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * (`inputClientId`, `inputTransportMessageId`), since a suspend is the terminal
+   * event of the suspending invocation just as run-end is of an ending one.
+   * When `consideredInputIds` is supplied and non-empty, it is stamped as the
+   * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output has considered so far.
    */
-  suspendRun(
-    runId: string,
-    invocationId?: string,
-    inputClientId?: string,
-    consideredInputIds?: string[],
-  ): Promise<void>;
+  suspendRun(runId: string, attribution?: RunTerminalAttribution): Promise<void>;
   /**
    * End a run. Publishes run-end on the channel (stamping `reason` as the
    * run-reason header) and drops the run's active-run entry. Carries the same
    * per-invocation attribution as {@link suspendRun} (`invocationId`,
-   * `inputClientId`), since run-end is the terminal event of the ending
-   * invocation. When `reason` is `'error'` and an `error` is
+   * `inputClientId`, `inputTransportMessageId`), since run-end is the terminal event
+   * of the ending invocation. When `reason` is `'error'` and an `error` is
    * supplied, its `code` and `message` are additionally stamped as the
    * `error-code` / `error-message` headers — a codec-agnostic baseline failure
    * detail for consumers; omitting `error` publishes a bare `reason: 'error'`.
    * When `consideredInputIds` is supplied and non-empty, it is stamped as the
-   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output considered.
+   * @returns The `ai-run-end`'s own channel serial, or `undefined` when the publish reported none. Everything the run published is at or before it.
    */
   endRun(
     runId: string,
     reason: RunEndReason,
-    invocationId?: string,
-    inputClientId?: string,
+    attribution?: RunTerminalAttribution,
     error?: Ably.ErrorInfo,
-    consideredInputIds?: string[],
-  ): Promise<void>;
+  ): Promise<string | undefined>;
   /**
    * Publish `ai-step-start` to open a step attempt within a run. Carries
    * `step-id` plus the step's invocation correlation and the three concentric
@@ -147,6 +163,7 @@ export interface RunManager {
    * @param stepStartSerial - The attempt's `step-start-serial` (its `ai-step-start`'s serial).
    * @param reason - Why the step attempt ended.
    * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
+   * @returns The `ai-step-end`'s own channel serial, or `undefined` when the publish reported none.
    */
   endStep(
     runId: string,
@@ -154,7 +171,7 @@ export interface RunManager {
     stepStartSerial: string,
     reason: StepEndReason,
     scopes?: StepClientScopes,
-  ): Promise<void>;
+  ): Promise<string | undefined>;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
 }
@@ -196,8 +213,8 @@ class DefaultRunManager implements RunManager {
     // A continuation re-enters an already-started run: publish `ai-run-resume`
     // rather than `ai-run-start`. Resume is a pure re-entry signal — the agent
     // learned this is a continuation from the run-id on the triggering input;
-    // the re-entry is conveyed to clients by the event name, not a header
-    // echo. The invocation-id / input attribution headers are carried on both.
+    // the re-entry is conveyed to clients by the event name. The
+    // invocation-id / input attribution headers are carried on both.
     const continuation = metadata?.continuation === true;
 
     const headers = buildLifecycleHeaders({
@@ -205,7 +222,7 @@ class DefaultRunManager implements RunManager {
       runClientId: resolvedClientId,
       invocationId: metadata?.invocationId,
       inputClientId: metadata?.inputClientId,
-      inputCodecMessageId: metadata?.inputCodecMessageId,
+      inputTransportMessageId: metadata?.inputTransportMessageId,
     });
 
     await this._channel.publish({
@@ -216,42 +233,30 @@ class DefaultRunManager implements RunManager {
     this._logger?.debug('DefaultRunManager.startRun(); run started', { runId });
   }
 
-  async suspendRun(
-    runId: string,
-    invocationId?: string,
-    inputClientId?: string,
-    consideredInputIds?: string[],
-  ): Promise<void> {
+  async suspendRun(runId: string, attribution?: RunTerminalAttribution): Promise<void> {
     this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
-    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, {
-      invocationId,
-      inputClientId,
-      consideredInputIds,
-    });
+    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, { ...attribution });
     this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
   }
 
   async endRun(
     runId: string,
     reason: RunEndReason,
-    invocationId?: string,
-    inputClientId?: string,
+    attribution?: RunTerminalAttribution,
     error?: Ably.ErrorInfo,
-    consideredInputIds?: string[],
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
     // Stamp error detail only for a terminal error the agent chose to surface
     // (AIT-ST6b4: explicit, never automatic). error-code / error-message are
     // generic transport headers, so any codec or consumer can read them.
     const errorAttribution = reason === 'error' && error ? { errorCode: error.code, errorMessage: error.message } : {};
-    await this._publishTerminal(EVENT_RUN_END, runId, {
+    const serial = await this._publishTerminal(EVENT_RUN_END, runId, {
       reason,
-      invocationId,
-      inputClientId,
-      consideredInputIds,
+      ...attribution,
       ...errorAttribution,
     });
-    this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
+    this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason, serial });
+    return serial;
   }
 
   /**
@@ -265,12 +270,14 @@ class DefaultRunManager implements RunManager {
    * @param attribution - Per-invocation correlation and the terminal reason.
    * @param attribution.reason - Terminal reason; set for run-end, omitted for run-suspend.
    * @param attribution.invocationId - The invocation's id.
-   * @param attribution.inputClientId - ClientId of the triggering input's publisher.
-   * @param attribution.consideredInputIds - Codec-message-ids of every input the
-   *   run's output considered, stamped as the `input-codec-message-ids` bracket
+   * @param attribution.inputClientId - ClientId of the triggering input event.
+   * @param attribution.inputTransportMessageId - Transport-message-id of the triggering input event.
+   * @param attribution.consideredInputIds - Transport-message-ids of every input the
+   *   run's output considered, stamped as the `input-transport-message-ids` bracket
    *   receipt. Omitted when absent or empty.
    * @param attribution.errorCode - Numeric error code; set for run-end only when a terminal error is surfaced.
    * @param attribution.errorMessage - Error message; paired with errorCode.
+   * @returns The terminal's own channel serial, or `undefined` when the publish reported none.
    */
   private async _publishTerminal(
     eventName: string,
@@ -279,15 +286,20 @@ class DefaultRunManager implements RunManager {
       reason?: RunEndReason;
       invocationId?: string;
       inputClientId?: string;
+      inputTransportMessageId?: string;
       consideredInputIds?: string[];
       errorCode?: number;
       errorMessage?: string;
     },
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const resolvedClientId = this._activeRuns.get(runId)?.clientId ?? '';
     const headers = buildLifecycleHeaders({ runId, runClientId: resolvedClientId, ...attribution });
-    await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
+    const result = await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
     this._activeRuns.delete(runId);
+    // The terminal's own channel serial, which an application records as the
+    // watermark for what it stored. May be undefined if the publish reported
+    // no serial.
+    return result.serials[0] ?? undefined;
   }
 
   async startStep(runId: string, stepId: string, scopes?: StepClientScopes): Promise<string | undefined> {
@@ -308,11 +320,21 @@ class DefaultRunManager implements RunManager {
     stepStartSerial: string,
     reason: StepEndReason,
     scopes?: StepClientScopes,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     this._logger?.trace('DefaultRunManager.endStep();', { runId, stepId, stepStartSerial, reason });
     const headers = buildStepHeaders({ runId, stepId, stepStartSerial, reason, ...scopes });
-    await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
-    this._logger?.debug('DefaultRunManager.endStep(); step ended', { runId, stepId, stepStartSerial, reason });
+    const result = await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
+    // The step-end's own channel serial: everything this attempt published is
+    // at or before it. May be undefined if the publish reported no serial.
+    const serial = result.serials[0] ?? undefined;
+    this._logger?.debug('DefaultRunManager.endStep(); step ended', {
+      runId,
+      stepId,
+      stepStartSerial,
+      reason,
+      serial,
+    });
+    return serial;
   }
 
   getClientId(runId: string): string | undefined {

@@ -3,7 +3,7 @@
  *
  * Single source of truth for which transport headers every transport
  * message carries. Used by the agent's output path (pipe) and by
- * the client's optimistic message stamping.
+ * the client's input publish path.
  */
 
 import * as Ably from 'ably';
@@ -15,13 +15,12 @@ import {
   EVENT_RUN_SUSPEND,
   EVENT_STEP_END,
   EVENT_STEP_START,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -31,6 +30,7 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
   HEADER_STEP_START_SERIAL,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent } from './types.js';
@@ -42,7 +42,7 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  * @param opts.runId - Run correlation ID, or `undefined` for a fresh client
  *   input (the agent mints run-ids, so it is not known synchronously). Omitted
  *   from the headers when undefined; a continuation still carries the known run-id.
- * @param opts.codecMessageId - Message identity — the wire `codec-message-id` for this message.
+ * @param opts.transportMessageId - Message identity — the wire `transport-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.invocationId - Agent-minted invocation id. Stamped by the agent on every event it publishes for the invocation (run lifecycle + outputs) so the client can observe it; not set by the client on the input.
  * @param opts.inputClientId - ClientId of the input event (the `ai-input`) that
@@ -51,7 +51,7 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  *   own publishes (run lifecycle + outputs). Differs from `runClientId` on
  *   continuation invocations driven by an input from a non-owner.
  * @param opts.inputEventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `inputEventIds` lists the ids the agent should look up.
- * @param opts.inputCodecMessageId - The codec-message-id of the input event that
+ * @param opts.inputTransportMessageId - The transport-message-id of the input event that
  *   triggered the current invocation (the one whose `event-id` matched the
  *   invocation's `inputEventId`). The agent re-stamps it on every event it
  *   publishes for the invocation (run lifecycle + outputs), mirroring
@@ -73,11 +73,11 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
 export const buildTransportHeaders = (opts: {
   role: string;
   runId?: string;
-  codecMessageId: string;
+  transportMessageId: string;
   runClientId?: string;
   invocationId?: string;
   inputClientId?: string;
-  inputCodecMessageId?: string;
+  inputTransportMessageId?: string;
   inputEventId?: string;
   stepId?: string;
   stepStartSerial?: string;
@@ -85,13 +85,13 @@ export const buildTransportHeaders = (opts: {
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
-    [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_TRANSPORT_MESSAGE_ID]: opts.transportMessageId,
   };
   if (opts.runId !== undefined) h[HEADER_RUN_ID] = opts.runId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
-  if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.inputTransportMessageId !== undefined) h[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = opts.inputTransportMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
   if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
   if (opts.stepStartSerial !== undefined) h[HEADER_STEP_START_SERIAL] = opts.stepStartSerial;
@@ -104,19 +104,19 @@ export const buildTransportHeaders = (opts: {
  * run-resume, run-suspend, run-end). Single source of truth for lifecycle
  * header stamping, mirroring {@link buildTransportHeaders} for the
  * message-carrier path. Every field except `runId`/`runClientId` is optional
- * and omitted when not provided. `reason` is stamped only on run-end.
+ * and omitted when not provided.
+ *
+ * `reason` is stamped only on run-end.
  * @param opts - The lifecycle header values to include.
  * @param opts.runId - The run's id.
  * @param opts.runClientId - ClientId of the run initiator (empty string when unknown).
  * @param opts.invocationId - Agent-minted invocation id; carried on every lifecycle event.
- * @param opts.inputClientId - ClientId of the triggering input's publisher,
- *   read off the input's own wire message (Ably stamps the publisher's
- *   realtime clientId on it) and re-stamped here as `input-client-id`.
- * @param opts.inputCodecMessageId - Codec-message-id of the triggering input event.
+ * @param opts.inputClientId - ClientId of the triggering input event.
+ * @param opts.inputTransportMessageId - Transport-message-id of the triggering input event.
  * @param opts.reason - Terminal reason; stamped on run-end only.
- * @param opts.consideredInputIds - Codec-message-ids of every input the run's
+ * @param opts.consideredInputIds - Transport-message-ids of every input the run's
  *   output considered (trigger + stamped steers), stamped as the
- *   `input-codec-message-ids` bracket receipt on run-suspend / run-end.
+ *   `input-transport-message-ids` bracket receipt on run-suspend / run-end.
  *   Omitted when absent or empty.
  * @param opts.errorCode - Numeric error code stamped as `error-code` on
  *   run-end. Set only when the run ended in error and the agent supplied an
@@ -130,7 +130,7 @@ export const buildLifecycleHeaders = (opts: {
   runClientId: string;
   invocationId?: string;
   inputClientId?: string;
-  inputCodecMessageId?: string;
+  inputTransportMessageId?: string;
   reason?: RunEndReason;
   consideredInputIds?: string[];
   errorCode?: number;
@@ -143,9 +143,9 @@ export const buildLifecycleHeaders = (opts: {
   if (opts.reason !== undefined) h[HEADER_RUN_REASON] = opts.reason;
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
-  if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.inputTransportMessageId !== undefined) h[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = opts.inputTransportMessageId;
   if (opts.consideredInputIds !== undefined && opts.consideredInputIds.length > 0) {
-    h[HEADER_INPUT_CODEC_MESSAGE_IDS] = JSON.stringify(opts.consideredInputIds);
+    h[HEADER_INPUT_TRANSPORT_MESSAGE_IDS] = JSON.stringify(opts.consideredInputIds);
   }
   if (opts.errorCode !== undefined) h[HEADER_ERROR_CODE] = String(opts.errorCode);
   if (opts.errorMessage !== undefined) h[HEADER_ERROR_MESSAGE] = opts.errorMessage;
@@ -153,15 +153,15 @@ export const buildLifecycleHeaders = (opts: {
 };
 
 /**
- * Parse a JSON-array-of-codec-message-ids header — the encoding shared by the
- * per-output `steer-codec-message-ids` stamp and the run-bracket
- * `input-codec-message-ids` receipt. Returns `undefined` when the header is
+ * Parse a JSON-array-of-transport-message-ids header — the encoding shared by the
+ * per-output `steer-transport-message-ids` stamp and the run-bracket
+ * `input-transport-message-ids` receipt. Returns `undefined` when the header is
  * absent, malformed, or empty after filtering non-strings, so a bad value
  * degrades to "no header" rather than poisoning the consumer.
  * @param value - The raw header value, or undefined when unset.
- * @returns The parsed codec-message-ids, or undefined.
+ * @returns The parsed transport-message-ids, or undefined.
  */
-export const parseCodecMessageIdsHeader = (value: string | undefined): string[] | undefined => {
+export const parseTransportMessageIdsHeader = (value: string | undefined): string[] | undefined => {
   if (value === undefined) return undefined;
   try {
     // CAST: trust boundary. The agent stamps a JSON array of strings, and a
@@ -198,8 +198,8 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
  * Reconstruct the terminal `Ably.ErrorInfo` for a run that ended in error, from
  * its run-end transport headers. Reads the `error-code` / `error-message`
  * headers the agent stamps (see {@link buildLifecycleHeaders}); falls back to
- * `RunResponseStreamFailed` — the code the agent stamps for run failures — when a run
- * ended in error without detail. Single source of truth for the
+ * `RunResponseStreamFailed` — the code the agent stamps for run failures — when
+ * the `error-code` header is absent, or present but not a positive integer. Single source of truth for the
  * header→ErrorInfo derivation, so every consumer of an errored run-end
  * reconstructs the same error.
  * @param headers - Transport headers from the inbound run-end message.
@@ -208,8 +208,8 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
 export const buildRunEndError = (headers: Record<string, string>): Ably.ErrorInfo => {
   const codeRaw = headers[HEADER_ERROR_CODE];
   const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
-  const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.RunResponseStreamFailed;
-  const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
+  const code = Number.isInteger(parsedCode) && parsedCode > 0 ? parsedCode : ErrorCode.RunResponseStreamFailed;
+  const message = headers[HEADER_ERROR_MESSAGE] ?? 'unable to complete run; agent reported an error';
   // 5-digit codes encode their HTTP status in the leading 3 digits; otherwise 500.
   const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
   return new Ably.ErrorInfo(message, code, statusCode);
@@ -224,11 +224,12 @@ export const buildRunEndError = (headers: Record<string, string>): Ably.ErrorInf
  * replay so both build the event identically.
  * @param name - The inbound Ably message `name`.
  * @param headers - Transport headers from the inbound Ably message.
- * @param serial - Ably channel serial of the message, or `undefined` for an
- *   optimistic local event. Stamped onto the returned event.
- * @param timestamp - Ably server timestamp (epoch ms) of the message, or
- *   `undefined` for an optimistic local event. Stamped onto the returned
- *   event.
+ * @param serial - Ably channel serial of the message. Stamped onto the
+ *   returned event. `undefined` only when the message carries none: ably-js
+ *   types `InboundMessage.serial` optional, though the platform stamps one on
+ *   every delivery.
+ * @param timestamp - Ably server timestamp (epoch ms) of the message. Stamped
+ *   onto the returned event, and omitted from it when absent.
  * @returns The lifecycle event, or `undefined` when `name` is not a
  *   run-lifecycle event name or the message carries no `run-id`.
  */
@@ -245,11 +246,11 @@ export const parseRunLifecycle = (
   const stamped = timestamp === undefined ? {} : { timestamp };
 
   if (name === EVENT_RUN_START) {
-    // The triggering input's codec-message-id, already stamped on the wire by
+    // The triggering input's transport-message-id, already stamped on the wire by
     // `buildLifecycleHeaders`. Carried onto the 'start' event so a consumer
     // can correlate the run back to its triggering input — the client
     // transport resolves its `publishInput` runId watches from it.
-    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
+    const inputTransportMessageId = headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID];
     return {
       type: 'start',
       runId,
@@ -257,7 +258,7 @@ export const parseRunLifecycle = (
       serial,
       invocationId: headers[HEADER_INVOCATION_ID] ?? '',
       ...stamped,
-      ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
+      ...(inputTransportMessageId !== undefined && { inputTransportMessageId }),
     };
   }
 
@@ -337,7 +338,10 @@ export const buildStepHeaders = (opts: {
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   // `invocationClientId` rides the existing `input-client-id` wire name: it is
-  // the same fact (the triggering input's publisher) scoped to the invocation.
+  // the publisher of the input that drove THIS invocation, which equals
+  // `run-client-id` — the run's owner — only when the same client published
+  // both. A continuation driven by a non-owner's input (a tool result from
+  // another client) is where the two diverge. See HEADER_INPUT_CLIENT_ID.
   if (opts.invocationClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.invocationClientId;
   if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   if (opts.reason !== undefined) h[HEADER_STEP_REASON] = opts.reason;
@@ -368,10 +372,11 @@ export const isStepLifecycleName = (name: string | undefined): name is StepLifec
  * replay so they build the event identically.
  * @param name - The inbound Ably message `name`.
  * @param headers - Transport headers from the inbound Ably message.
- * @param serial - Ably channel serial of the message, or `undefined` for an
- *   optimistic local event.
- * @param timestamp - Ably server timestamp (epoch ms), or `undefined` for an
- *   optimistic local event.
+ * @param serial - Ably channel serial of the message. `undefined` only when
+ *   the message carries none: ably-js types `InboundMessage.serial` optional,
+ *   though the platform stamps one on every delivery.
+ * @param timestamp - Ably server timestamp (epoch ms) of the message, omitted
+ *   from the returned event when absent.
  * @returns The step-lifecycle event, or `undefined` when `name` is not a
  *   step-lifecycle name, the message is missing a `run-id` or `step-id`, or a
  *   step-end is missing its `step-start-serial` back-reference.

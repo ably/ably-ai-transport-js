@@ -402,10 +402,10 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      // The missing piece sits inside content this fold already delivered, and
-      // a provider reducer can only append to an open part — so nothing is
-      // emitted, and the wire (which the update made whole) is the authority a
-      // refold reads.
+      // Nothing is emitted: a provider reducer can only append to an open
+      // part, so the alternatives are a fabricated terminal built from the
+      // stale partial or a part left streaming forever. The wire stays
+      // authoritative for a fresh decode.
       expect(outputs).toEqual([]);
       expect(warn).toHaveBeenCalledTimes(1);
 
@@ -468,6 +468,8 @@ describe('createDecoderCore', () => {
         ),
       );
 
+      // The terminal end still names the original stream. A replacement that
+      // overwrote the tiers instead of merging them would lose the id here.
       expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
   });

@@ -11,8 +11,8 @@ import {
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -73,7 +73,8 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a', {
         continuation: true,
         invocationId: 'inv-2',
-        inputCodecMessageId: 'trigger-msg',
+        inputClientId: 'user-b',
+        inputTransportMessageId: 'trigger-msg',
       });
 
       const msg = channel.publishCalls.at(0);
@@ -82,7 +83,8 @@ describe('RunManager', () => {
       // A resume carries the per-invocation correlation/attribution...
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_INVOCATION_ID]).toBe('inv-2');
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('publishes ai-run-start when continuation is false or unset', async () => {
@@ -92,25 +94,32 @@ describe('RunManager', () => {
       expect(channel.publishNames()).toEqual([EVENT_RUN_START, EVENT_RUN_START]);
     });
 
-    it('stamps input-client-id when metadata.inputClientId is set', async () => {
+    it('stamps input-client-id when inputClientId is set', async () => {
       await manager.startRun('run-1', 'user-a', { inputClientId: 'user-b' });
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     });
 
-    it('stamps input-codec-message-id when metadata.inputCodecMessageId is set', async () => {
-      await manager.startRun('run-1', 'user-a', { inputCodecMessageId: 'trigger-msg' });
-
-      const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
-    });
-
-    it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
+    it('omits input-client-id when inputClientId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
 
       const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
+    });
+
+    it('stamps input-transport-message-id when metadata.inputTransportMessageId is set', async () => {
+      await manager.startRun('run-1', 'user-a', { inputTransportMessageId: 'trigger-msg' });
+
+      const headers = headersOf(channel.publishCalls.at(0));
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
+    });
+
+    it('omits input-transport-message-id when inputTransportMessageId is unset', async () => {
+      await manager.startRun('run-1', 'user-a');
+
+      const headers = headersOf(channel.publishCalls.at(0));
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     });
   });
 
@@ -131,7 +140,12 @@ describe('RunManager', () => {
 
     it('stamps error-code and error-message on a run-end with reason error and an error', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.endRun('run-1', 'error', 'inv-1', 'user-b', new Ably.ErrorInfo('invalid x-api-key', 104008, 500));
+      await manager.endRun(
+        'run-1',
+        'error',
+        { invocationId: 'inv-1', inputClientId: 'user-a', inputTransportMessageId: 'trigger' },
+        new Ably.ErrorInfo('invalid x-api-key', 104008, 500),
+      );
 
       const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_RUN_REASON]).toBe('error');
@@ -151,7 +165,7 @@ describe('RunManager', () => {
 
     it('does not stamp error headers when an error is passed with a non-error reason', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.endRun('run-1', 'complete', undefined, undefined, new Ably.ErrorInfo('x', 104008, 500));
+      await manager.endRun('run-1', 'complete', undefined, new Ably.ErrorInfo('x', 104008, 500));
 
       const headers = headersOf(channel.publishCalls.at(1));
       expect(headers).not.toHaveProperty(HEADER_ERROR_CODE);
@@ -162,7 +176,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 
-      // The run is gone from the active set, so its owner no longer resolves.
+      // The run is gone from the active set, so its owner is no longer known.
       expect(manager.getClientId('run-1')).toBeUndefined();
     });
 
@@ -175,7 +189,7 @@ describe('RunManager', () => {
 
     it('stamps input-client-id when inputClientId is provided', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.endRun('run-1', 'complete', 'inv-1', 'user-b');
+      await manager.endRun('run-1', 'complete', { invocationId: 'inv-1', inputClientId: 'user-b' });
 
       const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
@@ -189,12 +203,32 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
 
-    it('stamps the input receipt when consideredInputIds is provided', async () => {
+    it('stamps input-transport-message-id when inputTransportMessageId is provided', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.endRun('run-1', 'complete', undefined, undefined, undefined, ['in-1', 'steer-1']);
+      await manager.endRun('run-1', 'complete', {
+        invocationId: 'inv-1',
+        inputClientId: 'user-b',
+        inputTransportMessageId: 'trigger-msg',
+      });
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
+    });
+
+    it('omits input-transport-message-id when inputTransportMessageId is unset', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete');
+
+      const headers = headersOf(channel.publishCalls.at(1));
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
+    });
+
+    it('stamps the input receipt when consideredInputIds is provided', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete', { consideredInputIds: ['in-1', 'steer-1'] });
+
+      const headers = headersOf(channel.publishCalls.at(1));
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
     });
 
     it('omits the input receipt when consideredInputIds is unset', async () => {
@@ -202,14 +236,14 @@ describe('RunManager', () => {
       await manager.endRun('run-1', 'complete');
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_IDS);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_IDS);
     });
   });
 
   describe('suspendRun', () => {
     it('publishes a run-suspend event with run-id, run-client-id, and invocation-id', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.suspendRun('run-1', 'inv-1');
+      await manager.suspendRun('run-1', { invocationId: 'inv-1' });
 
       expect(channel.publishCalls).toHaveLength(2);
       const msg = channel.publishCalls.at(1);
@@ -231,28 +265,43 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INVOCATION_ID);
     });
 
-    it('stamps the input receipt when consideredInputIds is provided', async () => {
+    it('stamps input attribution, mirroring run-end', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.suspendRun('run-1', 'inv-1', undefined, ['in-1', 'steer-1']);
+      await manager.suspendRun('run-1', {
+        invocationId: 'inv-1',
+        inputClientId: 'user-b',
+        inputTransportMessageId: 'trigger-msg',
+      });
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
-    it('omits the input receipt when not provided', async () => {
+    it('stamps the input receipt when consideredInputIds is provided', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.suspendRun('run-1', 'inv-1');
+      await manager.suspendRun('run-1', { invocationId: 'inv-1', consideredInputIds: ['in-1', 'steer-1'] });
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_IDS);
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
+    });
+
+    it('omits input attribution when not provided', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.suspendRun('run-1', { invocationId: 'inv-1' });
+
+      const headers = headersOf(channel.publishCalls.at(1));
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_IDS);
     });
 
     it('drops the run from the active set', async () => {
       await manager.startRun('run-1', 'user-a');
-      await manager.suspendRun('run-1', 'inv-1');
+      await manager.suspendRun('run-1', { invocationId: 'inv-1' });
 
       // The agent process terminates on suspend; the run is dropped, so its
-      // owner no longer resolves. The resuming invocation re-registers it.
+      // owner is no longer known.
       expect(manager.getClientId('run-1')).toBeUndefined();
     });
 
@@ -301,16 +350,18 @@ describe('RunManager', () => {
       expect(stepStartSerial).toBeUndefined();
     });
 
-    it('forwards the invocation correlation and the client-identity scopes onto the wire', async () => {
+    it('forwards the invocation correlation and the three client-identity scopes onto the wire', async () => {
       await manager.startStep('run-1', 'step-0', {
         invocationId: 'inv-1',
         runClientId: 'owner',
+        invocationClientId: 'invoker',
         stepClientId: 'stepper',
       });
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
       expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
     });
   });
@@ -333,6 +384,7 @@ describe('RunManager', () => {
       await manager.endStep('run-1', 'step-0', 'serial-1', 'complete', {
         invocationId: 'inv-1',
         runClientId: 'owner',
+        invocationClientId: 'invoker',
         stepClientId: 'stepper',
       });
 
@@ -340,6 +392,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_STEP_REASON]).toBe('complete');
       expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
       expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
     });
   });

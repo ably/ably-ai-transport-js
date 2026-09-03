@@ -13,6 +13,7 @@ import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
   EVENT_STEP_END,
@@ -120,6 +121,10 @@ describe('classifyWireMessage', () => {
     { desc: 'a step name missing its identifiers', opts: { name: EVENT_STEP_END, headers: { [HEADER_RUN_ID]: 'R1' } } },
     { desc: 'a wire-only carrier that decodes to nothing and carries no run-id', opts: { headers: {} } },
     { desc: 'a wire-only carrier whose run-id is an empty string', opts: { headers: { [HEADER_RUN_ID]: '' } } },
+    // A cancel carries a run-id, so the wire-only test below would let it
+    // through as an empty message event. It is transport control, and the
+    // agent's cancel router reads the raw message rather than this event.
+    { desc: 'a cancel, which carries a run-id', opts: { name: EVENT_CANCEL, headers: { [HEADER_RUN_ID]: 'R1' } } },
   ])('returns undefined for $desc', ({ opts }) => {
     const event = classifyWireMessage(makeDecoder([], []), msg(opts));
     expect(event).toBeUndefined();

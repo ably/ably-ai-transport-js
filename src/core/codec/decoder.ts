@@ -6,12 +6,12 @@
  * event decoding. Stream trackers are version-guarded: a delivery whose
  * `Message.version.serial` the tracker has already incorporated decodes to
  * nothing, so the same decoder instance can serve both the live
- * subscription and a backwards history walk without double-decoding.
+ * subscription and history hydration without double-decoding.
  *
  * Domain decoders call `createDecoderCore(hooks)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
  * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
- * concerns (`codec-message-id`) are surfaced by the transport via `WireMeta`, not
+ * concerns (`transport-message-id`) are surfaced by the transport via `WireMeta`, not
  * here.
  */
 
@@ -144,7 +144,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
    *   the mutation it describes is already incorporated (a history aggregate
    *   covered by live deltas, a resume retransmission, a whole-wire replay).
    * - The tracker is closed — the stream has ended and its accumulated text
-   *   has been dropped, so nothing further can fold into it. In-contract
+   *   has been dropped, so nothing further can merge into it. In-contract
    *   replays are already covered by the version check; this catches
    *   out-of-contract version-less deliveries for an ended stream.
    *
@@ -365,14 +365,26 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     }
 
     // --- Replacement (NOT a prefix match) ---
-    // The payload diverged from what this decoder accumulated: the missing
-    // piece sits inside content this fold already delivered, and a provider
-    // reducer can only append to an open part, so no emittable delta exists.
-    // The wire itself is whole (an update replaces the message data), so a
-    // fresh decode — history, or a refold — yields the full content. This live
-    // fold delivers nothing; it swaps its baseline so later appends extend the
-    // update's content, and a terminal status still closes the group so the
-    // consumer's open part ends rather than staying open forever.
+    // The payload diverged from what this decoder accumulated, so no delta
+    // describes the change. No delta is emitted, and that is deliberate.
+    //
+    // A provider reducer can only append to an open part, so there are three
+    // things this could do and two of them corrupt the consumer's view:
+    //
+    //   - Close the open group, then re-open it carrying the new content. The
+    //     close is built from what the tracker holds, and a content-bearing
+    //     end (Vercel's `tool-input-available`, OpenAI's `arguments`) would
+    //     claim the stale partial as complete. A truncated tool-call argument
+    //     presented as final is worse than no update at all.
+    //   - Re-open without closing. The consumer's existing part never ends, so
+    //     it streams forever.
+    //   - Emit no delta, and keep the live view on the content it already has.
+    //
+    // So: swap the baseline so later appends extend the update's content, and
+    // let a terminal status still close the group rather than leaving the part
+    // open. The wire itself is whole, because an update replaces the message
+    // data, so a fresh decode — history, or a re-merge with a new decoder —
+    // yields the full content.
     const priorLength = tracker.accumulated.length;
     tracker.accumulated = data;
     // Merge rather than replace: the identity keys (the group kind, the stream
@@ -381,12 +393,15 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     tracker.codecHeaders = { ...tracker.codecHeaders, ...codec };
     tracker.transportHeaders = { ...tracker.transportHeaders, ...transport };
 
-    this._logger?.warn('DefaultDecoderCore._decodeUpdate(); non-prefix replacement, content dropped', {
-      serial,
-      streamId: tracker.streamId,
-      priorLength,
-      replacementLength: data.length,
-    });
+    this._logger?.warn(
+      'DefaultDecoderCore._decodeUpdate(); non-prefix replacement, baseline swapped, no delta emitted',
+      {
+        serial,
+        streamId: tracker.streamId,
+        priorLength,
+        replacementLength: data.length,
+      },
+    );
 
     const outputs: TEvent[] = [];
     this._applyTerminalStatus(tracker, status, tracker.codecHeaders, outputs);

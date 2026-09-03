@@ -17,12 +17,14 @@ export type {
   ReceiveTransport,
   RunEndParams,
   RunEndReason,
+  RunEndResult,
   RunLifecycleEvent,
   RunStepTransport,
   SteerOutcome,
   SteerResult,
   StepEndParams,
   StepEndReason,
+  StepEndResult,
   StepLifecycleEvent,
   StepOptions,
   StreamResult,
@@ -39,8 +41,11 @@ export {
   createReceiveTransport,
 } from './core/transport/index.js';
 
-// Channel modes
-export { AIT_BASE_MODES, OBJECT_MODES } from './core/channel-options.js';
+// Channel resolution for a caller-owned channel: the SDK's channel agent
+// param and the mode-set union, for an application that resolves its own
+// channel with `client.channels.get(name, options)`.
+export { channelAgent } from './core/agent.js';
+export { OBJECT_MODES, resolveChannelModes } from './core/channel-options.js';
 
 // Core codec
 export type {
@@ -102,7 +107,6 @@ export {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_INPUT_CLIENT_ID,
@@ -113,6 +117,7 @@ export {
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from './constants.js';
 
 // Utilities

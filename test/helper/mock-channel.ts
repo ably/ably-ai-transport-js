@@ -81,7 +81,8 @@ export const createMockChannel = (pages: Ably.InboundMessage[][] = []): MockChan
       // per-message and per-publish serials stay deterministic.
       const messages = Array.isArray(msg) ? msg : [msg];
       mock.publishCalls.push(...messages);
-      return { serials: messages.map(() => `serial-${String(mock.publishCalls.length)}`) };
+      const base = mock.publishCalls.length - messages.length;
+      return { serials: messages.map((_msg, index) => `serial-${String(base + index + 1)}`) };
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
     subscribe: vi.fn(async (listener: (msg: Ably.InboundMessage) => void): Promise<void> => {

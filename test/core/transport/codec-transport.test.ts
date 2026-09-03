@@ -19,7 +19,7 @@
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { HEADER_INPUT_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { HEADER_INPUT_TRANSPORT_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import { createAgentTransport } from '../../../src/core/transport/agent-transport.js';
 import { createClientTransport } from '../../../src/core/transport/client-transport.js';
 import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
@@ -170,7 +170,7 @@ describe('codec and transport composed', () => {
     // not pinned: without a located input, pinning it means "continue this run"
     // and publishes `ai-run-resume`, which carries no input correlation.
     relay(clientChannel, agentChannel, 'user-1');
-    const run = agent.openRun({ inputCodecMessageId: sent.codecMessageId });
+    const run = agent.openRun({ inputTransportMessageId: sent.transportMessageId });
     await flushMicrotasks();
     relay(agentChannel, clientChannel, 'agent-1');
 
@@ -180,8 +180,8 @@ describe('codec and transport composed', () => {
     const start = agentChannel.publishCalls.find((m) => m.name === 'ai-run-start');
     if (!start) throw new Error('no run-start published');
     // CAST: getTransportHeaders reads only `extras`, which the published message carries.
-    expect(getTransportHeaders(start as unknown as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(
-      sent.codecMessageId,
+    expect(getTransportHeaders(start as unknown as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe(
+      sent.transportMessageId,
     );
   });
 });

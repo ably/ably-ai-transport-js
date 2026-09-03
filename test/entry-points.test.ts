@@ -1,7 +1,7 @@
 /**
  * Guards what each public entry point publishes.
  *
- * The package ships three entry points and each one's `index.ts` is the
+ * The package ships four entry points and each one's `index.ts` is the
  * authoritative list of its public API. The codec suites cannot catch a
  * mis-wired barrel because they import the internal modules directly and never
  * exercise the entry points, so an export that goes missing surfaces only in a
@@ -22,18 +22,43 @@
  * is `pnpm run build`'s job, which fails if a declared subpath has no bundle.
  */
 
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
 import type { TransportEvent, WireMeta } from '../src/index.js';
-import { AIT_BASE_MODES, createAgentTransport, createClientTransport, OBJECT_MODES } from '../src/index.js';
+import {
+  channelAgent,
+  createAgentTransport,
+  createClientTransport,
+  OBJECT_MODES,
+  resolveChannelModes,
+} from '../src/index.js';
 import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../src/openai/index.js';
 import { ResponsesCodec } from '../src/openai/index.js';
+import type {
+  ClientTransportHandle,
+  ClientTransportProviderProps,
+  UseAblyMessagesOptions,
+  UseClientTransportOptions,
+  UseTransportEventsOptions,
+} from '../src/react/index.js';
+import {
+  ClientTransportProvider,
+  useAblyMessages,
+  useClientTransport,
+  useTransportEvents,
+} from '../src/react/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
 
-/** The complete surface of a wire codec. Anything else is message assembly. */
-const WIRE_CODEC_KEYS = ['createDecoder', 'createEncoder'];
+/**
+ * Every key a wire codec may carry. The assertion reports any key outside
+ * this set, so a codec that grows a new surface fails here until the set is
+ * widened deliberately — which is the point: message assembly moving back
+ * inside the SDK is the boundary this design exists to hold.
+ */
+const WIRE_CODEC_KEYS = new Set(['adapterTag', 'createDecoder', 'createEncoder']);
 
 describe('@ably/ai-transport', () => {
   it('publishes the two transport factories', () => {
@@ -41,22 +66,30 @@ describe('@ably/ai-transport', () => {
     expect(createAgentTransport).toBeTypeOf('function');
   });
 
-  it('publishes both halves of the channel-mode recipe a caller needs', () => {
+  it('publishes the channel-mode recipe a caller needs', () => {
     // A caller resolves its own channel, and setting any mode replaces the
-    // server default rather than adding to it — so requesting object access
-    // means naming the base set too. Both constants have to be reachable.
-    expect([...AIT_BASE_MODES, ...OBJECT_MODES]).toEqual([
+    // server default rather than adding to it, so asking for object access
+    // means asking for the base set too. resolveChannelModes does that union
+    // in a fixed order, so two resolutions compare equal and ably-js sees no
+    // mode change to reattach for.
+    expect(resolveChannelModes(OBJECT_MODES)).toEqual([
       'PUBLISH',
       'SUBSCRIBE',
       'PRESENCE',
       'PRESENCE_SUBSCRIBE',
-      'ANNOTATION_PUBLISH',
-      'OBJECT_SUBSCRIBE',
       'OBJECT_PUBLISH',
+      'OBJECT_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
     ]);
+    // No extras means no mode flags on the wire, so the server default applies.
+    expect(resolveChannelModes()).toBeUndefined();
   });
 
-  it('publishes the types a consumer needs to fold the event stream itself', () => {
+  it('publishes the agent string a caller stamps on its channel', () => {
+    expect(channelAgent()).toMatch(/^ai-transport-js\/\d+\.\d+\.\d+$/);
+  });
+
+  it('publishes the types a consumer needs to merge the event stream itself', () => {
     // Spelled in full, with no cast: a new required field on WireMeta should
     // fail the typecheck here rather than pass silently.
     const meta: WireMeta = {
@@ -64,7 +97,7 @@ describe('@ably/ai-transport', () => {
       codec: {},
       headers: {},
       serial: 's-1',
-      codecMessageId: 'cmid-1',
+      transportMessageId: 'tmid-1',
       runId: 'run-1',
       stepId: undefined,
       stepStartSerial: undefined,
@@ -74,9 +107,9 @@ describe('@ably/ai-transport', () => {
       messageName: 'ai-output',
       versionSerial: 'v-1',
       versionTimestamp: 1,
-      inputCodecMessageId: undefined,
-      inputCodecMessageIds: undefined,
-      steerCodecMessageIds: undefined,
+      inputTransportMessageId: undefined,
+      inputTransportMessageIds: undefined,
+      steerTransportMessageIds: undefined,
     };
     const event: TransportEvent<VercelInput, VercelOutput> = { kind: 'message', meta, inputs: [], outputs: [] };
 
@@ -91,9 +124,50 @@ describe.each([
   it('publishes a wire codec that encodes and decodes, and nothing more', () => {
     const codec = build();
 
-    expect(Object.keys(codec).toSorted()).toEqual(WIRE_CODEC_KEYS);
+    // Subset plus required, because adapterTag is optional: a codec that opts
+    // out of agent registration carries only the two functions.
+    const unexpected = Object.keys(codec).filter((key) => !WIRE_CODEC_KEYS.has(key));
+
+    expect(unexpected, 'a wire codec carries encode, decode, and its adapter tag').toEqual([]);
     expect(codec.createDecoder()).toBeDefined();
     expect(typeof codec.createEncoder).toBe('function');
+  });
+});
+
+describe('@ably/ai-transport/react', () => {
+  it('publishes the provider and the three hooks', () => {
+    // The codec suites never import this barrel, so a dropped export would
+    // otherwise surface only in a consumer's build.
+    expect(ClientTransportProvider).toBeTypeOf('function');
+    expect(useClientTransport).toBeTypeOf('function');
+    expect(useTransportEvents).toBeTypeOf('function');
+    expect(useAblyMessages).toBeTypeOf('function');
+  });
+
+  it("publishes the types a caller needs to name a hook's options and handle", () => {
+    // Spelled on locals: dropping a type export fails the typecheck here
+    // rather than in a consumer's build.
+    const options: UseClientTransportOptions = {};
+    const eventOptions: UseTransportEventsOptions = {};
+    const messageOptions: UseAblyMessagesOptions = {};
+    const handle: ClientTransportHandle = { transport: undefined, error: undefined };
+    const providerProps: ClientTransportProviderProps<unknown, unknown> = {
+      channelName: 'ai:test',
+      codec: {} as never,
+    };
+
+    expect([options, eventOptions, messageOptions]).toEqual([{}, {}, {}]);
+    expect(handle.transport).toBeUndefined();
+    expect(providerProps.channelName).toBe('ai:test');
+  });
+
+  it('re-publishes the error vocabulary a consumer of this entry point switches on', async () => {
+    // The entry point produces ErrorInfo values, so a consumer of it needs the
+    // codes without reaching into a second import path.
+    const react = await import('../src/react/index.js');
+
+    expect(react.errorInfoIs(new Ably.ErrorInfo('x', react.ErrorCode.InvalidArgument, 400), 40003)).toBe(true);
+    expect(react.OBJECT_MODES).toEqual(['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']);
   });
 });
 

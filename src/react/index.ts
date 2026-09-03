@@ -1,0 +1,10 @@
+export { OBJECT_MODES } from '../core/channel-options.js';
+export { ErrorCode, errorInfoIs } from '../errors.js';
+export type { ClientTransportProviderProps } from './contexts/client-transport-provider.js';
+export { ClientTransportProvider } from './contexts/client-transport-provider.js';
+export type { ClientTransportHandle, UseClientTransportOptions } from './use-client-transport.js';
+export { useClientTransport } from './use-client-transport.js';
+export type { UseAblyMessagesOptions } from './use-transport-ably-messages.js';
+export { useAblyMessages } from './use-transport-ably-messages.js';
+export type { UseTransportEventsOptions } from './use-transport-events.js';
+export { useTransportEvents } from './use-transport-events.js';

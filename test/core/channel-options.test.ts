@@ -1,33 +1,77 @@
 /**
- * Unit tests for the channel-mode constants.
+ * Unit tests for the shared channel-mode resolver.
  *
- * A transport is handed a channel the caller already resolved, so these
- * constants are the whole contract: `AIT_BASE_MODES` must stay byte-for-byte
- * the server's default mode set, because a caller adding `OBJECT_MODES` relies
- * on the union granting everything the default would have. Setting `modes` on
- * an ATTACH replaces the server default rather than adding to it, so a drift
- * here silently revokes access the caller never asked to lose.
+ * Covers: opt-out (undefined when no extra modes), union with the base set,
+ * de-duplication, canonical ordering, and determinism across calls — the
+ * properties `<ClientTransportProvider>` and the `<ChannelProvider>` it renders
+ * rely on to request identical modes and avoid spurious reattaches.
  */
 
+import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { AIT_BASE_MODES, OBJECT_MODES } from '../../src/core/channel-options.js';
+import { OBJECT_MODES, resolveChannelModes } from '../../src/core/channel-options.js';
 
-describe('AIT_BASE_MODES', () => {
-  it('is exactly the server default mode set', () => {
-    expect(AIT_BASE_MODES).toEqual(['PUBLISH', 'SUBSCRIBE', 'PRESENCE', 'PRESENCE_SUBSCRIBE', 'ANNOTATION_PUBLISH']);
-  });
-});
-
-describe('OBJECT_MODES', () => {
-  it('is the pair of modes LiveObjects needs', () => {
-    expect(OBJECT_MODES).toEqual(['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']);
+describe('resolveChannelModes', () => {
+  it('returns undefined when no extra modes are requested', () => {
+    expect(resolveChannelModes()).toBeUndefined();
+    expect(resolveChannelModes([])).toBeUndefined();
   });
 
-  it('adds to the base set without overlapping it', () => {
-    // An overlap would make the union order- and duplicate-sensitive against
-    // ably-js's own mode comparison, which is what causes reattach churn.
-    const union = [...AIT_BASE_MODES, ...OBJECT_MODES];
-    expect(new Set(union).size).toBe(union.length);
+  it('unions the base modes with the requested extras', () => {
+    const resolved = resolveChannelModes(OBJECT_MODES);
+    // Every base mode and every object mode must be present.
+    // The base set is internal now: a caller only ever sees it through the
+    // resolver, so assert the server-default modes by name rather than
+    // re-exporting the constant just for this.
+    const baseModes = ['PUBLISH', 'SUBSCRIBE', 'PRESENCE', 'PRESENCE_SUBSCRIBE', 'ANNOTATION_PUBLISH'] as const;
+    for (const mode of [...baseModes, ...OBJECT_MODES]) {
+      expect(resolved).toContain(mode);
+    }
+  });
+
+  it('emits the object-enabled set in canonical order', () => {
+    expect(resolveChannelModes(OBJECT_MODES)).toEqual([
+      'PUBLISH',
+      'SUBSCRIBE',
+      'PRESENCE',
+      'PRESENCE_SUBSCRIBE',
+      'OBJECT_PUBLISH',
+      'OBJECT_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
+    ]);
+  });
+
+  it('de-duplicates modes already present in the base set', () => {
+    const resolved = resolveChannelModes(['PUBLISH', 'OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']);
+    const publishCount = resolved?.filter((mode) => mode === 'PUBLISH').length;
+    expect(publishCount).toBe(1);
+  });
+
+  it('produces an identical array regardless of the order of the extras', () => {
+    const a = resolveChannelModes(['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']);
+    const b = resolveChannelModes(['OBJECT_PUBLISH', 'OBJECT_SUBSCRIBE']);
+    expect(a).toEqual(b);
+  });
+
+  it('does not include object modes when only base modes are requested', () => {
+    const resolved = resolveChannelModes(['PRESENCE']);
+    expect(resolved).not.toContain('OBJECT_SUBSCRIBE');
+    expect(resolved).not.toContain('OBJECT_PUBLISH');
+  });
+
+  it('appends modes outside the canonical order after the canonical modes, alphabetically', () => {
+    // Lowercase aliases are valid ChannelMode values but are not in the
+    // canonical uppercase order; they must still resolve deterministically.
+    const extras: Ably.ChannelMode[] = ['object_subscribe', 'annotation_subscribe'];
+    expect(resolveChannelModes(extras)).toEqual([
+      'PUBLISH',
+      'SUBSCRIBE',
+      'PRESENCE',
+      'PRESENCE_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
+      'annotation_subscribe',
+      'object_subscribe',
+    ]);
   });
 });

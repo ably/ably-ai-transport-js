@@ -1,9 +1,9 @@
 /**
- * The shared backward history pager both transports delegate `history()` to:
- * a lazily opened `untilAttach` cursor, advanced by one caller at a time
- * under a single-flight tail chain, each call classifying the next older
- * slice via {@link walkHistoryBatch} on the live stream's decoder — so a
- * message the live route already folded contributes no duplicate events.
+ * The shared per-transport history pager: the lazily opened backward cursor
+ * plus the single-flight chain both transports run their `history()` calls
+ * through. The pager owns the cursor's lifetime and the serialisation; the
+ * walk itself lives in {@link walkHistoryBatch}, and the caller supplies the
+ * channel, page size, decoder, and decode-failure surface.
  */
 
 import * as Ably from 'ably';
@@ -11,71 +11,84 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import type { Decoder } from '../codec/types.js';
+import type { WalkHistoryBatchContext } from './history-walk.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
-import type { TransportHistoryOptions, TransportHistoryResult } from './types.js';
+import type { TransportHistoryOptions, TransportHistoryResult } from './types/transport.js';
 
 /**
- * Dependencies for {@link createHistoryPager}.
- * @template TInput - The codec's input-event domain type.
- * @template TOutput - The codec's output-event domain type.
+ * Default wire-message limit per Ably history page, used when a transport's
+ * `historyPageSize` option is unset. Over-provisions for the
+ * many-Ably-messages-per-domain-message ratio so a single round trip usually
+ * covers several domain messages.
  */
+export const DEFAULT_HISTORY_PAGE_SIZE = 100;
+
+/** Constructor options for {@link HistoryPager}. */
 export interface HistoryPagerOptions<TInput, TOutput> {
   /** The channel whose history to page. */
   channel: Ably.RealtimeChannel;
-  /** The decoder to classify pages with — the live stream's own, so the two routes share dedup state. */
+  /** Wire-message limit per Ably page. */
+  pageSize: number;
+  /** The decoder to classify wires on — the transport's live decoder, so a stream spanning the attach boundary is decoded once. */
   decoder: Decoder<TInput, TOutput>;
-  /** Wire-message limit per history page. */
-  pageLimit: number;
   /** Logger for diagnostics. */
-  logger: Logger;
-  /**
-   * Called with each decode failure while classifying a page; the failing
-   * message is skipped and the walk continues, matching the live fold.
-   * @param err - The wrapped decode failure.
-   */
-  onDecodeError(err: Ably.ErrorInfo): void;
-}
-
-/** The pager returned by {@link createHistoryPager}. */
-export interface HistoryPager<TInput, TOutput> {
-  /**
-   * Fetch and classify the next older slice of channel history. Calls are
-   * single-flight: each links behind the previous so the shared cursor is
-   * never paged concurrently, and a link's failure is its own caller's to
-   * observe.
-   * @param opts - The caller's batch bounds.
-   * @returns The batch of classified events and the exhaustion flag.
-   */
-  next(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>>;
+  logger?: Logger;
+  /** Called with each wrapped decode failure (see {@link walkHistoryBatch}). */
+  onDecodeError?: (err: Ably.ErrorInfo) => void;
 }
 
 /**
- * Create the shared backward history pager over a channel and the live
- * stream's decoder. The cursor is opened lazily on the first call (capturing
- * the attach serial then) with `untilAttach: true`.
- * @param options - See {@link HistoryPagerOptions}.
- * @returns The pager.
+ * One transport's history pager. `next()` returns the next older slice as a
+ * classified batch. The backward cursor opens lazily on the first call
+ * (capturing the attach serial then) and is advanced by one caller at a time:
+ * each call links behind the current tail, and a link's failure is its own
+ * caller's to observe — a follower is isolated from a prior link's rejection.
  */
-export const createHistoryPager = <TInput, TOutput>(
-  options: HistoryPagerOptions<TInput, TOutput>,
-): HistoryPager<TInput, TOutput> => {
-  const { channel, decoder, pageLimit, logger } = options;
+export class HistoryPager<TInput, TOutput> {
+  private readonly _channel: Ably.RealtimeChannel;
+  private readonly _pageSize: number;
+  private readonly _decoder: Decoder<TInput, TOutput>;
+  private readonly _logger: Logger | undefined;
+  private readonly _onDecodeError: WalkHistoryBatchContext<TInput, TOutput>['onDecodeError'];
+  /** The lazily opened backward cursor; `undefined` until the first walk. */
+  private _cursor: HistoryPagesCursor | undefined;
+  /** Tail of the single-flight chain — always a settled or in-flight void promise. */
+  private _tail: Promise<void> = Promise.resolve();
+
+  constructor(options: HistoryPagerOptions<TInput, TOutput>) {
+    this._channel = options.channel;
+    this._pageSize = options.pageSize;
+    this._decoder = options.decoder;
+    this._logger = options.logger;
+    this._onDecodeError = options.onDecodeError;
+  }
 
   /**
-   * The shared backward cursor, opened lazily on the first call and advanced
-   * by one caller at a time under the tail chain below.
+   * Fetch and classify the next older slice of channel history, serialised
+   * behind any in-flight call.
+   * @param opts - The caller's batch bounds; see {@link TransportHistoryOptions}.
+   * @returns The batch of classified events and the exhaustion flag.
    */
-  let cursor: HistoryPagesCursor | undefined;
-  /**
-   * Tail of the single-flight chain. Each call links behind the current tail
-   * so the cursor is never paged concurrently. A link's failure is its own to
-   * throw — the tail stores a settled void promise, so a follower is isolated
-   * from a prior link's rejection.
-   */
-  let tail: Promise<void> = Promise.resolve();
+  // The tail advances before the first `await`, so a concurrent caller always
+  // links behind this call rather than racing it.
+  async next(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
+    const prev = this._tail;
+    const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
+      await prev;
+      return this._walk(opts);
+    })();
+    this._tail = (async (): Promise<void> => {
+      try {
+        await mine;
+      } catch {
+        /* a link's failure is its own caller's to observe */
+      }
+    })();
+    return mine;
+  }
 
-  const walk = async (opts: TransportHistoryOptions | undefined): Promise<TransportHistoryResult<TInput, TOutput>> => {
+  private async _walk(opts: TransportHistoryOptions | undefined): Promise<TransportHistoryResult<TInput, TOutput>> {
     // Check before the cursor is opened, so an already-aborted call costs no
     // attach and no page fetch. The signal is deliberately not bound to the
     // cursor: it is shared across calls, and an aborted signal would wedge its
@@ -84,41 +97,19 @@ export const createHistoryPager = <TInput, TOutput>(
     if (opts?.signal?.aborted) {
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
-    cursor ??= await loadHistoryPages(channel, {
-      pageLimit,
+    this._cursor ??= await loadHistoryPages(this._channel, {
+      pageLimit: this._pageSize,
       untilAttach: true,
-      logger,
+      logger: this._logger,
     });
     return walkHistoryBatch(
       {
-        cursor,
-        decoder,
-        logger,
-        onDecodeError: (err) => {
-          options.onDecodeError(err);
-        },
+        cursor: this._cursor,
+        decoder: this._decoder,
+        logger: this._logger,
+        ...(this._onDecodeError === undefined ? {} : { onDecodeError: this._onDecodeError }),
       },
       opts,
     );
-  };
-
-  return {
-    next: async (opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> => {
-      // Link behind the tail so the shared cursor is advanced by one caller
-      // at a time; a prior link's failure is its own to throw.
-      const prev = tail;
-      const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
-        await prev;
-        return walk(opts);
-      })();
-      tail = (async (): Promise<void> => {
-        try {
-          await mine;
-        } catch {
-          /* a link's failure is its own caller's to observe */
-        }
-      })();
-      return mine;
-    },
-  };
-};
+  }
+}

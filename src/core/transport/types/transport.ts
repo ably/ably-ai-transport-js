@@ -2,10 +2,9 @@
  * Transport-layer types: the send-side client/agent surfaces and the
  * receive-side event stream.
  *
- * These are the public boundary a developer builds on: publish and subscribe to
- * codec events with run and step bracketing, and fold those events into
- * application state of their own. Every consumer reads the same event stream on
- * equal terms, and the transport keeps no conversation state.
+ * These are the transport's public boundary: publish and subscribe to codec
+ * events with run/step bracketing, and merge those events into the
+ * application's own state.
  */
 
 import type * as Ably from 'ably';
@@ -24,22 +23,23 @@ import type { SteerResult } from './steer.js';
  *
  * The transport reads these fields off the `extras.ai.transport` header tier
  * (and the message's own Ably fields) but never interprets
- * `inputCodecMessageId` — it is carried verbatim for the consumer. Every typed
- * field is optional: a given wire message populates only the fields its message
- * name and headers carry.
+ * `inputTransportMessageId` — it is carried verbatim for a consumer
+ * correlating a run to its trigger; the application interprets it. Every
+ * typed field is optional: a given wire message populates only the fields its
+ * message name and headers carry.
  *
- * The typed fields are a convenience reading of the two raw header buckets.
+ * The typed fields are a convenience projection of the two raw header buckets.
  * {@link transport} and {@link codec} carry the complete `extras.ai.transport`
  * and `extras.ai.codec` tiers verbatim, so a consumer rebuilding conversation
- * state has full fidelity, and every consumer reads the same wire on the same
- * terms.
+ * state has full fidelity and no consumer needs privileged access to the raw
+ * wire.
  */
 export interface WireMeta {
   /**
    * The complete `extras.ai.transport` header tier, verbatim. The transport
-   * writes and reads run/step/structure headers here, and a consumer folding a
-   * message reads this bucket. Empty object when the wire carried no transport
-   * tier.
+   * writes and reads run and step headers here; a consumer merges a
+   * message by reading this bucket. Empty object when the wire carried no
+   * transport tier.
    */
   transport: Record<string, string>;
   /**
@@ -55,57 +55,52 @@ export interface WireMeta {
    * none.
    */
   headers: Record<string, string>;
-  /**
-   * Ably channel serial of the message. Stable for the message's whole life: an
-   * append does not advance it, so every delivery of one streamed message
-   * carries the same value here and {@link versionSerial} is what tells them
-   * apart. `undefined` for an optimistic local echo (no serial assigned yet).
-   */
+  /** Ably channel serial of the message. Present on every wire-delivered event; `undefined` only for a locally synthesised event a consumer constructs itself. */
   serial: string | undefined;
-  /** The `codec-message-id` header — the logical message this event belongs to, or `undefined` when the wire carried none. */
-  codecMessageId: string | undefined;
+  /** The `transport-message-id` header — the logical message this event belongs to, or `undefined` when the wire carried none. */
+  transportMessageId: string | undefined;
   /** The `run-id` header — the run this message was published under, or `undefined` for a run-less user input. */
   runId: string | undefined;
   /** The `step-id` header — the step attempt that published this output, or `undefined` when the message belonged to no step. */
   stepId: string | undefined;
   /** The `step-start-serial` header — the identity of the step attempt (the serial of its `ai-step-start`), or `undefined` when the message belonged to no step. */
   stepStartSerial: string | undefined;
-  /** Ably server timestamp (epoch ms) of the message, or `undefined` for an optimistic local echo. */
+  /** Ably server timestamp (epoch ms) of the message, or `undefined` for a locally synthesised event. */
   timestamp: number | undefined;
   /** The `role` header (e.g. `"user"`, `"assistant"`), or `undefined` when the wire carried none. */
   role: string | undefined;
   /** The publisher's Ably `clientId`, or `undefined` for an anonymous / wildcard connection. */
   clientId: string | undefined;
-  /** The Ably message name (e.g. `ai-input`, `ai-output`), or `undefined` for an optimistic local echo. */
+  /** The Ably message name (e.g. `ai-input`, `ai-output`), or `undefined` when the platform did not echo it (appends). */
   messageName: string | undefined;
   /**
-   * The append version serial (`version.serial`) — the per-delivery identity an
-   * appending stream advances, and the only field that distinguishes one
-   * delivery of a streamed message from the next. A consumer deduping wire
-   * deliveries MUST key on this, never on {@link serial}, which every append of
-   * one message shares. `undefined` for an optimistic local echo.
+   * The append version serial (`version.serial`) — the per-delivery identity
+   * an appending stream advances. A consumer deduping whole-wire replays keys
+   * its high-water-mark on this; a
+   * transport-only consumer can ignore it. `undefined` for a locally
+   * synthesised event.
    */
   versionSerial: string | undefined;
-  /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for an optimistic local echo. */
+  /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for a locally synthesised event. */
   versionTimestamp: number | undefined;
-  /** Header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; the consumer interprets it. */
-  inputCodecMessageId: string | undefined;
+  /** The `input-transport-message-id` header — the transport-message-id of the input that triggered this run. Carried verbatim; the application interprets it. */
+  inputTransportMessageId: string | undefined;
   /**
-   * The parsed `input-codec-message-ids` bracket receipt — on an
-   * `ai-run-end` / `ai-run-suspend` event, the codec-message-ids of every
+   * The parsed `input-transport-message-ids` bracket receipt — on an
+   * `ai-run-end` / `ai-run-suspend` event, the transport-message-ids of every
    * input the run's output considered (trigger + stamped steers).
    * `undefined` on other messages, when the run produced no output, or when
    * the header is malformed (the raw value stays on {@link transport}).
    * Resolve "was this input processed?" by id membership.
    */
-  inputCodecMessageIds: string[] | undefined;
+  inputTransportMessageIds: string[] | undefined;
   /**
-   * The parsed `steer-codec-message-ids` stamp — the steer codec-message-ids
+   * The parsed `steer-transport-message-ids` stamp — the steer transport-message-ids
    * the agent drained before the step attempt that produced this output, or
    * `undefined` when the wire carried no stamp (a malformed stamp degrades to
    * `undefined`; the raw value stays on {@link transport}).
    */
-  steerCodecMessageIds: string[] | undefined;
+  steerTransportMessageIds: string[] | undefined;
 }
 
 /**
@@ -148,7 +143,7 @@ export type TransportEvent<TInput, TOutput> =
  * The receive side of the transport: a decoded event stream a consumer
  * subscribes to. Each inbound wire message produces at most one typed
  * {@link TransportEvent} (emitted before the raw `ably-message`), so a consumer
- * rebuilds conversation state itself — keyed by codec-message-id, grouped by
+ * can rebuild conversation state itself — keyed by transport-message-id, grouped by
  * run, deduped by step.
  *
  * Delivery is synchronous and in registration order: each event reaches every
@@ -168,17 +163,19 @@ export interface TransportReceiver<TInput, TOutput> {
   on(event: 'event', handler: (e: TransportEvent<TInput, TOutput>) => void): () => void;
   /**
    * Subscribe to the raw inbound Ably messages, emitted AFTER the matching
-   * typed `event` so a handler sees state any earlier subscriber folded.
+   * typed `event` so a handler sees state any earlier subscriber merged.
    * @param event - The literal `'ably-message'`.
    * @param handler - Called with each raw inbound Ably message.
    * @returns An unsubscribe function.
    */
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   /**
-   * Subscribe to receive-stream errors: channel/subscription failures and codec
-   * decode failures, each an `Ably.ErrorInfo` with a distinguishing `code`. A
-   * single decode failure drops that one message and emits the error rather
-   * than tearing down the stream.
+   * Subscribe to receive-stream errors: channel/subscription failures, codec
+   * decode failures, and (on the client transport) channel continuity loss —
+   * each an `Ably.ErrorInfo` with a distinguishing `code`. A single decode
+   * failure drops that one message and emits the error rather than tearing
+   * down the stream; a `SessionContinuityNotGuaranteed` error means live delivery may
+   * silently have gaps until the consumer re-hydrates.
    * @param event - The literal `'error'`.
    * @param handler - Called with each error.
    * @returns An unsubscribe function.
@@ -192,39 +189,44 @@ export interface TransportReceiver<TInput, TOutput> {
 
 /** Per-publish options for {@link ClientTransport.publishInput}. */
 export interface PublishInputOptions {
-  /** The codec-message-id to publish under. Defaults to a fresh id when omitted. */
-  codecMessageId?: string;
+  /** The transport-message-id to publish under. Defaults to a fresh id when omitted. */
+  transportMessageId?: string;
   /** Reuse a known run-id (a continuation of an existing run). Omit for a fresh send; the agent mints the run-id at run-start. */
   runId?: string;
-  /** Arbitrary user-provided headers, published in Ably's own `extras.headers` slot (outside the SDK's `extras.ai` envelope) and surfaced back on {@link WireMeta.headers} — on the wire echo and the optimistic local echo alike. */
+  /** Arbitrary user-provided headers, published in Ably's own `extras.headers` slot (outside the SDK's `extras.ai` envelope) and surfaced back on {@link WireMeta.headers}. */
   headers?: Record<string, string>;
 }
 
 /** The identifiers assigned to a published input, returned by {@link ClientTransport.publishInput}. */
 export interface PublishInputResult {
-  /** The codec-message-id the input was published under — the caller's option value, or a freshly minted id. Keys optimistic-echo reconciliation. */
-  codecMessageId: string;
-  /** The per-publish `event-id` stamped on the wire — distinct from `codecMessageId`, this is what an agent's `locateInput` matches to find the input that woke an invocation. */
+  /** The transport-message-id the input was published under — the caller's option value, or a freshly minted id. A consumer keying its own optimistic UI reconciles it against the wire delivery by this id. */
+  transportMessageId: string;
+  /** The per-publish `event-id` stamped on the wire — distinct from `transportMessageId`, this is what an agent's `locateInput` matches to find the input that woke an invocation. */
   eventId: string;
   /**
-   * The run-id of the run this input triggers. Resolves when the transport
-   * observes the first `ai-run-start` whose `input-codec-message-id` header
-   * matches this publish's {@link codecMessageId} — stamped when the agent
-   * opens its run with `inputCodecMessageId`, the same threading cancel
-   * routing relies on. Never resolves for an input that triggers no run.
-   * Rejects on {@link ClientTransport.close} and on channel continuity loss;
-   * a rejection handler is pre-attached, so a caller that ignores `runId`
-   * never sees an unhandled rejection.
+   * The run-id of the run this input triggers. A continuation
+   * ({@link PublishInputOptions.runId} set) resolves immediately with that id
+   * — the addressed run answers with `ai-run-resume`, which names no
+   * triggering input. A fresh publish resolves when the transport observes
+   * the first `ai-run-start` whose `input-transport-message-id` header matches
+   * this publish's {@link transportMessageId} — stamped when the agent opens its
+   * run with `inputTransportMessageId`. Never resolves for a fresh input that
+   * triggers no run. Rejects on
+   * {@link ClientTransport.close} and on channel continuity loss; a rejection
+   * handler is pre-attached, so a caller that ignores `runId` never sees an
+   * unhandled rejection.
    */
   runId: Promise<string>;
 }
 
-/** Options for {@link ClientTransport.history} and {@link AgentTransport.history}. */
+/** Options for {@link ClientTransport.history}, {@link AgentTransport.history} and {@link AgentTransport.locateInput}. */
 export interface TransportHistoryOptions {
   /**
-   * Stop paging once at least this many events have been collected. Page
-   * granular: the call finishes the page it is on, so the batch may exceed the
-   * limit. Omit to page all the way to channel exhaustion.
+   * Keep fetching pages until at least this many wire messages have been
+   * scanned. Page granular: the call finishes the page it is on, so the batch
+   * may exceed the limit. What omitting it means differs by caller: `history()`
+   * fetches one page per call, so the caller's own loop is the pager and
+   * counting calls counts pages; `locateInput()` scans to the channel start.
    */
   limit?: number;
   /**
@@ -267,17 +269,15 @@ export interface TransportHistoryResult<TInput, TOutput> {
 
 /**
  * The client transport: a self-contained publish + receive surface over one
- * channel and codec, holding no conversation state. The factory
+ * channel and codec. The factory
  * owns the channel subscription and the receive stream; {@link connect}
  * starts delivery, {@link subscribe} observes classified events, and
  * {@link history} pages older events on demand.
  *
- * Holds no run registry — a `runId` comes from `run-lifecycle` events off the
- * receive stream, or from awaiting {@link PublishInputResult.runId} (which
- * resolves from the triggering input's `ai-run-start`). {@link steer} accepts
- * that promise directly; {@link cancel} takes a settled id, so a caller
- * cancelling a send it just made awaits the promise first. An optimistic echo
- * is reconciled against its wire echo by `codecMessageId`.
+ * Holds no run registry — a cancel's or steer's `runId` is sourced from
+ * {@link PublishInputResult.runId} (resolved from the triggering input's
+ * `ai-run-start`) or from `run-lifecycle` events off the receive stream, and
+ * a consumer keys its own send state on the returned `transportMessageId`.
  * The only cross-message state is the steer ledger behind {@link steer} and
  * the pending `runId` watches behind {@link publishInput}.
  * @template TInput - The codec's input-event domain type accepted by
@@ -296,41 +296,42 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
   connect(): Promise<void>;
   /**
    * Subscribe to classified transport events — shorthand for
-   * `on('event', handler)`. Fires for live wire events and for the optimistic
-   * local echo a {@link publishInput} emits; history batches do not pass
-   * through here.
+   * `on('event', handler)`. Fires for live wire events; history batches do
+   * not pass through here.
    * @param handler - Called with each {@link TransportEvent} in wire order.
    * @returns An unsubscribe function.
    */
   subscribe(handler: (event: TransportEvent<TInput, TOutput>) => void): () => void;
   /**
-   * Publish one codec input event to the channel. Emits a local `message`
-   * event to `subscribe` handlers immediately (with `serial` and
-   * `versionSerial` `undefined`) so the sender sees its own input before the
-   * wire round-trips; the real echo later carries the same `codecMessageId`
-   * so a consumer keying on it reconciles the two. Requires {@link connect}.
+   * Publish one codec input event to the channel. Nothing is emitted locally:
+   * the sender's own input reaches it back as the ordinary channel delivery
+   * (like any other subscriber's), carrying the returned `transportMessageId` so
+   * a consumer keying its own optimistic UI on it reconciles the delivery.
+   * Requires {@link connect}.
    * @param event - The codec input event to publish.
    * @param opts - Optional per-publish overrides; see {@link PublishInputOptions}.
-   * @returns The assigned `codecMessageId` and `eventId`, plus a `runId`
+   * @returns The assigned `transportMessageId` and `eventId`, plus a `runId`
    *   promise resolved from the triggering input's `ai-run-start`.
    */
   publishInput(event: TInput, opts?: PublishInputOptions): Promise<PublishInputResult>;
   /**
    * Publish an `ai-cancel` envelope targeting the given run. Stateless — the
-   * caller supplies a settled `runId`, from a `run-lifecycle` start event or by
-   * awaiting {@link PublishInputResult.runId}. The envelope carries a
-   * per-cancel `event-id` for rewind redelivery; the read side ignores it, so
-   * cancels are idempotent. Requires {@link connect}.
-   * @param runId - The run to cancel. Unlike {@link steer}, this does not accept a promise.
+   * caller supplies the run's id. The envelope carries a per-cancel
+   * `event-id` for rewind redelivery; the read side ignores it, so cancels
+   * are idempotent. Requires {@link connect}.
+   * @param runId - The run to cancel: a run-id string from a `run-lifecycle`
+   *   start event, or a promise of one (typically
+   *   {@link PublishInputResult.runId}) — the cancel publishes once it
+   *   resolves, and this call rejects if it rejects.
    */
-  cancel(runId: string): Promise<void>;
+  cancel(runId: string | Promise<string>): Promise<void>;
   /**
    * Publish a steering input into an open run and observe whether the run's
    * output considered it. Returns synchronously with two promises:
-   * `published` resolves with the publish's Ably-assigned serial once the
-   * transport observes the steer's own channel echo, and `outcome` resolves
+   * `published` resolves with the publish acknowledgement's Ably-assigned
+   * serial (no channel echo is involved), and `outcome` resolves
    * at the run's next lifecycle bracket by membership of the steer's
-   * codec-message-id in the `steer-codec-message-ids` stamps observed on the
+   * transport-message-id in the `steer-transport-message-ids` stamps observed on the
    * run's outputs — consumed on membership; not-consumed only at
    * `ai-run-end` (a suspend leaves it pending for a later resume to
    * consume). Steering a run whose `ai-run-end` this transport has already
@@ -353,7 +354,7 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
    * live stream's decoder, so a stream spanning the attach boundary is not
    * double-decoded; a single undecodable message is skipped and emitted on
    * `error`. Single-flight: concurrent calls serialise. Requires
-   * {@link connect}. Rejects with `HistoryFetchFailed` when a page fetch
+   * {@link connect}. Rejects with `SessionHistoryFetchFailed` when a page fetch
    * fails after retries.
    * @param opts - Optional batch bounds; see {@link TransportHistoryOptions}.
    * @returns The batch of events and whether history is exhausted.
@@ -431,14 +432,54 @@ export interface StepOptions {
 /** Parameters for {@link RunStepTransport.end}. */
 export interface StepEndParams {
   /**
-   * The terminal reason. Omit to derive it from the step's piped output, in
-   * priority order: `cancelled` when the pipe was cancelled or the run's
-   * signal aborted, else `failed` if any {@link RunStepTransport.pipe} errored,
-   * else `complete` — so the common "compute an outcome, then end" flow needs
-   * no `try`/`catch`.
+   * The terminal reason. Omit to derive it from the step's piped output:
+   * `cancelled` if a pipe was cancelled or the run's signal aborted, `failed`
+   * if any {@link RunStepTransport.pipe} errored, else `complete`. The common
+   * "compute an outcome, then end" flow therefore needs no `try`/`catch`.
    * Pass an explicit reason to override.
    */
   reason?: StepEndReason;
+}
+
+/**
+ * The result of ending a run — what the terminal publish's acknowledgement
+ * reported.
+ */
+export interface RunEndResult {
+  /**
+   * The `ai-run-end` message's own channel serial, from the publish
+   * acknowledgement.
+   *
+   * A run publishes nothing after its end, and the end serializes after the
+   * run's outputs, so every message this run put on the channel is at or
+   * before this serial. That is what an application needs to record a
+   * watermark for the conversation it just stored: a later reader walks the
+   * channel back only as far as it. Note the bound covers *this* run's
+   * messages, not another participant's — a store on a shared channel is
+   * complete up to this serial only if it accounts for everything else below
+   * it too.
+   *
+   * `undefined` when the acknowledgement reported no serial, which is what a
+   * conflated publish does.
+   */
+  serial: string | undefined;
+}
+
+/**
+ * The result of ending a step — what the terminal publish's acknowledgement
+ * reported.
+ */
+export interface StepEndResult {
+  /**
+   * The `ai-step-end` message's own channel serial, from the publish
+   * acknowledgement. Every message this step attempt published is at or before
+   * it.
+   *
+   * `undefined` when the acknowledgement reported no serial, and also when the
+   * step closed without ever opening — an `end()` on a step that published
+   * nothing puts no `ai-step-end` on the wire.
+   */
+  serial: string | undefined;
 }
 
 /** The result of streaming a response through the encoder. */
@@ -490,39 +531,32 @@ export interface OpenRunOptions {
    *   continuation) selects the opening event — present means the open
    *   re-enters that run with `ai-run-resume`; absent means a fresh
    *   `ai-run-start` (under {@link runId} when pinned, else a minted id).
-   * - `meta.codecMessageId` defaults {@link inputCodecMessageId}, and
-   *   `meta.clientId` defaults {@link inputClientId}. An explicitly supplied
-   *   option wins over the input's value.
+   * - `meta.transportMessageId` defaults {@link inputTransportMessageId}. An
+   *   explicitly supplied option wins over the input's value.
    */
   input?: LocatedInput<unknown>;
   /**
-   * Reuse a fixed run-id. Without an {@link input}, supplying it marks the
-   * open as a continuation of that run. With an input, it is the fresh-run
-   * pin only — a durable agent supplies a stable id so a fresh-process retry
-   * re-enters the same run — and a continuation's id comes from the input.
+   * Reuse a fixed run-id — a pure pin: the opening event publishes under this
+   * id instead of a mint. A durable agent supplies a stable value so a
+   * fresh-process retry re-enters the same run. The pin never decides the
+   * opening event: whether the open is a fresh `ai-run-start` or a re-entry
+   * is decided by the {@link input}'s run-id header. An input-less open is
+   * always a fresh `ai-run-start` under this id.
    */
   runId?: string;
   /** Reuse a fixed invocation-id. Omit to mint a fresh one (one per HTTP request). */
   invocationId?: string;
   /**
-   * The triggering input's codec-message-id (thread it from
-   * {@link AgentTransport.locateInput}'s `meta.codecMessageId`, or the trigger
-   * payload). Supplying it lets a fresh-send cancel — one the client keyed by
-   * input before it learned the run-id — route to this run, including a cancel
-   * that arrived before this `openRun`; it also stamps the
-   * `input-codec-message-id` anchor on the run's outputs. Without it, only
-   * cancels naming the run-id route here.
+   * The triggering input's transport-message-id (thread it from
+   * {@link AgentTransport.locateInput}'s `meta.transportMessageId`, or the trigger
+   * payload). It stamps the `input-transport-message-id` anchor on the run's
+   * opening event, its outputs and its lifecycle receipt — which is how a
+   * client that published the input resolves
+   * {@link PublishInputResult.runId} — and excludes the trigger itself from
+   * the run's steer tracking. Cancels address a run by its run-id and do not
+   * read this.
    */
-  inputCodecMessageId?: string;
-  /**
-   * The triggering input's publisher clientId — the Ably `clientId` the
-   * platform stamped on the input's wire message from the publisher's
-   * realtime client (thread it from {@link AgentTransport.locateInput}'s
-   * `meta.clientId`). The agent re-stamps it as `input-client-id` on the
-   * run's lifecycle events and outputs, and it seeds the first step's
-   * `stepClientId`. Defaulted from {@link input} when supplied.
-   */
-  inputClientId?: string;
+  inputTransportMessageId?: string;
 }
 
 /** Options for {@link AgentTransport.adoptRun}. */
@@ -530,9 +564,7 @@ export interface AdoptRunOptions {
   /**
    * Reuse a fixed invocation-id, so the adopted handle publishes under the
    * invocation that owns the run — thread it from the orchestration's own
-   * state — one invocation id per HTTP request or per activity of a durable
-   * turn, stamped on every event that process publishes for the run. Omit to
-   * mint a fresh one.
+   * state (see {@link OpenRunOptions.invocationId}). Omit to mint a fresh one.
    */
   invocationId?: string;
 }
@@ -579,21 +611,25 @@ export interface OpenRunHooks<TOutput> {
 
   /**
    * Called with non-fatal run-scoped errors that have no other delivery
-   * path. Fires in two scenarios:
+   * path. Fires in four scenarios:
    * - Stream failures in `pipe` — the underlying error is also returned on
    *   {@link StreamResult.error}, but this callback delivers it wrapped as an
    *   `Ably.ErrorInfo` (code `RunResponseStreamFailed`) for standardized observability.
    * - A throw from the `onCancel` handler (code `RunCancelHandlerFailed`). The run
    *   is NOT cancelled: the SDK never reaches the abort.
    * - A throw from the `onSteer` handler (code `RunSteerHandlerFailed`). The run is
-   *   unaffected — the steering message has already folded in, so only the
+   *   unaffected — the steering message has already arrived, so only the
    *   notification failed.
+   * - A failed opening publish (`openRun` returns without awaiting it). The
+   *   failure also rejects every later output verb through the shared open
+   *   promise, but a caller that awaits no output verb — one waiting on the
+   *   opening event's channel echo, say — observes it only here.
    *
-   * Publish failures in the opening publish and `end` are not delivered here —
-   * those reject their returned promise with an `Ably.ErrorInfo`, and the
-   * caller should handle it at the await site. Run errors never render the
-   * transport unusable, but the run may be in an inconsistent state; the
-   * caller should typically `end` it with reason `'error'`.
+   * Publish failures in `end` are not delivered here — `end` rejects its
+   * returned promise with an `Ably.ErrorInfo`, and the caller should handle
+   * it at the await site. Run errors never render the transport unusable, but
+   * the run may be in an inconsistent state; the caller should typically
+   * `end` it with reason `'error'`.
    *
    * A failure in the `onCancel` or `onSteer` handler with no `onError` set
    * falls back to the transport's `error` stream so it is never silently
@@ -630,10 +666,8 @@ export interface LocatedInput<TInput> {
  * page the conversation's history for LLM context, and observe the channel —
  * cancel signals route onto the matching run handle, and a steering message
  * under an open run's run-id both surfaces as an ordinary event on the
- * receive stream (for the agent to fold itself) and flips the run handle's
- * {@link AgentRunTransport.hasInput}. The surface is publish and observe only:
- * there is no read accessor for assembled messages, because nothing here
- * assembles them.
+ * receive stream (for the agent to merge itself) and flips the run handle's
+ * {@link AgentRunTransport.hasInput}.
  * @template TInput - The codec's input-event domain type, located by {@link locateInput}.
  * @template TOutput - The codec's output-event domain type, published by the run/step handles.
  */
@@ -663,13 +697,14 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * (`openRun({ input: located })`): the input's run-id header decides the
    * opening event — a continuation re-enters that run with `ai-run-resume`, a
    * fresh send opens with `ai-run-start` — and the input's metadata defaults
-   * the anchor and structure options (see {@link OpenRunOptions.input}).
-   * Without a located input, a supplied `opts.runId` marks a continuation and
-   * a fresh open publishes `ai-run-start`. The run is registered for cancel
-   * routing until it ends; a cancel already buffered for
-   * `opts.inputCodecMessageId` is honoured immediately. Requires
+   * the input anchor (see {@link OpenRunOptions.input}).
+   * Without a located input, the open publishes a fresh `ai-run-start` —
+   * under `opts.runId` when pinned. A re-entry requires a located input whose
+   * run-id header names the run to resume. The run is registered for cancel
+   * routing until it ends; a cancel already buffered for this run's run-id is
+   * honoured immediately. Requires
    * {@link connect}.
-   * @param opts - Optional located input, run identity and structure; see {@link OpenRunOptions}.
+   * @param opts - Optional located input and run identity; see {@link OpenRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see
    *   {@link OpenRunHooks}.
    * @returns A handle to drive the run's output and lifecycle.
@@ -688,12 +723,17 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * The handle publishes under an invocation id, stamped on its output, step
    * brackets, suspend, and end. Pin it via
    * {@link AdoptRunOptions.invocationId} so a continuing process publishes
-   * under the invocation that owns the run — a consumer discards a suspend
-   * whose invocation-id differs from the run's latest resume, treating it as a
-   * retired invocation's late suspend — and omit it to mint
-   * a fresh one. The structure options stay on {@link openRun}: an adopted
-   * run publishes no opening event, so nothing would stamp them. A
-   * continuation is an `openRun` naming the run, not an adopt.
+   * under the invocation that owns the run — a consumer reconstructing
+   * conversation state discards a suspend whose invocation-id differs from
+   * the run's latest resume, treating it as a retired invocation's late
+   * suspend — and omit it to mint
+   * a fresh one. A continuation is an `openRun` naming the run, not an
+   * adopt.
+   *
+   * A run this transport already cancelled stays cancelled: adopting it
+   * aborts the new handle's signal as soon as it registers, and fires its
+   * `onCancel`. A run is cancelled once, so a retry re-entering it by its
+   * stable id must not carry on where the cancelled attempt stopped.
    * @param runId - The id of the run to adopt. Must be non-empty.
    * @param opts - Optional invocation-id pin; see {@link AdoptRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see
@@ -703,9 +743,10 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
   adoptRun(runId: string, opts?: AdoptRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput>;
   /**
    * Scan channel history for the input event whose `event-id` header matches
-   * `eventId`, returning its {@link WireMeta} and decoded inputs, which is how
-   * an agent in a fresh process resumes durably. Runs on a throwaway decoder so
-   * it never perturbs the live receive stream's dedup state. Resolves `undefined` when no matching input is found in history —
+   * `eventId`, returning its {@link WireMeta} and decoded inputs — so an
+   * agent can resume durably from channel history. Runs on a
+   * throwaway decoder so it never perturbs the live receive stream's dedup
+   * state. Resolves `undefined` when no matching input is found in history —
    * including when `opts.limit` bounded the scan before the whole channel was
    * walked, so a bounded caller decides what a miss means for its own retry
    * semantics.
@@ -726,7 +767,7 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * double-decoded ({@link locateInput}'s throwaway scans stay separate); a
    * single undecodable message is skipped and emitted on `error`.
    * Single-flight: concurrent calls serialise. Requires {@link connect}.
-   * Rejects with `HistoryFetchFailed` when a page fetch fails after retries.
+   * Rejects with `SessionHistoryFetchFailed` when a page fetch fails after retries.
    * @param opts - Optional batch bounds; see {@link TransportHistoryOptions}.
    * @returns The batch of events and whether history is exhausted.
    */
@@ -750,6 +791,22 @@ export interface AgentRunTransport<TOutput> {
   /** This run's id — minted at `openRun`, or the reused continuation id. */
   readonly runId: string;
   /**
+   * Settles with the run's opening publish: resolved once the opening event
+   * (`ai-run-start` / `ai-run-resume`) is accepted onto the channel, rejected
+   * when that publish fails. An adopted run publishes no opening event, so
+   * its `opened` settles once the transport's connect gate passes. Await or
+   * race it wherever the caller must not proceed on a failed open — a
+   * durable activity that only observes the channel would otherwise wait for
+   * an echo that cannot arrive. The rejection is pre-handled internally, so
+   * a holder that ignores `opened` sees no unhandled rejection; awaiting it
+   * still rejects with the publish failure (a pre-attached handler marks the
+   * promise handled, it does not consume the failure for other awaiters).
+   * The output verbs (`pipe`, `send`, `end`) await the same result
+   * internally, so a caller that goes straight to output needs no explicit
+   * await here.
+   */
+  readonly opened: Promise<void>;
+  /**
    * Fires when a cancel signal routes to this run and is accepted (see
    * {@link OpenRunHooks.onCancel}), or when the external
    * {@link OpenRunHooks.signal} aborts. In-flight pipes end `'cancelled'`
@@ -760,11 +817,11 @@ export interface AgentRunTransport<TOutput> {
   readonly abortSignal: AbortSignal;
   /**
    * The agent's loop driver: whether the run has input awaiting a response
-   * pass. Returns `true` until the run's first step attempt opens (the
+   * pass. Returns `true` until the run's first output pass pipes or sends (the
    * initial pass answers the triggering input), then `true` iff a steering
    * message has been tracked since the previous call. Reading DRAINS pending
    * steering messages into the set the next step attempt stamps as
-   * `steer-codec-message-ids`, so there is no observe-only check — call it
+   * `steer-transport-message-ids`, so there is no observe-only check — call it
    * once per loop iteration, immediately before assembling the pass's
    * context. Returns `false` once {@link abortSignal} has fired.
    */
@@ -791,27 +848,29 @@ export interface AgentRunTransport<TOutput> {
    * still end it, and a later invocation can also continue it under the same
    * run-id via a fresh `openRun`. Throws while a step is active — end the step
    * first. No-op once suspended or ended. When the run has produced output,
-   * the suspend carries the `input-codec-message-ids` receipt — the
-   * codec-message-ids of every input considered so far (trigger + stamped
+   * the suspend carries the `input-transport-message-ids` receipt — the
+   * transport-message-ids of every input considered so far (trigger + stamped
    * steers).
    */
   suspend(): Promise<void>;
   /**
-   * Publish `ai-run-resume`, re-entering the run. A pure re-entry signal — it
-   * carries no structure headers. Re-opens a suspended handle's publish
-   * surface once the publish succeeds. Throws once the run has ended.
+   * Publish `ai-run-resume`, re-entering the run — a pure re-entry signal,
+   * distinguished from `ai-run-start` by its message name. Re-opens a
+   * suspended handle's publish surface once the publish succeeds. Throws once
+   * the run has ended.
    */
   resume(): Promise<void>;
   /**
    * Publish `ai-run-end`, ending the run. Terminal. Auto-closes a still-open
    * step first so observers are never stranded. When the run has produced
-   * output, the end carries the `input-codec-message-ids` receipt — the
-   * codec-message-ids of every input the run considered (trigger + stamped
+   * output, the end carries the `input-transport-message-ids` receipt — the
+   * transport-message-ids of every input the run considered (trigger + stamped
    * steers, accumulated across suspend/resume). A client resolves whether a
    * steering message was processed by id membership in this receipt.
    * @param params - How the run ended; see {@link RunEndParams}.
+   * @returns The terminal publish's acknowledgement; see {@link RunEndResult}.
    */
-  end(params: RunEndParams): Promise<void>;
+  end(params: RunEndParams): Promise<RunEndResult>;
 }
 
 /**
@@ -839,11 +898,11 @@ export interface RunStepTransport<TOutput> {
    */
   send(event: TOutput): Promise<void>;
   /**
-   * Publish `ai-step-end`, closing the step. Idempotent.
+   * Publish `ai-step-end`, closing the step. Idempotent — a second call
+   * reports no serial, having published nothing.
    * @param params - Optional {@link StepEndParams}; the reason is derived from
-   *   piped output when omitted — `cancelled` when the pipe was cancelled or
-   *   the run's signal aborted, else `failed` if any pipe errored, else
-   *   `complete`.
+   *   piped output when omitted.
+   * @returns The terminal publish's acknowledgement; see {@link StepEndResult}.
    */
-  end(params?: StepEndParams): Promise<void>;
+  end(params?: StepEndParams): Promise<StepEndResult>;
 }

@@ -2,16 +2,16 @@
 
 ## Layout
 
-The generic layer lives in `src/core/`; each codec lives in its own directory
+The generic layer lives in `src/core/` and `src/react/`; each codec lives in its own directory
 (`src/vercel/`, `src/openai/`, …) under a `codec/` subdirectory. A codec entry
 point may also ship provider-shaped helpers outside `codec/` — modules that
 map a provider result onto transport types or derive loop state from provider
 items rather than defining wire format. Such a helper may depend on the
 generic layer and on its own provider SDK, never on another codec. Shared
-header/event/message-name constants and Ably message helpers sit at the top of
-`src/` (`constants.ts`, `utils.ts`). Tests mirror `src/` under `test/`.
+header/event/message-name constants, Ably message helpers, and the SDK's own
+identity sit at the top of `src/`. Tests mirror `src/` under `test/`.
 
-The package ships three entry points, each with its own `index.ts` (see the
+The package ships four entry points, each with its own `index.ts` (see the
 table). That `index.ts` is the authoritative list of what is public — only
 types and functions it re-exports are public API. A new codec adds a new entry
 point rather than changing an existing one.
@@ -19,6 +19,7 @@ point rather than changing an existing one.
 | Entry point                 | Purpose                                            | Peer deps        |
 | --------------------------- | -------------------------------------------------- | ---------------- |
 | `@ably/ai-transport`        | Core, codec-agnostic transport and codec contracts | `ably`           |
+| `@ably/ai-transport/react`  | Generic React hooks and providers for any codec    | `ably`, `react`  |
 | `@ably/ai-transport/vercel` | Vercel AI SDK wire codec                           | `ably`, `ai`     |
 | `@ably/ai-transport/openai` | OpenAI Responses wire codec                        | `ably`, `openai` |
 
@@ -32,13 +33,20 @@ The codec layer is implemented once per provider — each such implementation a
 _codec_ (Vercel, OpenAI, …). This separation is the most important invariant to
 preserve:
 
-- **Generic layer** (`src/core/`) — defines the codec contract (see
-  `src/core/codec/types.ts` for its current signature) and the
-  codec-parameterized transports in `src/core/transport/`. It is
-  framework-agnostic: it must know nothing about any specific codec's wire
-  types (e.g. Vercel's `UIMessageChunk` / `UIMessage`, OpenAI's
-  `ResponseStreamEvent`), and must read or write only transport-tier metadata —
-  never codec-specific domain metadata (see header discipline below).
+- **Generic layer** (`src/core/`, `src/react/`) — defines the codec contract
+  (see `src/core/codec/types.ts` for its current signature) and the
+  codec-parameterized transports in `src/core/transport/`. Both halves must
+  know nothing about any specific codec's wire types (e.g. Vercel's
+  `UIMessageChunk` / `UIMessage`, OpenAI's `ResponseStreamEvent`), and must
+  read or write only transport-tier metadata — never codec-specific domain
+  metadata (see header discipline below).
+
+  The two halves differ in what else they may depend on. `src/core/` is
+  framework-agnostic. `src/react/` is codec-agnostic but React-only: it may
+  reach for `react`, `ably` and `ably/react`, and it carries the transport's
+  event types erased, re-applying the caller's type arguments at the hook
+  boundary — which is what keeps it free of any codec.
+
 - **Codec layer** (`src/vercel/`, `src/openai/`, …) — one _codec_ per provider,
   each implementing the codec contract for that provider's wire format against
   its types.
@@ -46,7 +54,7 @@ preserve:
 Codec and transport are themselves distinct: the **codec** owns the wire format
 (encode/decode of events and messages); the **transport** owns runs, steps,
 channel I/O and history paging. **The transport holds no conversation state.**
-Folding an event stream into messages is the application's job — or the
+Merging an event stream into messages is the application's job — or the
 provider reducer's — and no reducer or projection contract lives in
 `src/core/`. That boundary is the most important one in the codebase: a
 projection put back inside the transport is the mistake this design exists to
@@ -78,12 +86,17 @@ The receive side has one classifier and the send sides are split by role:
   surfacing raw on `ably-message`.
 - **ClientTransport** — publish input, cancel, steer, subscribe to the
   classified event stream, and page history backwards from the attach point.
+  Publishing emits nothing locally: the sender's own input comes back as the
+  ordinary channel delivery, keyed by the returned `transportMessageId`, so a
+  consumer that wants optimistic UI renders its own and reconciles on that id.
+  A steer's `published` resolves from the publish acknowledgement's serial, not
+  from the steer's own echo, so steering works with `echoMessages: false`.
 - **AgentTransport** — open runs, locate the input that woke an invocation,
   publish output through a run's pipe or steps, and route inbound cancel and
   steer onto the matching run handle.
 
 None of the three holds conversation state. A consumer that wants a message
-list folds the event stream itself, or hands it to the provider's own reducer.
+list merges the event stream itself, or hands it to the provider's own reducer.
 See `src/core/transport/index.ts` and the module doc comments on
 `client-transport.ts`, `agent-transport.ts` and `receive-transport.ts` for the
 current surface.
@@ -91,11 +104,20 @@ current surface.
 ## Composition, not inheritance
 
 Transports are assembled from composable parts, not class hierarchies.
-`createAgentTransport` is the worked example: it composes the run-manager
-lifecycle publisher, the step and pipe writer, a codec decoder wrapped in a
-receive transport, and the steer tracker. There is no base class anywhere in
-the chain — each part is constructed and injected, and the transport wires
-them together.
+`createAgentTransport` is the worked example. It composes the run-manager
+lifecycle publisher, a codec decoder wrapped in a receive transport, the shared
+channel plumbing (the connect guard and the continuity watcher), and a run
+handle per open run; that handle in turn composes the step and pipe writer and
+the run's steer tracker. There is no base class anywhere in the chain — each
+part is constructed and injected, and each layer wires the layer below it.
+
+The split follows what a part's state is scoped to. Anything that outlives a
+single run — identity resolution, the cancel-routing registries, the receive
+path — belongs to the transport; anything scoped to one run belongs to the run
+handle. Where two parts have to read the same mutable state (a run's publish
+gate is read by both the handle and its writer), that state becomes its own
+small object both are given, rather than the two being constructed in terms of
+each other.
 
 ## Dependency injection
 
@@ -178,8 +200,15 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    cleanup.
 10. **Single shared channel, caller-owned** — one Ably channel per transport,
     shared by all features. The caller resolves and owns the channel; the
-    transport subscribes its own listener and never detaches it.
-11. **No message assembly in the SDK** — no reducer, no fold driver, no
+    transport subscribes its own listener and never detaches it. Two
+    obligations come with that: the caller stamps `channelAgent(codec)` as the
+    channel's `params.agent`, because the SDK cannot set it once the caller
+    owns resolution, and every resolver of the same channel funnels its modes
+    through `resolveChannelModes()` so they all request the same modes in the
+    same order — ably-js compares them order-sensitively, so two resolvers that
+    disagree reattach the channel or silently revert its mode set. See
+    `src/core/channel-options.ts`.
+11. **No message assembly in the SDK** — no reducer, no merge driver, no
     projection type. The application demultiplexes a batch's `message` events
-    by their codec-message-id and folds each bucket with the provider's own
+    by their transport-message-id and merges each bucket with the provider's own
     machinery.

@@ -13,12 +13,14 @@ export type {
   PublishInputResult,
   RunEndParams,
   RunEndReason,
+  RunEndResult,
   RunLifecycleEvent,
   RunStepTransport,
   SteerOutcome,
   SteerResult,
   StepEndParams,
   StepEndReason,
+  StepEndResult,
   StepLifecycleEvent,
   StepOptions,
   StreamResult,
@@ -29,7 +31,7 @@ export type {
   WireMeta,
 } from './types.js';
 
-// Transports
+// Standalone transports
 export type { AgentTransportOptions } from './agent-transport.js';
 export { createAgentTransport } from './agent-transport.js';
 export type { ClientTransportOptions } from './client-transport.js';

@@ -84,10 +84,29 @@ export interface LifecyclePolicy<TOutput> {
 
 /**
  * The parts a codec supplies to {@link defineCodec}.
+ *
+ * The `kind` / `type` constraints bind ONLY this declarative authoring
+ * helper, never the transports: {@link WireCodec} and everything generic that
+ * consumes it are unconstrained, carry events opaquely, and read no event
+ * content (pinned by the opaque-codec transport tests). The descriptor tables
+ * here dispatch each event to its wire form by a typed discriminant, and
+ * `kind` / `type` are the field names that dispatch keys on — mirroring how
+ * every provider SDK discriminates its own unions. A provider whose events
+ * discriminate differently wraps them, or implements {@link WireCodec}
+ * directly without this helper.
  * @template TInput - The codec's input union.
  * @template TOutput - The codec's output union.
  */
 export interface DefineCodecConfig<TInput extends { kind: string }, TOutput extends { type: string }> {
+  /**
+   * The codec's own entry in the channel's library-attribution string — the
+   * `agent` channel param Ably reads to record which library produced the
+   * traffic. Appended after this SDK's own entry as `<tag>/<version>`, so a
+   * codec built on another vendor's SDK is visible in that attribution. Omit
+   * to contribute nothing. Unrelated to the AI agent an application builds
+   * with `createAgentTransport`.
+   */
+  adapterTag?: string;
   /**
    * The declarative output (`ai-output`) descriptor table, returned from the
    * injected `{ event, stream, drop }` builder (curried on `TOutput`).
@@ -131,11 +150,11 @@ class DefaultCodecEncoder<TInput extends { kind: string }, TOutput extends { typ
     this._inputEncoder = inputEncoder;
   }
 
-  async publishInput(input: TInput, options?: WriteOptions): Promise<void> {
-    // No `messageId` threads into inputs — user-message parts carry no
-    // transport codec-message-id today; inputs rely on opts.messageId stamped
-    // by the transport.
-    await this._inputEncoder.encode(input, this._core, { opts: options });
+  async publishInput(input: TInput, options?: WriteOptions): Promise<Ably.PublishResult> {
+    // No `messageId` threads into inputs: a user-message part carries no
+    // transport-message-id of its own, so an input's identity comes from
+    // `opts.messageId`, which the transport stamps.
+    return this._inputEncoder.encode(input, this._core, { opts: options });
   }
 
   async publishOutput(output: TOutput, options?: WriteOptions): Promise<void> {
@@ -405,6 +424,9 @@ export const defineCodec =
     const outputDecoder = createOutputDescriptorDecoder(outputs);
     const inputDecoder = createInputDescriptorDecoder(inputs);
     return {
+      // adapterTag is optional on WireCodec; only set it when supplied so a
+      // codec can opt out of Ably-Agent registration.
+      ...(config.adapterTag === undefined ? {} : { adapterTag: config.adapterTag }),
       createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
       createDecoder: () =>
         new DefaultCodecDecoder<TInput, TOutput>(

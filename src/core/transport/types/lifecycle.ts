@@ -28,9 +28,10 @@ interface RunLifecycleBase {
    */
   invocationId: string;
   /**
-   * Ably server timestamp (epoch ms) of the lifecycle message; absent for an
-   * optimistic local event. A consumer tracking run activity reads it as the
-   * run's last-activity time.
+   * Ably server timestamp (epoch ms) of the lifecycle message. A consumer
+   * tracking run activity reads it as the run's last-activity time. Optional
+   * so a caller can build one of these without a wire message to hand; every
+   * run-lifecycle event the receive path produces carries one.
    */
   timestamp?: number;
 }
@@ -47,31 +48,36 @@ export type RunLifecycleEvent =
       /** The run opened. */
       type: 'start';
       /**
-       * Ably channel serial of the run-start message, or `undefined` for an
-       * optimistic local event (no serial assigned yet). A consumer ordering
+       * Ably channel serial of the run-start message. A consumer ordering
        * sibling runs reads it as the run's start serial.
+       *
+       * Typed optional because it comes straight off
+       * `Ably.InboundMessage.serial`, which ably-js types optional. Every
+       * run-lifecycle event is wire-delivered and the platform stamps a serial
+       * on every delivery, so it is present in practice — but a consumer that
+       * orders on it still has to handle the absence the type admits. The
+       * suspend, resume and end arms all say the same; they defer here.
        */
       serial: string | undefined;
       /**
-       * The codec-message-id of the input event that triggered this run — the
-       * `input-codec-message-id` wire header the agent stamps on run-start. It
+       * The transport-message-id of the input event that triggered this run — the
+       * `input-transport-message-id` wire header the agent stamps on run-start. It
        * is the handle the client owns at send time (before the agent mints the
        * `runId`): the client transport resolves `PublishInputResult.runId`
        * from it, and a consumer reconstructing conversation structure can
-       * reconcile optimistic state keyed by this same codec-message-id onto
-       * the agent-minted `runId`. Absent when the run was opened with neither
-       * a located input nor an explicit `inputCodecMessageId` (an `adoptRun`,
-       * or a bare `openRun`).
+       * reconcile optimistic state keyed by this same transport-message-id onto
+       * the agent-minted `runId`. Absent only when the run opened with no
+       * input anchor at all — an `adoptRun`, or an `openRun` given neither an
+       * `input` nor an explicit `inputTransportMessageId`.
        */
-      inputCodecMessageId?: string;
+      inputTransportMessageId?: string;
     })
   | (RunLifecycleBase & {
       /** The run paused without ending; a resume may re-open it. */
       type: 'suspend';
       /**
-       * Ably channel serial of the run-suspend message, or `undefined` for an
-       * optimistic local event. A consumer reads it as the serial at which
-       * the run paused.
+       * Ably channel serial of the run-suspend message — the serial at which
+       * the run paused. Present in practice; see the run-start note.
        */
       serial: string | undefined;
     })
@@ -79,9 +85,9 @@ export type RunLifecycleEvent =
       /** A later invocation re-opened a suspended run. */
       type: 'resume';
       /**
-       * Ably channel serial of the run-resume message, or `undefined` for an
-       * optimistic local event. A resume re-enters an existing run; the
-       * original run-start keeps the run's start serial.
+       * Ably channel serial of the run-resume message. A resume re-enters an
+       * existing run; the original run-start keeps the run's start serial.
+       * Present in practice; see the run-start note.
        */
       serial: string | undefined;
     })
@@ -89,8 +95,8 @@ export type RunLifecycleEvent =
       /** The run reached its terminal; nothing more publishes under it. */
       type: 'end';
       /**
-       * Ably channel serial of the run-end message, or `undefined` for an
-       * optimistic local event. A consumer reads it as the run's end serial.
+       * Ably channel serial of the run-end message — the run's end serial.
+       * Present in practice; see the run-start note.
        */
       serial: string | undefined;
     } & (
@@ -115,9 +121,7 @@ export type RunLifecycleEvent =
 // ---------------------------------------------------------------------------
 
 /**
- * The fields both step-lifecycle arms share: the step's identity, the
- * invocation correlation, and the three concentric client-identity scopes. A
- * `step-end`'s values match its corresponding `step-start`'s.
+ * Fields common to every {@link StepLifecycleEvent} arm.
  */
 interface StepLifecycleBase {
   /** The run this step belongs to. */
@@ -138,8 +142,8 @@ interface StepLifecycleBase {
   runClientId: string;
   /**
    * The clientId of the input that drove the current invocation (wire
-   * `input-client-id`) — the middle client-identity scope. Empty string if
-   * the wire didn't carry one.
+   * `input-client-id`) — the middle client-identity scope. Empty string if the
+   * wire didn't carry one.
    */
   invocationClientId: string;
   /**
@@ -149,6 +153,16 @@ interface StepLifecycleBase {
    * if the wire didn't carry one.
    */
   stepClientId: string;
+  /**
+   * Ably channel serial of the step's own message, or `undefined` for an
+   * optimistic local event.
+   *
+   * On a `step-start` this is the attempt's identity (its `step-start-serial`),
+   * and it determines the canonical attempt: the latest serial for a given
+   * step-id wins. An undefined serial sorts lowest, and the concrete-serial
+   * echo promotes it.
+   */
+  serial: string | undefined;
   /** Ably server timestamp (epoch ms); absent for an optimistic local event. */
   timestamp?: number;
 }
@@ -165,29 +179,19 @@ interface StepLifecycleBase {
  * `step-start-serial`): a `step-start` carries that as its own `serial`, and a
  * `step-end` back-references it. The canonical attempt for a step-id is the one
  * whose `step-start` has the latest `serial`; a consumer materialising the
- * run's output folds only the canonical attempt's output.
+ * run's output includes only the canonical attempt's output, and excludes
+ * every superseded attempt's.
  *
  * Both arms also carry the invocation correlation (`invocationId`) and the
  * three concentric client-identity scopes (`runClientId` ⊃ `invocationClientId`
- * ⊃ `stepClientId`), each an empty string when the wire didn't carry it, for a
- * consumer correlating step events to a run, an invocation, or a participant.
- * The agent transport stamps `runClientId` always; `invocationClientId` when
- * the run was opened with a triggering input's publisher clientId (a located
- * input, or an explicit `inputClientId`), reading as an empty string
- * otherwise; and `stepClientId` once a step resolves a client.
+ * ⊃ `stepClientId`), each an empty string when the wire didn't carry it, for
+ * consumers correlating
+ * step events to a run / invocation / participant.
  */
 export type StepLifecycleEvent =
   | (StepLifecycleBase & {
       /** A step attempt began. */
       type: 'step-start';
-      /**
-       * Ably channel serial of the step-start message — the attempt's identity
-       * (its `step-start-serial`) — or `undefined` for an optimistic local event.
-       * Determines the canonical attempt: the latest serial for a given step-id
-       * wins. An undefined serial sorts lowest (an optimistic seed), and the
-       * concrete-serial echo promotes it.
-       */
-      serial: string | undefined;
     })
   | (StepLifecycleBase & {
       /** A step attempt ended. */
@@ -198,11 +202,6 @@ export type StepLifecycleEvent =
        * `step-start`'s own `serial`.
        */
       stepStartSerial: string;
-      /**
-       * Ably channel serial of the step-end message, or `undefined` for an
-       * optimistic local event.
-       */
-      serial: string | undefined;
       /** Why the step attempt ended. */
       reason: StepEndReason;
     });

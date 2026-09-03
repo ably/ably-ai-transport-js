@@ -79,7 +79,7 @@ import { after } from 'next/server';
 import { streamText, convertToModelMessages } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import * as Ably from 'ably';
-import { createAgentTransport } from '@ably/ai-transport';
+import { channelAgent, createAgentTransport, resolveChannelModes } from '@ably/ai-transport';
 import { createUIMessageCodec, vercelRunOutcome } from '@ably/ai-transport/vercel';
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
@@ -89,11 +89,20 @@ export async function POST(req: Request) {
   // the channel, so the response body carries nothing the client reads.
   const { channelName, eventId } = (await req.json()) as { channelName: string; eventId: string };
 
+  // The caller resolves the channel, so the caller stamps the SDK's identity
+  // on it and funnels its modes through resolveChannelModes() — which yields
+  // undefined for the server's default mode set, and takes OBJECT_MODES for a
+  // channel that also needs LiveObjects. Every resolver of the same channel
+  // must request the same modes in the same order, or they reattach it.
+  const codec = createUIMessageCodec();
   // Attach per request: history pages backwards from the attach point, so a
   // transport attached before the client published could never locate it.
   const transport = createAgentTransport({
-    channel: ably.channels.get(channelName),
-    codec: createUIMessageCodec(),
+    channel: ably.channels.get(channelName, {
+      params: { agent: channelAgent(codec) },
+      modes: resolveChannelModes(),
+    }),
+    codec,
   });
   await transport.connect();
 
@@ -135,15 +144,21 @@ application merges the events it cares about into whatever state it renders from
 
 ```typescript
 import * as Ably from 'ably';
-import { createClientTransport } from '@ably/ai-transport';
+import { channelAgent, createClientTransport, resolveChannelModes } from '@ably/ai-transport';
 import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 
 const ably = new Ably.Realtime({ authUrl: '/api/auth/token', clientId: 'user-abc' });
 const channelName = 'conversations:abc';
+const codec = createUIMessageCodec();
 
+// Resolving the channel yourself means stamping the SDK's identity on it and
+// funnelling its modes through resolveChannelModes() — see the agent example.
 const transport = createClientTransport({
-  channel: ably.channels.get(channelName),
-  codec: createUIMessageCodec(),
+  channel: ably.channels.get(channelName, {
+    params: { agent: channelAgent(codec) },
+    modes: resolveChannelModes(),
+  }),
+  codec,
   clientId: 'user-abc',
 });
 await transport.connect();

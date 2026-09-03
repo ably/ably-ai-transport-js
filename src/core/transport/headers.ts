@@ -198,8 +198,8 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
  * Reconstruct the terminal `Ably.ErrorInfo` for a run that ended in error, from
  * its run-end transport headers. Reads the `error-code` / `error-message`
  * headers the agent stamps (see {@link buildLifecycleHeaders}); falls back to
- * `RunResponseStreamFailed` — the code the agent stamps for run failures — when a run
- * ended in error without detail. Single source of truth for the
+ * `RunResponseStreamFailed` — the code the agent stamps for run failures — when
+ * the `error-code` header is absent, or present but not a positive integer. Single source of truth for the
  * header→ErrorInfo derivation, so every consumer of an errored run-end
  * reconstructs the same error.
  * @param headers - Transport headers from the inbound run-end message.
@@ -224,11 +224,12 @@ export const buildRunEndError = (headers: Record<string, string>): Ably.ErrorInf
  * replay so both build the event identically.
  * @param name - The inbound Ably message `name`.
  * @param headers - Transport headers from the inbound Ably message.
- * @param serial - Ably channel serial of the message, or `undefined` for an
- *   optimistic local event. Stamped onto the returned event.
- * @param timestamp - Ably server timestamp (epoch ms) of the message, or
- *   `undefined` for an optimistic local event. Stamped onto the returned
- *   event.
+ * @param serial - Ably channel serial of the message. Stamped onto the
+ *   returned event. `undefined` only when the message carries none: ably-js
+ *   types `InboundMessage.serial` optional, though the platform stamps one on
+ *   every delivery.
+ * @param timestamp - Ably server timestamp (epoch ms) of the message. Stamped
+ *   onto the returned event, and omitted from it when absent.
  * @returns The lifecycle event, or `undefined` when `name` is not a
  *   run-lifecycle event name or the message carries no `run-id`.
  */
@@ -371,10 +372,11 @@ export const isStepLifecycleName = (name: string | undefined): name is StepLifec
  * replay so they build the event identically.
  * @param name - The inbound Ably message `name`.
  * @param headers - Transport headers from the inbound Ably message.
- * @param serial - Ably channel serial of the message, or `undefined` for an
- *   optimistic local event.
- * @param timestamp - Ably server timestamp (epoch ms), or `undefined` for an
- *   optimistic local event.
+ * @param serial - Ably channel serial of the message. `undefined` only when
+ *   the message carries none: ably-js types `InboundMessage.serial` optional,
+ *   though the platform stamps one on every delivery.
+ * @param timestamp - Ably server timestamp (epoch ms) of the message, omitted
+ *   from the returned event when absent.
  * @returns The step-lifecycle event, or `undefined` when `name` is not a
  *   step-lifecycle name, the message is missing a `run-id` or `step-id`, or a
  *   step-end is missing its `step-start-serial` back-reference.

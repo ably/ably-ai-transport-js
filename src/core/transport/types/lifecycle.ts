@@ -49,9 +49,14 @@ export type RunLifecycleEvent =
       type: 'start';
       /**
        * Ably channel serial of the run-start message. A consumer ordering
-       * sibling runs reads it as the run's start serial. Typed optional for
-       * the union's sake; a run-lifecycle event is always wire-delivered, so
-       * in practice it is present.
+       * sibling runs reads it as the run's start serial.
+       *
+       * Typed optional because it comes straight off
+       * `Ably.InboundMessage.serial`, which ably-js types optional. Every
+       * run-lifecycle event is wire-delivered and the platform stamps a serial
+       * on every delivery, so it is present in practice — but a consumer that
+       * orders on it still has to handle the absence the type admits. The
+       * suspend, resume and end arms all say the same; they defer here.
        */
       serial: string | undefined;
       /**

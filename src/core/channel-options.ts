@@ -14,12 +14,17 @@
  * `AIT_BASE_MODES` is exactly the server default, so opting into extra
  * modes adds the extras and changes nothing else.
  *
- * Every place that resolves channel options for an AI Transport channel — the
- * React `<ClientTransportProvider>` and the ably-js `<ChannelProvider>` it
- * renders — must funnel through {@link resolveChannelModes} so they all
- * request the SAME modes in the SAME order. ably-js compares modes order- and duplicate-sensitively when deciding
- * whether a `setOptions` call needs a reattach; identical arrays compare equal,
- * so consistent resolution avoids both spurious reattaches and silent mode
+ * EVERY place that resolves channel options for an AI Transport channel must
+ * funnel through {@link resolveChannelModes} so they all request the SAME modes
+ * in the SAME order. That includes the React `<ClientTransportProvider>`, the
+ * ably-js `<ChannelProvider>` it renders, and an application resolving the
+ * channel itself with a plain `channels.get(name, options)` — the transport
+ * cannot set modes once the caller owns resolution, so the obligation is the
+ * caller's wherever it resolves.
+ *
+ * ably-js compares modes order- and duplicate-sensitively when deciding whether
+ * a `setOptions` call needs a reattach; identical arrays compare equal, so
+ * consistent resolution avoids both spurious reattaches and silent mode
  * reversion when one writer omits modes another set.
  */
 
@@ -41,10 +46,14 @@ const AIT_BASE_MODES: readonly Ably.ChannelMode[] = [
 ];
 
 /**
- * The channel modes required to read and write Ably LiveObjects. Pass as the
- * `channelModes` prop of `<ClientTransportProvider>`
- * (`channelModes: OBJECT_MODES`) to request object access on the transport's
- * channel, enabling the LiveObjects channel hooks under the provider.
+ * The channel modes required to read and write Ably LiveObjects.
+ *
+ * Under React, pass it as the `channelModes` prop of
+ * `<ClientTransportProvider>` (`channelModes: OBJECT_MODES`) to request object
+ * access on the transport's channel, enabling the LiveObjects channel hooks
+ * under the provider. A caller resolving the channel itself passes it to
+ * {@link resolveChannelModes} instead — `modes: resolveChannelModes(OBJECT_MODES)`
+ * — which is the same funnel the provider goes through.
  */
 export const OBJECT_MODES: readonly Ably.ChannelMode[] = ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'];
 

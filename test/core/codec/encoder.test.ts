@@ -462,6 +462,30 @@ describe('createEncoderCore', () => {
       expect(headersOf(recovery)[HEADER_STATUS]).toBe('streaming');
     });
 
+    it('recovers a mid-sequence failure with the full accumulated content, making the wire whole', async () => {
+      // Appends a (lands), b (fails), c (lands): the wire briefly holds 'ac',
+      // and the recovery update rewrites the message data wholesale — so the
+      // wire ends whole, and history readers always see the complete text.
+      let callCount = 0;
+      writer.nextAppendResult = async () => {
+        callCount++;
+        if (callCount === 2) return await Promise.reject(new Error('network'));
+        return {} as Ably.UpdateDeleteResult;
+      };
+
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text' }));
+      core.appendStream('s1', 'a');
+      core.appendStream('s1', 'b');
+      core.appendStream('s1', 'c');
+
+      await core.closeStream('s1', streamPayload({ name: 'text' }));
+
+      const recovery = first(writer.updateCalls);
+      expect(recovery.data).toBe('abc');
+      expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
+    });
+
     it('closeStream throws when recovery also fails', async () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('append fail'));
       writer.nextUpdateResult = async () => await Promise.reject(new Error('update fail'));

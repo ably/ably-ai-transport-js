@@ -239,10 +239,15 @@ export class SteerCoordinator<TInput> {
       // flight: the state it would register into was cleared, so settle the
       // outcome with the drain's error rather than leaving it to hang.
       if (this._drainEpoch !== epoch) {
-        rejectOutcome(
+        const drainError =
           this._lastDrainError ??
-            new Ably.ErrorInfo('unable to await steer outcome; transport is closed', ErrorCode.SessionClosed, 400),
-        );
+          new Ably.ErrorInfo('unable to await steer outcome; transport is closed', ErrorCode.SessionClosed, 400);
+        this._logger.debug('SteerCoordinator.steer(); drained during publish, rejecting outcome', {
+          runId: resolvedRunId,
+          transportMessageId,
+          error: drainError.message,
+        });
+        rejectOutcome(drainError);
         return;
       }
 
@@ -251,6 +256,11 @@ export class SteerCoordinator<TInput> {
       // outcome from the recorded terminal instead.
       if (this._deadRunIds.has(resolvedRunId)) {
         const terminalReason = this._deadRunIds.get(resolvedRunId);
+        this._logger.debug('SteerCoordinator.steer(); run ended during publish, outcome not consumed', {
+          runId: resolvedRunId,
+          transportMessageId,
+          terminalReason,
+        });
         resolveOutcome({
           consumed: false,
           ...(terminalReason === undefined ? {} : { runTerminalReason: terminalReason }),

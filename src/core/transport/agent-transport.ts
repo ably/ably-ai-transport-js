@@ -380,43 +380,21 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // until resume() re-opens, 'ended' is terminal.
     let state: 'open' | 'suspended' | 'ended' = 'open';
 
-    // The run's steer state: the tracker drives hasInput()'s drain contract
-    // and the per-attempt stamp delta; hasProducedOutput gates the initial
-    // pass; knownSteerIds dedups a redelivered steer; consideredSteerIds
-    // accumulates the ids step attempts took for stamping — the steer half of
-    // the input-transport-message-ids bracket receipt on suspend/end.
-    const steerTracker = new RunSteerTracker();
+    // The run's steer state: the tracker owns the trigger-id skip, the
+    // redelivery dedup, hasInput()'s drain contract, the per-attempt stamp
+    // delta, and the cumulative considered-id receipt. hasProducedOutput is
+    // writer-driven run state, so it stays here.
+    const steerTracker = new RunSteerTracker(inputTransportMessageId);
     let hasProducedOutput = false;
-    const knownSteerIds = new Set<string>();
-    const consideredSteerIds: string[] = [];
-
-    /**
-     * Track one steering message for this run. Skips the run's own triggering
-     * input (the initial pass answers it) and a steer already tracked.
-     * @param transportMessageId - The steering message's transport-message-id.
-     * @returns True iff the steer became pending.
-     */
-    const trackSteer = (transportMessageId: string): boolean => {
-      if (transportMessageId === inputTransportMessageId) return false;
-      if (knownSteerIds.has(transportMessageId)) return false;
-      knownSteerIds.add(transportMessageId);
-      steerTracker.addPending(transportMessageId);
-      return true;
-    };
 
     /**
      * The `input-transport-message-ids` bracket receipt for this run's terminal
-     * events: the trigger plus every steer a step attempt took for stamping.
-     * `undefined` until the run has produced output — a run that published
-     * nothing considered nothing, so its bracket claims nothing.
+     * events. `undefined` until the run has produced output — a run that
+     * published nothing considered nothing, so its bracket claims nothing.
      * @returns The considered input ids, or undefined to omit the header.
      */
-    const consideredInputIds = (): string[] | undefined => {
-      if (!hasProducedOutput) return undefined;
-      return inputTransportMessageId === undefined
-        ? [...consideredSteerIds]
-        : [inputTransportMessageId, ...consideredSteerIds];
-    };
+    const consideredInputIds = (): string[] | undefined =>
+      hasProducedOutput ? steerTracker.consideredIds() : undefined;
 
     /**
      * Fire the run's `onSteer` hint, isolating a throwing handler onto the
@@ -445,7 +423,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       onCancel: hooks?.onCancel,
       onError: hooks?.onError,
       onSteerMessage: (transportMessageId) => {
-        if (trackSteer(transportMessageId)) notifySteer();
+        if (steerTracker.addPending(transportMessageId)) notifySteer();
       },
     };
     if (this._registeredRuns.has(runId)) {
@@ -485,7 +463,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         this._preOpenSteersByRunId.delete(runId);
         let seededAny = false;
         for (const id of bufferedSteers) {
-          if (trackSteer(id)) seededAny = true;
+          if (steerTracker.addPending(id)) seededAny = true;
         }
         if (seededAny) {
           this._logger.debug('AgentTransport._createRun(); seeded pre-open steers', { runId });
@@ -629,15 +607,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       markOutputProduced: () => {
         hasProducedOutput = true;
       },
-      consumeSteerStampIds: () => {
-        // The moment a step attempt takes drained steers for stamping is the
-        // moment they count as considered — the same transfer point the
-        // per-output steer-transport-message-ids stamp uses, so the bracket
-        // receipt and the stamps agree.
-        const ids = steerTracker.consumeRecentlyProcessed();
-        consideredSteerIds.push(...ids);
-        return ids;
-      },
+      consumeSteerStampIds: () => steerTracker.consumeRecentlyProcessed(),
       logger: this._logger,
       requireConnected,
       assertPublishable: (verb) => {

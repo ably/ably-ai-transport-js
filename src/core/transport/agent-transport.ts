@@ -39,17 +39,20 @@ import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import {
+  closedError,
   ConnectGuard,
   continuityLostError,
-  isContinuityLost,
+  ContinuityWatcher,
   reportPage,
+  requireOpen,
   subscribeAndAttach,
 } from './channel-support.js';
-import { DEFAULT_HISTORY_PAGE_SIZE, HistoryPager } from './history-pager.js';
+import { DEFAULT_HISTORY_PAGE_SIZE, type HistoryPager } from './history-pager.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
+import { createReceivePlumbing } from './internal/receive-plumbing.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { loadHistoryPages } from './load-history-pages.js';
-import { createReceiveTransport, forwardReceiverOn, type ReceiveTransport } from './receive-transport.js';
+import type { ReceiveTransport } from './receive-transport.js';
 import { createRunManager, type RunManager, type RunTerminalAttribution } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
@@ -197,13 +200,8 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
 
   /** The channel listener — one bound reference so `close()` can unsubscribe it. */
   private readonly _onMessage: (message: Ably.InboundMessage) => void;
-  /** The channel state listener — one bound reference so `close()` can remove it. */
-  private readonly _onChannelStateChange: (stateChange: Ably.ChannelStateChange) => void;
-  /**
-   * Whether the channel has attached at least once. State changes before the
-   * first attach are the transport coming up, not continuity being lost.
-   */
-  private _hasAttachedOnce = false;
+  /** The channel-state watcher behind {@link _handleContinuityLost}; removed on `close()`. */
+  private readonly _continuity: ContinuityWatcher;
   /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live merge. */
   private readonly _historyPager: HistoryPager<TInput, TOutput>;
   /** The public `on`, forwarding to the receiver via the shared dispatch. */
@@ -218,32 +216,22 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       component: 'AgentTransport',
     });
     this._runManager = createRunManager(this._channel, this._logger);
-    this._decoder = this._codec.createDecoder();
-    this._receiver = createReceiveTransport<TInput, TOutput>(this._decoder, this._logger);
-    this.on = forwardReceiverOn(this._receiver);
-    this._historyPager = new HistoryPager({
+    const receive = createReceivePlumbing<TInput, TOutput>({
       channel: this._channel,
+      codec: this._codec,
       pageSize: this._historyPageSize,
-      decoder: this._decoder,
       logger: this._logger,
-      onDecodeError: (err) => {
-        this._receiver.emitError(err);
-      },
     });
+    this._decoder = receive.decoder;
+    this._receiver = receive.receiver;
+    this.on = receive.on;
+    this._historyPager = receive.historyPager;
     this._onMessage = (message) => {
       this._handleMessage(message);
     };
-    // A caller-owned channel can already be ATTACHED, and attaching an
-    // attached channel emits no state change — seed from the current state or
-    // the first continuity loss is swallowed as "not attached yet".
-    this._hasAttachedOnce = this._channel.state === 'attached';
-    this._onChannelStateChange = (stateChange) => {
-      this._handleChannelStateChange(stateChange);
-    };
-    // Registered once here, not in connect(): connect() is idempotent and
-    // retryable, and ably-js keeps listeners in an array with no dedup, so a
-    // retried connect would emit each continuity loss once per attempt.
-    this._channel.on(this._onChannelStateChange);
+    this._continuity = new ContinuityWatcher(this._channel, (stateChange) => {
+      this._handleContinuityLost(stateChange);
+    });
   }
 
   /**
@@ -253,16 +241,10 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * than one that stops: a cancel published during the gap never arrives, so
    * the run becomes uncancellable while it burns inference. Every registered
    * run is aborted and the loss goes out on the error stream.
-   * @param stateChange - The channel state change.
+   * @param stateChange - The continuity-breaking state change.
    */
-  private _handleChannelStateChange(stateChange: Ably.ChannelStateChange): void {
-    if (this._closed) return;
-    if (!this._hasAttachedOnce) {
-      if (stateChange.current === 'attached') this._hasAttachedOnce = true;
-      return;
-    }
-    if (!isContinuityLost(stateChange)) return;
-    this._logger.warn('AgentTransport._handleChannelStateChange(); channel continuity lost, aborting registered runs', {
+  private _handleContinuityLost(stateChange: Ably.ChannelStateChange): void {
+    this._logger.warn('AgentTransport._handleContinuityLost(); channel continuity lost, aborting registered runs', {
       current: stateChange.current,
       resumed: stateChange.resumed,
       runs: this._registeredRuns.size,
@@ -274,7 +256,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- preserve reference equality across calls
   connect(): Promise<void> {
     if (this._closed) {
-      return Promise.reject(this._closedError('connect'));
+      return Promise.reject(closedError('connect'));
     }
     this._logger.trace('AgentTransport.connect();');
     return this._connectGuard.connect(async () =>
@@ -292,7 +274,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     if (this._closed) return;
     this._logger.info('AgentTransport.close();');
     this._closed = true;
-    this._channel.off(this._onChannelStateChange);
+    this._continuity.dispose();
     this._channel.unsubscribe(this._onMessage);
   }
 
@@ -345,7 +327,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * @param verb - The public method name, for the error message.
    */
   private _assertCanOpen(verb: 'openRun' | 'adoptRun'): void {
-    if (this._closed) throw this._closedError(verb);
+    if (this._closed) throw closedError(verb);
     if (!this._connectGuard.attempted) {
       throw new Ably.ErrorInfo(
         `unable to ${verb === 'adoptRun' ? 'adopt run' : 'open run'}; connect() must be called before ${verb}()`,
@@ -1071,22 +1053,12 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
   }
 
   /**
-   * Build the terminal-state error every post-`close()` call rejects with.
-   * @param method - The method name being guarded, for the error message.
-   * @returns The error.
-   */
-  private _closedError(method: string): Ably.ErrorInfo {
-    return new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
-  }
-
-  /**
-   * Guard a verb: reject once closed, and require a successful `connect()`
-   * (the shared guard supplies the retry guidance on a failed one).
+   * Guard a verb, binding this transport's closed flag and connect guard to
+   * the shared guard so every verb reads the same at its call site.
    * @param method - The method name being guarded, for the error message.
    */
   private async _requireOpen(method: string): Promise<void> {
-    if (this._closed) throw this._closedError(method);
-    await this._connectGuard.requireConnected(method);
+    await requireOpen(this._closed, this._connectGuard, method);
   }
 }
 

@@ -2,10 +2,13 @@ import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  closedError,
   ConnectGuard,
   continuityLostError,
+  ContinuityWatcher,
   isContinuityLost,
   reportPage,
+  requireOpen,
   subscribeAndAttach,
   wrapMessageProcessingError,
 } from '../../../src/core/transport/channel-support.js';
@@ -285,5 +288,147 @@ describe('reportPage', () => {
         throw new Error('heartbeat exploded');
       }, 'locateInput');
     }).not.toThrow();
+  });
+});
+
+describe('closedError', () => {
+  it('builds a SessionClosed error naming the guarded method', () => {
+    expect(closedError('publishInput')).toBeErrorInfo({
+      code: ErrorCode.SessionClosed,
+      statusCode: 400,
+      message: 'unable to publishInput; transport is closed',
+    });
+  });
+});
+
+describe('requireOpen', () => {
+  it('rejects with SessionClosed when the transport is closed, without consulting the guard', async () => {
+    const guard = new ConnectGuard();
+
+    await expect(requireOpen(true, guard, 'cancel')).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+    // The closed check comes first, so a never-connected guard is not the
+    // error the caller sees.
+    expect(guard.attempted).toBe(false);
+  });
+
+  it('defers to the connect guard when the transport is open', async () => {
+    const guard = new ConnectGuard();
+
+    await expect(requireOpen(false, guard, 'cancel')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+
+    await guard.connect(async () => {
+      await Promise.resolve();
+    });
+    await expect(requireOpen(false, guard, 'cancel')).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * A channel double exposing only what the watcher touches: its state, and the
+ * `on`/`off` pair it registers its listener through.
+ * @param state - The channel's state at construction, seeding the watcher.
+ * @returns The double, plus a `fire` that drives its registered listeners.
+ */
+const watchableChannel = (
+  state: Ably.ChannelState = 'initialized',
+): {
+  channel: Ably.RealtimeChannel;
+  fire: (change: Ably.ChannelStateChange) => void;
+  listenerCount: () => number;
+} => {
+  const listeners: Ably.channelEventCallback[] = [];
+  const channel = {
+    state,
+    on: (listener: Ably.channelEventCallback) => listeners.push(listener),
+    off: (listener: Ably.channelEventCallback) => {
+      const at = listeners.indexOf(listener);
+      if (at !== -1) listeners.splice(at, 1);
+    },
+    // CAST: the watcher reads only `state` and calls `on`/`off`.
+  } as unknown as Ably.RealtimeChannel;
+  return {
+    channel,
+    fire: (change) => {
+      for (const listener of listeners) listener(change);
+    },
+    listenerCount: () => listeners.length,
+  };
+};
+
+describe('ContinuityWatcher', () => {
+  it('registers its listener on construction, before any connect', () => {
+    const { channel, listenerCount } = watchableChannel();
+
+    new ContinuityWatcher(channel, () => {
+      throw new Error('not expected');
+    });
+
+    expect(listenerCount()).toBe(1);
+  });
+
+  it('ignores state changes before the first attach, then reports losses after it', () => {
+    const { channel, fire } = watchableChannel();
+    const losses: Ably.ChannelState[] = [];
+    new ContinuityWatcher(channel, (change) => losses.push(change.current));
+
+    // Coming up is not continuity being lost.
+    fire(stateChange('detached', false));
+    fire(stateChange('suspended', false));
+    expect(losses).toEqual([]);
+
+    fire(stateChange('attached', false));
+    // The attach itself is the initial one, not a loss.
+    expect(losses).toEqual([]);
+
+    fire(stateChange('suspended', false));
+    expect(losses).toEqual(['suspended']);
+  });
+
+  it('reports the first loss on a channel that was already attached', () => {
+    // A caller-owned channel can already be ATTACHED, and attaching an
+    // attached channel emits no state change, so the seed is the only thing
+    // that lets the first loss through.
+    const { channel, fire } = watchableChannel('attached');
+    const losses: Ably.ChannelState[] = [];
+    new ContinuityWatcher(channel, (change) => losses.push(change.current));
+
+    fire(stateChange('failed', false));
+
+    expect(losses).toEqual(['failed']);
+  });
+
+  it('does not report a benign state change', () => {
+    const { channel, fire } = watchableChannel('attached');
+    const losses: Ably.ChannelState[] = [];
+    new ContinuityWatcher(channel, (change) => losses.push(change.current));
+
+    fire(stateChange('attaching', false));
+    fire(stateChange('attached', true));
+
+    expect(losses).toEqual([]);
+  });
+
+  it('stops reporting once disposed, and removes its listener', () => {
+    const { channel, fire, listenerCount } = watchableChannel('attached');
+    const losses: Ably.ChannelState[] = [];
+    const watcher = new ContinuityWatcher(channel, (change) => losses.push(change.current));
+
+    watcher.dispose();
+    fire(stateChange('failed', false));
+
+    expect(losses).toEqual([]);
+    expect(listenerCount()).toBe(0);
+  });
+
+  it('is idempotent on dispose', () => {
+    const { channel, listenerCount } = watchableChannel('attached');
+    const watcher = new ContinuityWatcher(channel, () => {
+      throw new Error('not expected');
+    });
+
+    watcher.dispose();
+    watcher.dispose();
+
+    expect(listenerCount()).toBe(0);
   });
 });

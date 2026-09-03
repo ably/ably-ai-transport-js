@@ -2,12 +2,14 @@
  * The agent transport: open runs, publish output, and observe the channel —
  * cancel signals route onto the matching run handle's `abortSignal`.
  *
- * {@link DefaultAgentTransport} composes the agent write path — the
- * run-manager lifecycle publisher and the {@link createRunStepWriter} step/pipe
- * machinery — with its own receive path: it mints a codec decoder, wraps it in
- * a receive transport, and — once {@link AgentTransport.connect} subscribes and
- * attaches — merges every inbound wire message through it (`deliverEvent`, then
+ * {@link DefaultAgentTransport} owns everything outside a single run: run
+ * identity, the cancel-routing registries, the opening publish, and its own
+ * receive path — it mints a codec decoder, wraps it in a receive transport,
+ * and, once {@link AgentTransport.connect} subscribes and attaches, merges
+ * every inbound wire message through it (`deliverEvent`, then
  * `deliverAblyMessage`), so a consumer subscribes to the transport directly.
+ * Each run's own write path — the publish gate, the step/pipe machinery and
+ * the two terminals — belongs to {@link DefaultAgentRunTransport}.
  * The same listener dispatches `ai-cancel` envelopes onto the registered run
  * (consulting the run's `onCancel` hook, and buffering a cancel that races
  * ahead of its run's `openRun`) and routes a steering message — a
@@ -37,6 +39,7 @@ import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
+import { DefaultAgentRunTransport } from './agent-run-transport.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import {
   closedError,
@@ -53,9 +56,8 @@ import { createReceivePlumbing } from './internal/receive-plumbing.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { loadHistoryPages } from './load-history-pages.js';
 import type { ReceiveTransport } from './receive-transport.js';
-import { createRunManager, type RunManager, type RunTerminalAttribution } from './run-manager.js';
+import { createRunManager, type RunManager } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
-import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import type {
   AdoptRunOptions,
   AgentRunTransport,
@@ -64,14 +66,6 @@ import type {
   LocatedInput,
   OpenRunHooks,
   OpenRunOptions,
-  PipeSource,
-  RunEndParams,
-  RunEndResult,
-  RunStepTransport,
-  StepEndParams,
-  StepEndResult,
-  StepOptions,
-  StreamResult,
   TransportEvent,
   TransportHistoryOptions,
   TransportHistoryResult,
@@ -345,56 +339,27 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
 
   /**
    * Build a run handle from resolved parameters: register it for cancel and
-   * steer routing, fire the opening publish (`'start'` / `'resume'`) or seed
-   * the run-manager owner entry without publishing (`'adopt'`), and wire the
-   * step writer. All identity and located-input resolution belongs to the public
-   * verbs; this method consumes the resolved values verbatim.
+   * steer routing, reconcile the signals that arrived before it existed, and
+   * fire the opening publish (`'start'` / `'resume'`) or seed the run-manager
+   * owner entry without publishing (`'adopt'`). All identity and located-input
+   * resolution belongs to the public verbs; this method consumes the resolved
+   * values verbatim, and the handle it returns owns the run's write path.
    * @param params - The resolved run identity, open mode and input anchors.
    * @param hooks - The caller's per-run callbacks and external AbortSignal.
    * @returns The run's write handle.
    */
   private _createRun(params: CreateRunParams, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> {
     const { runId, invocationId, inputTransportMessageId } = params;
-    /**
-     * The attribution both terminals carry, matching what `ai-run-start`
-     * stamped. `input-client-id` is what lets several clients on one channel
-     * agree which of them owns the run, so a terminal that dropped it would
-     * leave a late-joining client unable to resolve the owner from the run's
-     * own lifecycle events.
-     * @returns The terminal attribution for this run.
-     */
-    const terminalAttribution = (): RunTerminalAttribution => ({
-      invocationId,
-      inputClientId: params.inputClientId,
-      inputTransportMessageId,
-      consideredInputIds: consideredInputIds(),
-    });
-
     // The run's cancel controller: an accepted cancel aborts it, ending
     // in-flight pipes `'cancelled'` and firing the handle's `abortSignal`.
     const controller = new AbortController();
     // The handle's abort signal combines the caller's external signal, so
     // either an accepted cancel or the caller's own abort ends the run's pipes.
     const signal = hooks?.signal ? AbortSignal.any([controller.signal, hooks.signal]) : controller.signal;
-    // The handle's publish gate: 'open' accepts output, 'suspended' blocks it
-    // until resume() re-opens, 'ended' is terminal.
-    let state: 'open' | 'suspended' | 'ended' = 'open';
-
-    // The run's steer state: the tracker owns the trigger-id skip, the
-    // redelivery dedup, hasInput()'s drain contract, the per-attempt stamp
-    // delta, and the cumulative considered-id receipt. hasProducedOutput is
-    // writer-driven run state, so it stays here.
+    // The tracker owns the trigger-id skip, the redelivery dedup, hasInput()'s
+    // drain contract, the per-attempt stamp delta, and the cumulative
+    // considered-id receipt.
     const steerTracker = new RunSteerTracker(inputTransportMessageId);
-    let hasProducedOutput = false;
-
-    /**
-     * The `input-transport-message-ids` bracket receipt for this run's terminal
-     * events. `undefined` until the run has produced output — a run that
-     * published nothing considered nothing, so its bracket claims nothing.
-     * @returns The considered input ids, or undefined to omit the header.
-     */
-    const consideredInputIds = (): string[] | undefined =>
-      hasProducedOutput ? steerTracker.consideredIds() : undefined;
 
     /**
      * Fire the run's `onSteer` hint, isolating a throwing handler onto the
@@ -426,6 +391,57 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         if (steerTracker.addPending(transportMessageId)) notifySteer();
       },
     };
+    this._register(registration);
+
+    /**
+     * Remove this run from the routing maps: the registry, the pre-open steer
+     * buffer, and any stale deferred cancel. Called when the run ends or its
+     * open publish fails. A suspended run stays registered (see
+     * {@link RegisteredRun}).
+     */
+    const deregister = (): void => {
+      this._registeredRuns.delete(runId);
+      this._preOpenSteersByRunId.delete(runId);
+      this._deferredCancelsByRunId.delete(runId);
+    };
+
+    this._seedPreOpenSteers(runId, steerTracker, notifySteer);
+    this._honourCancelAtOpen(registration);
+
+    const openPromise = this._publishOpen(params);
+    this._handleFailedOpen(openPromise, runId, deregister, hooks?.onError);
+
+    return new DefaultAgentRunTransport<TInput, TOutput>({
+      runId,
+      invocationId,
+      inputTransportMessageId,
+      inputClientId: params.inputClientId,
+      clientId: this._clientId,
+      channel: this._channel,
+      codec: this._codec,
+      runManager: this._runManager,
+      opened: openPromise,
+      signal,
+      steerTracker,
+      hooks: hooks ?? {},
+      // Emit the writer's optimistic step-start / step-end seed on the
+      // transport's own receive stream, so a subscriber sees the bracket
+      // before the wire echo and reconciles it by `stepStartSerial`.
+      emitStepLifecycle: (event) => {
+        this._receiver.emitEvent({ kind: 'step-lifecycle', event });
+      },
+      deregister,
+      logger: this._logger,
+    });
+  }
+
+  /**
+   * Add a run to the cancel-routing registry and remember its id.
+   * @param registration - The run's registry entry.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the run-id is already open.
+   */
+  private _register(registration: RegisteredRun): void {
+    const { runId } = registration;
     if (this._registeredRuns.has(runId)) {
       // One registry entry per run-id: a second handle would overwrite the
       // first, orphaning its abort controller so a cancel reaches only the
@@ -442,118 +458,127 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // held for the next adoption of the same id.
     evictOldestIfFull(this._seenRunIds, runId, DEFERRED_CANCEL_LIMIT);
     this._seenRunIds.add(runId);
+  }
 
-    /**
-     * Remove this run from the routing maps: the registry, the pre-open steer
-     * buffer, and any stale deferred cancel. Called when the run ends or its
-     * open publish fails. A suspended run stays registered (see
-     * {@link RegisteredRun}).
-     */
-    const deregister = (): void => {
-      this._registeredRuns.delete(runId);
-      this._preOpenSteersByRunId.delete(runId);
-      this._deferredCancelsByRunId.delete(runId);
-    };
-
-    // Pull the steers that landed before this run was registered (between connect() and
-    // here, after the attach point). One onSteer hint covers the batch.
-    {
-      const bufferedSteers = this._preOpenSteersByRunId.get(runId);
-      if (bufferedSteers) {
-        this._preOpenSteersByRunId.delete(runId);
-        let seededAny = false;
-        for (const id of bufferedSteers) {
-          if (steerTracker.addPending(id)) seededAny = true;
-        }
-        if (seededAny) {
-          this._logger.debug('AgentTransport._createRun(); seeded pre-open steers', { runId });
-          notifySteer();
-        }
-      }
+  /**
+   * Pull the steers that landed before this run was registered (between
+   * `connect()` and here, after the attach point) into its tracker. One
+   * `onSteer` hint covers the batch.
+   * @param runId - The run's id.
+   * @param steerTracker - The run's steer tracker, to seed.
+   * @param notifySteer - The run's isolated `onSteer` hint.
+   */
+  private _seedPreOpenSteers(runId: string, steerTracker: RunSteerTracker, notifySteer: () => void): void {
+    const bufferedSteers = this._preOpenSteersByRunId.get(runId);
+    if (!bufferedSteers) return;
+    this._preOpenSteersByRunId.delete(runId);
+    let seededAny = false;
+    for (const id of bufferedSteers) {
+      if (steerTracker.addPending(id)) seededAny = true;
     }
+    if (!seededAny) return;
+    this._logger.debug('AgentTransport._seedPreOpenSteers(); seeded pre-open steers', { runId });
+    notifySteer();
+  }
 
-    // Honour a cancel this run is already subject to: one that arrived before
-    // this openRun registered the run-id, or one an earlier attempt of the
-    // same run already honoured. Fire-and-forget: with no onCancel hook the
-    // abort happens synchronously (no await precedes it), and a hook error is
-    // surfaced inside _cancelRegistration.
-    {
-      const buffered = this._deferredCancelsByRunId.get(runId);
-      const sticky = this._cancelledRunIds.get(runId);
-      const pending = buffered ?? sticky;
-      if (pending !== undefined) {
-        this._deferredCancelsByRunId.delete(runId);
-        this._logger.debug('AgentTransport._createRun(); honouring cancel at open', {
-          runId,
-          source: buffered === undefined ? 'cancelled-run' : 'buffered',
-        });
-        // Fire-and-forget: openRun returns the handle synchronously, so there
-        // is nothing to await this on. With no onCancel hook the abort happens
-        // before the first await; a hook error is surfaced inside
-        // _cancelRegistration, and a dispatch failure lands on the error
-        // stream through _reportCancelRoutingFailure.
-        this._cancelRegistration(registration, pending).catch((error: unknown) => {
-          this._reportCancelRoutingFailure(error, { runId });
-        });
-      }
+  /**
+   * Honour a cancel this run is already subject to: one that arrived before
+   * its open verb registered the run-id, or one an earlier attempt of the same
+   * run already honoured.
+   * @param registration - The run's registry entry.
+   */
+  private _honourCancelAtOpen(registration: RegisteredRun): void {
+    const { runId } = registration;
+    const buffered = this._deferredCancelsByRunId.get(runId);
+    const sticky = this._cancelledRunIds.get(runId);
+    const pending = buffered ?? sticky;
+    if (pending === undefined) return;
+    this._deferredCancelsByRunId.delete(runId);
+    this._logger.debug('AgentTransport._honourCancelAtOpen(); honouring cancel', {
+      runId,
+      source: buffered === undefined ? 'cancelled-run' : 'buffered',
+    });
+    // Fire-and-forget: the open verb returns the handle synchronously, so
+    // there is nothing to await this on. With no onCancel hook the abort
+    // happens before the first await; a hook error is surfaced inside
+    // _cancelRegistration, and a dispatch failure lands on the error stream
+    // through _reportCancelRoutingFailure.
+    this._cancelRegistration(registration, pending).catch((error: unknown) => {
+      this._reportCancelRoutingFailure(error, { runId });
+    });
+  }
+
+  /**
+   * Fire the opening publish without awaiting it — the open verb returns
+   * synchronously. It waits for `connect()` to complete first, so
+   * `ai-run-start` cannot beat the subscribe and open a window where a cancel
+   * for this run would be missed.
+   * @param params - The resolved run identity and open mode.
+   * @returns A promise resolving once the run is open on the wire.
+   */
+  private async _publishOpen(params: CreateRunParams): Promise<void> {
+    const { runId, invocationId, inputTransportMessageId } = params;
+    await this._connectGuard.requireConnected('openRun');
+    if (params.open === 'adopt') {
+      // Attach-without-publishing: seed the run manager's owner entry so
+      // output and terminals stamp the real run-client-id, but put nothing
+      // on the wire — the caller publishes only what it means to publish.
+      this._runManager.registerRun(runId, this._clientId);
+      return;
     }
+    await publishLifecycleEvent(
+      {
+        phase: params.open === 'resume' ? 'run-resume' : 'run-start',
+        component: 'AgentTransport',
+        method: 'openRun',
+        runId,
+        logger: this._logger,
+      },
+      async () =>
+        this._runManager.startRun(runId, this._clientId, {
+          invocationId,
+          // The triggering input's publisher, so several clients on one
+          // channel can agree that only the sender executes the run's
+          // client-side tools.
+          inputClientId: params.inputClientId,
+          // Anchor the opening event to its trigger, so a client that
+          // published the input resolves the run-id from the run-start's
+          // input-transport-message-id header (PublishInputResult.runId).
+          inputTransportMessageId,
+          continuation: params.open === 'resume',
+        }),
+    );
+  }
 
-    // Fire the opening publish without awaiting — openRun returns
-    // synchronously. It waits for connect() to complete first, so
-    // `ai-run-start` cannot beat the subscribe and open a window where a
-    // cancel for this run would be missed. The output verbs await this
-    // through `requireConnected`, so `ai-run-start` is on the wire before any
-    // `ai-output`.
-    const openPromise = (async (): Promise<void> => {
-      await this._connectGuard.requireConnected('openRun');
-      if (params.open === 'adopt') {
-        // Attach-without-publishing: seed the run manager's owner entry so
-        // output and terminals stamp the real run-client-id, but put nothing
-        // on the wire — the caller publishes only what it means to publish.
-        this._runManager.registerRun(runId, this._clientId);
-        return;
-      }
-      await publishLifecycleEvent(
-        {
-          phase: params.open === 'resume' ? 'run-resume' : 'run-start',
-          component: 'AgentTransport',
-          method: 'openRun',
-          runId,
-          logger: this._logger,
-        },
-        async () =>
-          this._runManager.startRun(runId, this._clientId, {
-            invocationId,
-            // The triggering input's publisher, so several clients on one
-            // channel can agree that only the sender executes the run's
-            // client-side tools.
-            inputClientId: params.inputClientId,
-            // Anchor the opening event to its trigger, so a client that
-            // published the input resolves the run-id from the run-start's
-            // input-transport-message-id header (PublishInputResult.runId).
-            inputTransportMessageId,
-            continuation: params.open === 'resume',
-          }),
-      );
-    })();
-    // Pre-handle the rejection so an opened-but-never-awaited run cannot
-    // surface an unhandled rejection. This marks the promise handled without
-    // consuming the failure: the handle's `opened` and the `pipe` / `end`
-    // await sites all still reject with it. The failure also reaches the run's
-    // `onError` hook, which is what a caller that awaits no output verb (e.g.
-    // one waiting on the opening event's channel echo) can observe. A run whose
-    // open failed receives no signals, so drop its registration.
+  /**
+   * Pre-handle the opening publish's rejection so an opened-but-never-awaited
+   * run cannot surface an unhandled rejection. This marks the promise handled
+   * without consuming the failure: the handle's `opened` and the `pipe` /
+   * `end` await sites all still reject with it. The failure also reaches the
+   * run's `onError` hook, which is what a caller that awaits no output verb
+   * (e.g. one waiting on the opening event's channel echo) can observe.
+   * @param openPromise - The opening publish.
+   * @param runId - The run's id.
+   * @param deregister - Drops the run from the routing registries.
+   * @param onError - The run's error hook, when the caller supplied one.
+   */
+  private _handleFailedOpen(
+    openPromise: Promise<void>,
+    runId: string,
+    deregister: () => void,
+    onError: ((error: Ably.ErrorInfo) => void) | undefined,
+  ): void {
     openPromise.catch((error: unknown) => {
-      this._logger.error('AgentTransport._createRun(); open publish failed', {
+      this._logger.error('AgentTransport._handleFailedOpen(); open publish failed', {
         runId,
         error: errorMessage(error),
       });
+      // A run whose open failed receives no signals, so drop its registration.
       deregister();
       // This run never reached the wire, so it is not "already ended" — a
       // retry under the same pinned id is expected, and a cancel arriving in
       // between must still buffer for it. Forgetting the id restores that.
       this._seenRunIds.delete(runId);
-      const onError = hooks?.onError;
       if (!onError) return;
       // The open chain already reports a typed failure — publishLifecycleEvent
       // raises RunLifecycleEventPublishFailed, and the connect and argument
@@ -574,197 +599,12 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       } catch (callbackError) {
         // The only record of this: the run's own error hook is what threw, so
         // there is nowhere else to route it.
-        this._logger.error('AgentTransport._createRun(); onError callback threw', {
+        this._logger.error('AgentTransport._handleFailedOpen(); onError callback threw', {
           runId,
           error: errorMessage(callbackError),
         });
       }
     });
-
-    // The output verbs await the opening publish so `ai-run-start` precedes the
-    // first `ai-output` on the wire.
-    const requireConnected = async (): Promise<void> => {
-      await openPromise;
-    };
-
-    const stepWriter = createRunStepWriter<TInput, TOutput>({
-      getRunId: () => runId,
-      invocationId,
-      codec: this._codec,
-      channel: this._channel,
-      runManager: this._runManager,
-      // Emit the writer's optimistic step-start / step-end seed on the
-      // transport's own receive stream, so a subscriber sees the bracket
-      // before the wire echo and reconciles it by `stepStartSerial`.
-      emitStepLifecycle: (event) => {
-        this._receiver.emitEvent({ kind: 'step-lifecycle', event });
-      },
-      // The caller's per-run hooks, `onError` included: the writer fires it
-      // with a wrapped pipe stream failure alongside the `StreamResult.error`
-      // return.
-      hooks: hooks ?? {},
-      signal,
-      markOutputProduced: () => {
-        hasProducedOutput = true;
-      },
-      consumeSteerStampIds: () => steerTracker.consumeRecentlyProcessed(),
-      logger: this._logger,
-      requireConnected,
-      assertPublishable: (verb) => {
-        if (state === 'open') return;
-        const action = verb === 'pipe' ? 'pipe stream' : verb === 'step' ? 'run step' : 'send output';
-        throw new Ably.ErrorInfo(
-          state === 'suspended'
-            ? `unable to ${action}; run ${runId} is suspended`
-            : `unable to ${action}; run ${runId} has already ended`,
-          ErrorCode.InvalidArgument,
-          400,
-        );
-      },
-      // The anchor comes straight from the open options — there is no
-      // triggering-input resolution (a durable agent reads it via locateInput and
-      // threads it through openRun itself).
-      getAnchors: () => ({
-        inputClientId: params.inputClientId,
-        inputTransportMessageId,
-      }),
-    });
-
-    /**
-     * Wrap the writer's `WriterStep` as a {@link RunStepTransport}: the
-     * transport surface has no `start()`, so the step is started lazily on its
-     * first `pipe` / `send`, avoiding an empty `ai-step-start` / `ai-step-end`
-     * bracket for a step that publishes nothing.
-     * @param stepOpts - Optional per-step options passed to the writer.
-     * @returns The transport-facing step handle.
-     */
-    const createStep = (stepOpts?: StepOptions): RunStepTransport<TOutput> => {
-      const step = stepWriter.createStep(stepOpts);
-      let starting: Promise<void> | undefined;
-      // One shared in-flight start, cleared again if it fails. A latched but
-      // failed start would make every later pipe/send reject with "call
-      // start() first", which this wrapper's caller cannot act on because the
-      // surface exposes no start(); clearing it lets the next call retry.
-      const ensureStarted = async (): Promise<void> => {
-        starting ??= (async () => {
-          try {
-            await step.start();
-          } catch (error) {
-            starting = undefined;
-            throw error;
-          }
-        })();
-        await starting;
-      };
-      return {
-        get stepId() {
-          return step.stepId;
-        },
-        pipe: async (source: PipeSource<TOutput>): Promise<StreamResult> => {
-          await ensureStarted();
-          return step.pipe(source);
-        },
-        send: async (event: TOutput): Promise<void> => {
-          await ensureStarted();
-          await step.send(event);
-        },
-        end: async (params?: StepEndParams): Promise<StepEndResult> => step.end(params),
-      };
-    };
-
-    return {
-      get runId() {
-        return runId;
-      },
-      get opened() {
-        return openPromise;
-      },
-      get abortSignal() {
-        return signal;
-      },
-      hasInput: (): boolean => {
-        // Loop driver: run at least once for the triggering input, then again
-        // for each steering message tracked since the previous pass. A cancel
-        // (aborted signal) stops the loop. Reading DRAINS pending steers into
-        // the set the next step attempt stamps, so there is no observe-only
-        // check.
-        if (signal.aborted) return false;
-        const hadPending = steerTracker.hasPending();
-        if (hadPending) steerTracker.drainPending();
-        if (!hasProducedOutput) return true;
-        return hadPending;
-      },
-      pipe: stepWriter.pipe,
-      createStep,
-      suspend: async (): Promise<void> => {
-        this._logger.trace('AgentRunTransport.suspend();', { runId });
-        if (state !== 'open') return;
-        // A suspend mid-step would strand the open step (no `ai-step-end` before
-        // the run pauses); require the caller to end it first. Unlike end,
-        // suspend does not auto-close — a resumed run may continue the step.
-        if (stepWriter.hasActiveStep()) {
-          throw new Ably.ErrorInfo(
-            `unable to suspend run; end the active step before suspending (run ${runId})`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-        await publishLifecycleEvent(
-          { phase: 'run-suspend', component: 'AgentRunTransport', method: 'suspend', runId, logger: this._logger },
-          async () => this._runManager.suspendRun(runId, terminalAttribution()),
-        );
-        // Only after the publish lands, matching `resume()`: a failed suspend
-        // leaves the run open, so the local gate must not close ahead of it.
-        state = 'suspended';
-      },
-      resume: async (): Promise<void> => {
-        this._logger.trace('AgentRunTransport.resume();', { runId });
-        if (state === 'ended') {
-          throw new Ably.ErrorInfo(
-            `unable to resume run; run ${runId} has already ended`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-        // A pure re-entry signal: republish `ai-run-resume` under the same run-id
-        // as a bare re-entry signal (continuation). The gate re-opens only once
-        // the publish succeeds, so a failed resume leaves the run suspended.
-        await publishLifecycleEvent(
-          { phase: 'run-resume', component: 'AgentRunTransport', method: 'resume', runId, logger: this._logger },
-          async () => this._runManager.startRun(runId, this._clientId, { invocationId, continuation: true }),
-        );
-        state = 'open';
-      },
-      end: async (params: RunEndParams): Promise<RunEndResult> => {
-        this._logger.trace('AgentRunTransport.end();', { runId, reason: params.reason });
-        // Terminal and idempotent: a second call publishes nothing, so it has
-        // no acknowledgement to report.
-        if (state === 'ended') return { serial: undefined };
-        state = 'ended';
-        // The run stops receiving signals the moment it is terminal, even if
-        // the terminal publish below is still in flight.
-        deregister();
-        // Auto-close any still-open step first so its `ai-step-end` precedes this
-        // `ai-run-end` on the wire and no observer is stranded. Best-effort — a
-        // step-close failure must not block the run terminal.
-        try {
-          await stepWriter.closeActiveStep(stepEndReasonFor(params.reason));
-        } catch (closeError) {
-          // Best-effort and deliberately tolerated: a step-close failure must
-          // not block the run terminal, so this log is its only record.
-          this._logger.warn('AgentRunTransport.end(); failed to auto-close active step', {
-            runId,
-            error: errorMessage(closeError),
-          });
-        }
-        const error = params.reason === 'error' ? params.error : undefined;
-        const serial = await publishLifecycleEvent(
-          { phase: 'run-end', component: 'AgentRunTransport', method: 'end', runId, logger: this._logger },
-          async () => this._runManager.endRun(runId, params.reason, terminalAttribution(), error),
-        );
-        return { serial };
-      },
-    };
   }
 
   async history(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {

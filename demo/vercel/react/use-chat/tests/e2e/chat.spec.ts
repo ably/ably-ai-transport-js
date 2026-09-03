@@ -291,6 +291,39 @@ test.describe('use-chat demo - chat behaviour', () => {
     await expect(page.getByRole('button', { name: /Approve/i })).toHaveCount(0);
   });
 
+  // checks: a tab that only observes renders the other participant's prompt as
+  // well as the reply. The reply arrives on the resumed run's stream; the
+  // prompt reaches the tab through the adapter's foreign-input hook, and
+  // without it the tab would show an answer to a question it never saw.
+  test("multi-client: an observing tab renders the other participant's turn", async ({ browser }, testInfo) => {
+    const url = freshChannelUrl(testInfo.title);
+    const sender = await browser.newPage();
+    const observer = await browser.newPage();
+    try {
+      await sender.goto(url);
+      await observer.goto(url);
+      // The observer must be attached before the send. Arriving afterwards, its
+      // hydration walk would find the turn in history and prove nothing about
+      // the live path.
+      await observer.getByPlaceholder('Type a message...').waitFor({ state: 'visible' });
+
+      const sentinel = 'FOXTROT-77';
+      const input = sender.getByPlaceholder('Type a message...');
+      await input.waitFor({ state: 'visible' });
+      await input.fill(`Reply with one short sentence acknowledging the marker ${sentinel}.`);
+      await input.press('Enter');
+
+      await expect(userMessages(observer).filter({ hasText: sentinel })).toHaveCount(1, { timeout: 60_000 });
+      await waitForAssistantSettled(observer);
+      expect((await messageText(assistantMessages(observer).last())).length).toBeGreaterThan(0);
+      // One copy of the prompt: the live delivery, not also an echo.
+      await expect(userMessages(observer)).toHaveCount(1);
+    } finally {
+      await sender.close();
+      await observer.close();
+    }
+  });
+
   // checks: reloading mid-stream resumes the live run and the reply completes.
   // The store names the open run, hydration passes it to resumeStream as a
   // reconnect hint, and the adapter joins the run off the channel.

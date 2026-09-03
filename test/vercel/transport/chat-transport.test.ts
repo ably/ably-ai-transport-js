@@ -16,6 +16,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ErrorCode } from '../../../src/errors.js';
+import type { VercelInput } from '../../../src/vercel/codec/events.js';
 import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import {
@@ -158,9 +159,11 @@ describe('ChatTransport', () => {
 
       const stream = await chat.sendMessages(sendOptions([userMessage('u1', 'hello')]));
 
-      expect(fake.published).toEqual([
-        { event: { kind: 'message', payload: userMessage('u1', 'hello') }, opts: undefined },
-      ]);
+      expect(fake.published).toHaveLength(1);
+      expect(fake.published[0]?.event).toEqual({ kind: 'message', payload: userMessage('u1', 'hello') });
+      // The adapter mints the id rather than leaving it to the transport, so
+      // it can recognise its own echo (see onForeignInput).
+      expect(fake.published[0]?.opts?.transportMessageId).toBeTypeOf('string');
       expect(fetchMock).toHaveBeenCalledOnce();
       const init = fetchMock.mock.calls[0]?.[1] as { body?: string } | undefined;
       const body = JSON.parse(init?.body ?? '{}') as Record<string, unknown>;
@@ -657,9 +660,9 @@ describe('ChatTransport', () => {
         sendOptions([userMessage('u1', 'hi')], { trigger: 'regenerate-message', messageId: 'a1' }),
       );
 
-      expect(fake.published).toEqual([
-        { event: { kind: 'regenerate', payload: { messageId: 'a1' } }, opts: undefined },
-      ]);
+      expect(fake.published).toHaveLength(1);
+      expect(fake.published[0]?.event).toEqual({ kind: 'regenerate', payload: { messageId: 'a1' } });
+      expect(fake.published[0]?.opts?.transportMessageId).toBeTypeOf('string');
     });
 
     it('rejects when useChat names no message', async () => {
@@ -1394,6 +1397,144 @@ describe('ChatTransport', () => {
       off();
 
       fake.emit(runStartEvent('run-someone-else'));
+
+      expect(seen).toEqual([]);
+    });
+  });
+
+  describe('onForeignInput', () => {
+    it('reports a user turn another participant published', () => {
+      const { fake, chat } = setup();
+      const seen: VercelInput[] = [];
+      chat.onForeignInput((input) => seen.push(input));
+
+      fake.emit(
+        messageEvent(
+          { transportMessageId: 'cm-theirs' },
+          { inputs: [{ kind: 'message', payload: userMessage('u9', 'hi from the other tab') }] },
+        ),
+      );
+
+      expect(seen).toEqual([{ kind: 'message', payload: userMessage('u9', 'hi from the other tab') }]);
+    });
+
+    it('reports every input on one event, in wire order', () => {
+      const { fake, chat } = setup();
+      const seen: VercelInput[] = [];
+      chat.onForeignInput((input) => seen.push(input));
+
+      fake.emit(
+        messageEvent(
+          { transportMessageId: 'cm-theirs' },
+          {
+            inputs: [
+              { kind: 'message', payload: userMessage('u9', 'part one') },
+              { kind: 'message', payload: userMessage('u9', 'part two') },
+            ],
+          },
+        ),
+      );
+
+      expect(seen.map((input) => (input.kind === 'message' ? input.payload.parts : undefined))).toEqual([
+        [{ type: 'text', text: 'part one' }],
+        [{ type: 'text', text: 'part two' }],
+      ]);
+    });
+
+    it("stays quiet for the echo of this client's own send", async () => {
+      stubChatFetch();
+      const { fake, chat } = setup('run-1');
+      const seen: VercelInput[] = [];
+      chat.onForeignInput((input) => seen.push(input));
+
+      const user = userMessage('u1', 'hello');
+      await chat.sendMessages(sendOptions([user]));
+      const own = fake.published[0]?.opts?.transportMessageId;
+      expect(own).toBeTypeOf('string');
+      fake.emit(messageEvent({ transportMessageId: own }, { inputs: [{ kind: 'message', payload: user }] }));
+
+      expect(seen).toEqual([]);
+    });
+
+    it('stays quiet for the echo of a continuation, which shares the assistant id', async () => {
+      stubChatFetch();
+      const { fake, chat } = setup('run-1');
+      const seen: VercelInput[] = [];
+      chat.onForeignInput((input) => seen.push(input));
+
+      const assistant = approvedAssistant('a1');
+      await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: 'a1' }));
+      const own = fake.published[0]?.opts?.transportMessageId;
+      fake.emit(
+        messageEvent(
+          { transportMessageId: own },
+          { inputs: [{ kind: 'approval', payload: { messageId: 'a1', toolCallId: 'call-1', approved: true } }] },
+        ),
+      );
+
+      expect(seen).toEqual([]);
+    });
+
+    it('reports a foreign input while this client is streaming its own run', async () => {
+      stubChatFetch();
+      const { fake, chat } = setup('run-1');
+      const seen: VercelInput[] = [];
+      chat.onForeignInput((input) => seen.push(input));
+
+      await chat.sendMessages(sendOptions([userMessage('u1', 'hi')]));
+      await Promise.resolve();
+      fake.emit(
+        messageEvent(
+          { transportMessageId: 'cm-theirs' },
+          { inputs: [{ kind: 'message', payload: userMessage('u9', 'meanwhile') }] },
+        ),
+      );
+
+      expect(seen).toEqual([{ kind: 'message', payload: userMessage('u9', 'meanwhile') }]);
+    });
+
+    it('ignores an event carrying only output', () => {
+      const { fake, chat } = setup();
+      const seen: VercelInput[] = [];
+      chat.onForeignInput((input) => seen.push(input));
+
+      fake.emit(
+        messageEvent({ transportMessageId: 'cm-theirs', runId: 'run-9' }, { outputs: assistantChunks('a9', 'reply') }),
+      );
+
+      expect(seen).toEqual([]);
+    });
+
+    it('keeps notifying when one callback throws', () => {
+      const { fake, chat } = setup();
+      const seen: VercelInput[] = [];
+      chat.onForeignInput(() => {
+        throw new Error('subscriber blew up');
+      });
+      chat.onForeignInput((input) => seen.push(input));
+
+      fake.emit(
+        messageEvent(
+          { transportMessageId: 'cm-theirs' },
+          { inputs: [{ kind: 'message', payload: userMessage('u9', 'hi') }] },
+        ),
+      );
+
+      expect(seen).toHaveLength(1);
+    });
+
+    it('unsubscribes', () => {
+      const { fake, chat } = setup();
+      const seen: VercelInput[] = [];
+      const off = chat.onForeignInput((input) => seen.push(input));
+      off();
+
+      fake.emit(
+        messageEvent(
+          { transportMessageId: 'cm-theirs' },
+          { inputs: [{ kind: 'message', payload: userMessage('u9', 'hi') }] },
+        ),
+      );
 
       expect(seen).toEqual([]);
     });

@@ -24,6 +24,7 @@ const mockCancel = vi.fn<ChatTransport['cancel']>(async () => {});
 const mockReconnect = vi.fn<ChatTransport['reconnectToStream']>(async () => null);
 const mockReadSince = vi.fn<ChatTransport['readSince']>(async () => ({ messages: [], exhausted: true }));
 const mockForeignRun = vi.fn<ChatTransport['onForeignRun']>(() => () => {});
+const mockForeignInput = vi.fn<ChatTransport['onForeignInput']>(() => () => {});
 
 /**
  * A fresh adapter per test. The demo's hydration caches its store read per
@@ -40,6 +41,7 @@ const makeChatTransport = (): ChatTransport => ({
   streaming: false,
   onStreamingChange: () => () => {},
   onForeignRun: mockForeignRun,
+  onForeignInput: mockForeignInput,
 });
 
 let mockChatTransport: ChatTransport = makeChatTransport();
@@ -106,6 +108,7 @@ describe('<Chat>', () => {
     mockReadSince.mockClear();
     mockReadSince.mockResolvedValue({ messages: [], exhausted: true });
     mockForeignRun.mockClear();
+    mockForeignInput.mockClear();
     mockChatTransport = makeChatTransport();
     mockSendMessages.mockResolvedValue(chunkStreamOf([]));
     // Hydration reads the server's conversation store over HTTP. An empty
@@ -199,6 +202,63 @@ describe('<Chat>', () => {
     await waitFor(() => {
       expect(mockReconnect).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('renders the user turn another participant published', async () => {
+    render(<Chat chatId="ai:test" />);
+
+    await waitFor(() => {
+      expect(mockForeignInput).toHaveBeenCalled();
+    });
+    // resumeStream carries the foreign run's output alone, so without this the
+    // reply would render with nothing that prompted it.
+    const notify = mockForeignInput.mock.calls[0]?.[0];
+    if (!notify) throw new Error('no foreign-input callback registered');
+    notify({
+      kind: 'message',
+      payload: { id: 'u-theirs', role: 'user', parts: [{ type: 'text', text: 'their prompt' }] },
+    });
+
+    expect(await screen.findByText('their prompt')).not.toBeNull();
+  });
+
+  it('concatenates the parts of a foreign turn that arrives as several inputs', async () => {
+    render(<Chat chatId="ai:test" />);
+
+    await waitFor(() => {
+      expect(mockForeignInput).toHaveBeenCalled();
+    });
+    const notify = mockForeignInput.mock.calls[0]?.[0];
+    if (!notify) throw new Error('no foreign-input callback registered');
+    // One user message reaches the channel as one wire message per part, so
+    // the same id arrives more than once and must not overwrite itself.
+    notify({
+      kind: 'message',
+      payload: { id: 'u-theirs', role: 'user', parts: [{ type: 'text', text: 'first part' }] },
+    });
+    notify({
+      kind: 'message',
+      payload: { id: 'u-theirs', role: 'user', parts: [{ type: 'text', text: 'second part' }] },
+    });
+
+    const bubble = await screen.findByText(/first part/);
+    expect(bubble.textContent).toContain('second part');
+  });
+
+  it('ignores a foreign input that is not a whole message', async () => {
+    render(<Chat chatId="ai:test" />);
+
+    await waitFor(() => {
+      expect(mockForeignInput).toHaveBeenCalled();
+    });
+    const notify = mockForeignInput.mock.calls[0]?.[0];
+    if (!notify) throw new Error('no foreign-input callback registered');
+    // A regenerate names a message rather than carrying one, so there is
+    // nothing to append for it.
+    notify({ kind: 'regenerate', payload: { messageId: 'a1' } });
+
+    await screen.findByPlaceholderText('Type a message...');
+    expect(screen.queryByText('a1')).toBeNull();
   });
 
   it('cancels the run on the channel when Stop is pressed', async () => {

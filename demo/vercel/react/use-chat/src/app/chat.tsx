@@ -146,55 +146,56 @@ function ChatInner({
   // into channel publishes plus the wake-the-agent POST, with the reply
   // streaming back off the channel. A run still streaming at page load is
   // picked up by the resume effect below.
-  const { messages, sendMessage, stop, status, addToolOutput, addToolApprovalResponse, resumeStream } = useChat({
-    id: chatId,
-    transport: chatTransport,
-    messages: initialMessages,
-    // Auto-submit the continuation once addToolOutput resolves tool calls OR
-    // addToolApprovalResponse resolves approvals. The resolution carries no
-    // run id, so its POST wakes a fresh run that answers.
-    sendAutomaticallyWhen: ({ messages: msgs }) =>
-      lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
-      lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
-    onToolCall: ({ toolCall }) => {
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type: 'onToolCall',
-          summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})`,
-        },
-      ]);
-      if (!hasClientTool(toolCall.toolName)) return;
-      // Execute the browser-side tool and feed the result back to useChat;
-      // sendAutomaticallyWhen then POSTs the continuation.
-      void runClientTool(toolCall.toolName, toolCall.toolCallId, toolCall.input, recordClientTool).then((result) => {
-        if ('output' in result) {
-          addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.output });
-        } else {
-          addToolOutput({
-            state: 'output-error',
-            tool: toolCall.toolName,
-            toolCallId: toolCall.toolCallId,
-            errorText: result.errorText,
-          });
-        }
-      });
-    },
-    onFinish: ({ message, finishReason }) => {
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type: 'onFinish',
-          summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
-        },
-      ]);
-    },
-    onError: (error) => {
-      setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'onError', summary: error.message }]);
-    },
-  });
+  const { messages, setMessages, sendMessage, stop, status, addToolOutput, addToolApprovalResponse, resumeStream } =
+    useChat({
+      id: chatId,
+      transport: chatTransport,
+      messages: initialMessages,
+      // Auto-submit the continuation once addToolOutput resolves tool calls OR
+      // addToolApprovalResponse resolves approvals. The resolution carries no
+      // run id, so its POST wakes a fresh run that answers.
+      sendAutomaticallyWhen: ({ messages: msgs }) =>
+        lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
+        lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
+      onToolCall: ({ toolCall }) => {
+        setCallbackLog((prev) => [
+          ...prev,
+          {
+            time: Date.now(),
+            type: 'onToolCall',
+            summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})`,
+          },
+        ]);
+        if (!hasClientTool(toolCall.toolName)) return;
+        // Execute the browser-side tool and feed the result back to useChat;
+        // sendAutomaticallyWhen then POSTs the continuation.
+        void runClientTool(toolCall.toolName, toolCall.toolCallId, toolCall.input, recordClientTool).then((result) => {
+          if ('output' in result) {
+            addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.output });
+          } else {
+            addToolOutput({
+              state: 'output-error',
+              tool: toolCall.toolName,
+              toolCallId: toolCall.toolCallId,
+              errorText: result.errorText,
+            });
+          }
+        });
+      },
+      onFinish: ({ message, finishReason }) => {
+        setCallbackLog((prev) => [
+          ...prev,
+          {
+            time: Date.now(),
+            type: 'onFinish',
+            summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
+          },
+        ]);
+      },
+      onError: (error) => {
+        setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'onError', summary: error.message }]);
+      },
+    });
 
   // useChat hands back a fresh `resumeStream` identity every render, and
   // resuming sets status, so an effect that depends on it re-runs forever.
@@ -202,6 +203,10 @@ function ChatInner({
   const resumeStreamRef = useRef(resumeStream);
   useEffect(() => {
     resumeStreamRef.current = resumeStream;
+  });
+  const setMessagesRef = useRef(setMessages);
+  useEffect(() => {
+    setMessagesRef.current = setMessages;
   });
 
   // Step five of hydration, once per mount: pick up whatever the walk
@@ -225,6 +230,33 @@ function ChatInner({
   // has seen, which is the wrong one while two participants overlap.
   useEffect(
     () => chatTransport.onForeignRun((runId) => void resumeStreamRef.current({ body: { runId } })),
+    [chatTransport],
+  );
+
+  // The turn that prompted a foreign run. resumeStream carries the run's
+  // output alone and the reducer behind it builds one assistant message, so
+  // without this the other participant's reply arrives with nothing that asked
+  // for it. The input lands before the run starts, so appending here puts the
+  // prompt above the reply.
+  //
+  // One user message reaches the channel as one wire message per part, so the
+  // same id can arrive more than once and the parts are concatenated. The
+  // adapter suppresses this client's own publishes, so nothing here has to
+  // recognise them.
+  useEffect(
+    () =>
+      chatTransport.onForeignInput((input) => {
+        if (input.kind !== 'message') return;
+        const foreign = input.payload;
+        setMessagesRef.current((prev) => {
+          const at = prev.findIndex((message) => message.id === foreign.id);
+          const existing = at === -1 ? undefined : prev[at];
+          if (existing === undefined) return [...prev, foreign];
+          const next = [...prev];
+          next[at] = { ...existing, parts: [...existing.parts, ...foreign.parts] };
+          return next;
+        });
+      }),
     [chatTransport],
   );
 

@@ -68,6 +68,15 @@ const RETAINED_RUN_LIMIT = 8;
 const LIVE_BUFFER_LIMIT = 2000;
 
 /**
+ * Cap on the transport-message-ids the adapter remembers as its own, so
+ * {@link ChatTransport.onForeignInput} can suppress the echo of this client's
+ * own publish. An echo arrives within milliseconds of the publish that caused
+ * it, so a short window is enough and the set cannot grow with the
+ * conversation.
+ */
+const OWN_INPUT_ID_LIMIT = 64;
+
+/**
  * How long a send waits for the channel to name its run before giving up.
  * Nothing else bounds that wait: a route that answers 200 and then dies, or an
  * agent that opens its run without threading the triggering input, would
@@ -214,6 +223,28 @@ export interface ChatTransport<
    * @returns An unsubscribe function.
    */
   onForeignRun(callback: (runId: string) => void): () => void;
+  /**
+   * Subscribe to inputs another participant published on the shared channel.
+   *
+   * `reconnectToStream` carries a run's output alone, and the reducer behind
+   * it builds one assistant message, so a client that only observes another
+   * participant's run renders the reply with nothing that prompted it. This is
+   * how the prompt reaches it. The callback fires for every input decoded off
+   * the channel except this adapter's own publishes, and fires before the run
+   * those inputs trigger starts.
+   *
+   * Unlike {@link onForeignRun} it is not gated on being idle: an input this
+   * adapter declines is lost until the next hydration, where a run it declines
+   * to resume ends on its own.
+   *
+   * An application appends a `kind: 'message'` payload to useChat's list with
+   * `setMessages`, upserting on `UIMessage.id` and concatenating parts — one
+   * user message reaches the channel as one wire message per part, so it can
+   * arrive as several inputs sharing that id.
+   * @param callback - Called with each foreign input to observe it.
+   * @returns An unsubscribe function.
+   */
+  onForeignInput(callback: (input: VercelInput<TMetadata, TDataParts, TTools>) => void): () => void;
 }
 
 /** Internal event map backing the adapter's streaming state. */
@@ -485,6 +516,19 @@ class DefaultChatTransport<
   private readonly _unendedRunIds = new Set<string>();
 
   private readonly _foreign = new Set<(runId: string) => void>();
+  private readonly _foreignInputs = new Set<(input: VercelInput<TMetadata, TDataParts, TTools>) => void>();
+  /**
+   * The transport-message-ids this adapter published, newest last, bounded by
+   * {@link OWN_INPUT_ID_LIMIT}.
+   *
+   * A publish echoes back like any other delivery, and
+   * {@link onForeignInput} must not report this client's own turn as another
+   * participant's. An id is claimed before its publish rather than read off the
+   * publish result, because the echo and the publish acknowledgement are
+   * separate deliveries and nothing orders them — an echo that beats the
+   * acknowledgement is still recognised.
+   */
+  private readonly _ownInputIds = new Set<string>();
   private readonly _emitter: EventEmitter<StreamingEvents>;
   private readonly _unsubscribe: () => void;
   private readonly _unsubscribeError: () => void;
@@ -505,6 +549,7 @@ class DefaultChatTransport<
       this._trackOpenRun(event);
       for (const collector of this._collectors) collector(event);
       this._notifyForeignRun(event);
+      this._notifyForeignInput(event);
     });
     // Channel continuity loss means the stream can silently miss its run's
     // terminal, so error every open stream rather than leaving useChat stuck
@@ -536,6 +581,13 @@ class DefaultChatTransport<
     };
   }
 
+  onForeignInput(callback: (input: VercelInput<TMetadata, TDataParts, TTools>) => void): () => void {
+    this._foreignInputs.add(callback);
+    return () => {
+      this._foreignInputs.delete(callback);
+    };
+  }
+
   close(): void {
     this._logger.info('ChatTransport.close(); stopping delivery');
     this._closed = true;
@@ -550,6 +602,7 @@ class DefaultChatTransport<
     this._streamingRunIds.clear();
     this._pendingRunIds.clear();
     this._unendedRunIds.clear();
+    this._ownInputIds.clear();
     this._retained.clear();
     this._walkedPages = [];
     this._walkExhausted = false;
@@ -720,7 +773,10 @@ class DefaultChatTransport<
     message: AI.UIMessage<TMetadata, TDataParts, TTools>,
     abortSignal: AbortSignal | undefined,
   ): Promise<ReadableStream<AI.UIMessageChunk>> {
-    return this._send(abortSignal, async () => this._transport.publishInput({ kind: 'message', payload: message }));
+    const transportMessageId = this._claimInputId();
+    return this._send(abortSignal, async () =>
+      this._transport.publishInput({ kind: 'message', payload: message }, { transportMessageId }),
+    );
   }
 
   /**
@@ -748,10 +804,11 @@ class DefaultChatTransport<
     }
     // The last publish is the one the POST points at: the agent locates that
     // input and the earlier actions are already on the channel ahead of it.
+    const transportMessageId = this._claimInputId(assistant.id);
     return this._send(abortSignal, async () => {
-      let sent = await this._transport.publishInput(first, { transportMessageId: assistant.id });
+      let sent = await this._transport.publishInput(first, { transportMessageId });
       for (const action of rest) {
-        sent = await this._transport.publishInput(action, { transportMessageId: assistant.id });
+        sent = await this._transport.publishInput(action, { transportMessageId });
       }
       return sent;
     });
@@ -770,8 +827,9 @@ class DefaultChatTransport<
     if (messageId === undefined) {
       throw new Ably.ErrorInfo('unable to regenerate; useChat named no message', ErrorCode.InvalidArgument, 400);
     }
+    const transportMessageId = this._claimInputId();
     return this._send(abortSignal, async () =>
-      this._transport.publishInput({ kind: 'regenerate', payload: { messageId } }),
+      this._transport.publishInput({ kind: 'regenerate', payload: { messageId } }, { transportMessageId }),
     );
   }
 
@@ -1089,6 +1147,52 @@ class DefaultChatTransport<
         this._logger.error('ChatTransport._notifyForeignRun(); callback threw', { error });
       }
     }
+  }
+
+  /**
+   * Tell the foreign-input subscribers about an input another participant
+   * published.
+   *
+   * The `_ownInputIds` check is exact, so this needs no idle gate of its own:
+   * the client's own turn is suppressed by id, and a turn another participant
+   * sends while this one is streaming still reaches the application.
+   * @param event - The classified transport event.
+   */
+  private _notifyForeignInput(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
+    if (this._foreignInputs.size === 0) return;
+    if (event.kind !== 'message' || event.inputs.length === 0) return;
+    const { transportMessageId } = event.meta;
+    if (transportMessageId !== undefined && this._ownInputIds.has(transportMessageId)) return;
+    for (const input of event.inputs) {
+      for (const callback of this._foreignInputs) {
+        try {
+          callback(input);
+        } catch (error) {
+          this._logger.error('ChatTransport._notifyForeignInput(); callback threw', { error });
+        }
+      }
+    }
+  }
+
+  /**
+   * Settle the transport-message-id a send publishes under, and remember it as
+   * this adapter's own so {@link onForeignInput} does not report the echo.
+   *
+   * Re-seats an id already held so the set's iteration order stays newest-last,
+   * which is what the cap evicts from.
+   * @param transportMessageId - The id the send path already addresses, when it has one.
+   * @returns The id to publish under.
+   */
+  private _claimInputId(transportMessageId?: string): string {
+    const id = transportMessageId ?? crypto.randomUUID();
+    this._ownInputIds.delete(id);
+    this._ownInputIds.add(id);
+    while (this._ownInputIds.size > OWN_INPUT_ID_LIMIT) {
+      const oldest = this._ownInputIds.values().next();
+      if (oldest.done === true) break;
+      this._ownInputIds.delete(oldest.value);
+    }
+    return id;
   }
 
   /**

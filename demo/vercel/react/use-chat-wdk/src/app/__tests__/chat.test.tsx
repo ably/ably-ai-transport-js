@@ -28,6 +28,7 @@ const { mockSendMessages, mockCancel, mockChatTransport } = vi.hoisted(() => {
     streaming: false,
     onStreamingChange: () => () => {},
     onForeignRun: () => () => {},
+    onForeignInput: () => () => {},
   };
   return { mockSendMessages: send, mockCancel: cancel, mockChatTransport: chatTransport };
 });

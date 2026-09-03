@@ -15,18 +15,35 @@ generic layer and on its own provider SDK, never on another codec. Shared
 header/event/message-name constants, Ably message helpers, and the SDK's own
 identity sit at the top of `src/`. Tests mirror `src/` under `test/`.
 
-The package ships five entry points, each with its own `index.ts` (see the
+`src/temporal/` is neither layer. It is codec-agnostic like the generic layer,
+and framework-specific like a codec directory, so it forms a third kind:
+an **integration** for a host framework rather than for a provider's wire
+format. The rule it follows is the codec directories' rule with the codec part
+removed — it may depend on the generic layer and on its own framework SDK,
+never on any codec and never on another integration. Nothing in it reads a
+codec's wire types; the codec arrives as a parameter, exactly as it does for
+the generic transports.
+
+The package ships several entry points, each with its own `index.ts` (see the
 table). That `index.ts` is the authoritative list of what is public — only
 types and functions it re-exports are public API. A new codec adds a new entry
 point rather than changing an existing one.
 
-| Entry point                       | Purpose                                                                  | Peer deps             |
-| --------------------------------- | ------------------------------------------------------------------------ | --------------------- |
-| `@ably/ai-transport`              | Core, codec-agnostic transport and codec contracts                       | `ably`                |
-| `@ably/ai-transport/react`        | Generic React hooks and providers for any codec                          | `ably`, `react`       |
-| `@ably/ai-transport/vercel`       | Vercel AI SDK codec, transport factories, and the chat-transport adapter | `ably`, `ai`          |
-| `@ably/ai-transport/vercel/react` | React hooks for Vercel's `useChat`                                       | `ably`, `ai`, `react` |
-| `@ably/ai-transport/openai`       | OpenAI Responses wire codec                                              | `ably`, `openai`      |
+| Entry point                            | Purpose                                                                  | Peer deps               |
+| -------------------------------------- | ------------------------------------------------------------------------ | ----------------------- |
+| `@ably/ai-transport`                   | Core, codec-agnostic transport and codec contracts                       | `ably`                  |
+| `@ably/ai-transport/react`             | Generic React hooks and providers for any codec                          | `ably`, `react`         |
+| `@ably/ai-transport/vercel`            | Vercel AI SDK codec, transport factories, and the chat-transport adapter | `ably`, `ai`            |
+| `@ably/ai-transport/vercel/react`      | React hooks for Vercel's `useChat`                                       | `ably`, `ai`, `react`   |
+| `@ably/ai-transport/openai`            | OpenAI Responses wire codec                                              | `ably`, `openai`        |
+| `@ably/ai-transport/temporal`          | Worker-side durable execution: framing activities and the plugin         | `ably`, `@temporalio/*` |
+| `@ably/ai-transport/temporal/workflow` | Workflow-side helpers                                                    | `@temporalio/workflow`  |
+
+The two Temporal entry points are split for a reason the sandbox enforces:
+worker-side code (`src/temporal/`) may import `ably` and
+`@temporalio/activity`; workflow-side code (`src/temporal/workflow/`) may not.
+A worker-side import leaking into the workflow half fails the Temporal test
+tier, which bundles the workflow through a real `Worker`.
 
 Each row's Purpose is a summary, not a symbol list — the entry point's own
 `index.ts` is the authoritative surface.
@@ -34,6 +51,8 @@ Each row's Purpose is a summary, not a symbol list — the entry point's own
 ## Two-layer architecture
 
 The codebase splits into two layers: a **generic layer** and a **codec layer**.
+(A framework integration such as `src/temporal/` sits outside both; see
+Layout.)
 The codec layer is implemented once per provider — each such implementation a
 _codec_ (Vercel, OpenAI, …). This separation is the most important invariant to
 preserve:

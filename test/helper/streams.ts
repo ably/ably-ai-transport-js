@@ -17,6 +17,23 @@ export const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
 };
 
 /**
+ * Read a ReadableStream in the background, appending each chunk to `sink` as it
+ * arrives. Unlike {@link drain} this exposes the chunks before the stream
+ * closes, which is what a test asserting on a partial reply needs.
+ * @param stream - The stream to read.
+ * @param sink - The array each chunk is appended to.
+ * @returns Resolves once the stream closes.
+ */
+export const readInto = async <T>(stream: ReadableStream<T>, sink: T[]): Promise<void> => {
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    sink.push(value);
+  }
+};
+
+/**
  * Let pending microtasks settle so a not-yet-closed stream can be observed.
  * @returns A promise resolved after the microtask queue drains.
  */

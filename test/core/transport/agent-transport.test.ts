@@ -12,8 +12,8 @@
  * stream. `locateInput` scans channel history on a throwaway decoder to find
  * the input event a durable invocation resumes from. `history()` pages the
  * channel backwards on the live stream's decoder and returns each older slice
- * as a chronological batch — the batch walk itself is pinned in
- * history-walk.test.ts, so the history tests here cover only the transport's
+ * as a chronological batch — the batch read itself is pinned in
+ * history-batch.test.ts, so the history tests here cover only the transport's
  * wiring: no live emission, a cursor kept across calls, and decode failures
  * routed onto `error`. A steering message — a client input under an open
  * run's run-id — routes onto the run's steer tracking (`hasInput()`, the
@@ -163,7 +163,7 @@ const headerOf = (channel: MockChannel, name: string, header: string): string | 
  * @param opts - Optional test overrides.
  * @param opts.clientId - The agent's clientId, stamped on the run lifecycle.
  * @param opts.decoded - The inputs the codec decoder yields for `ai-input` messages.
- * @param opts.historyPages - The channel-history pages `locateInput` and `history` walk (newest first).
+ * @param opts.historyPages - The channel-history pages `locateInput` and `history` read (newest first).
  * @param opts.connect - Set false to leave the transport unconnected.
  * @returns The transport, the mocks, and the collected streams.
  */

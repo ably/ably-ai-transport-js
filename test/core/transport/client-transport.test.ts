@@ -10,8 +10,8 @@
  * the returned `transportMessageId`. Its result carries a `runId` promise, resolved from the first
  * `ai-run-start` whose `input-transport-message-id` matches the publish and
  * rejected on close or continuity loss. `history()` returns older events as chronological batches
- * without emitting them — the batch walk itself is pinned in
- * history-walk.test.ts, so the history tests here cover only the transport's
+ * without emitting them — the batch read itself is pinned in
+ * history-batch.test.ts, so the history tests here cover only the transport's
  * wiring: no live emission, a cursor kept across calls, and decode failures
  * routed onto `error`. `cancel` publishes a stateless `ai-cancel` envelope.
  * `steer` publishes a steering user input into an open run: `published`

@@ -115,7 +115,7 @@ describe('loadHistoryPages', () => {
     }
   });
 
-  it('retries a mid-walk page.next() failure with backoff before succeeding', async () => {
+  it('retries a mid-read page.next() failure with backoff before succeeding', async () => {
     const m1 = ablyMsg();
     const m2 = ablyMsg();
     let nextCalls = 0;
@@ -146,10 +146,10 @@ describe('loadHistoryPages', () => {
     expect(nextCalls).toBe(2);
   });
 
-  it('rejects `SessionHistoryFetchFailed` when a mid-walk page.next() exhausts retries', async () => {
+  it('rejects `SessionHistoryFetchFailed` when a mid-read page.next() exhausts retries', async () => {
     const m1 = ablyMsg();
     // CAST: the cursor only reads `items`, `hasNext()`, and `next()`; `next()`
-    // always fails so the walk exhausts its retries.
+    // always fails so the history read exhausts its retries.
     const page1 = {
       items: [m1],
       hasNext: () => true,
@@ -222,7 +222,7 @@ describe('loadHistoryPages', () => {
     );
   });
 
-  it('aborts between pages when the signal fires mid-walk', async () => {
+  it('aborts between pages when the signal fires mid-read', async () => {
     const ctrl = new AbortController();
     const m1 = ablyMsg();
     const m2 = ablyMsg();

@@ -1,7 +1,7 @@
 /**
  * HistoryPager unit tests — the per-transport pager over the shared
- * `walkHistoryBatch`. The walk contract itself is pinned in
- * history-walk.test.ts; these tests cover what the pager owns: the cursor
+ * `readHistoryBatch`. The history read contract itself is pinned in
+ * history-batch.test.ts; these tests cover what the pager owns: the cursor
  * opens lazily on the first call (no channel traffic before it), each call
  * returns the next older slice, concurrent calls serialise onto one cursor,
  * and a decode failure routes to `onDecodeError` without failing the batch.
@@ -75,7 +75,7 @@ describe('HistoryPager', () => {
     const channel = createMockChannel([[outputMsg('s1', 'one')]]);
     const pager = new HistoryPager<TestInput, TestOutput>({ channel, pageSize: 10, decoder: createNameAwareDecoder() });
 
-    // The chain exists so one caller walks at a time; a link's failure is its
+    // The chain exists so one caller reads at a time; a link's failure is its
     // own caller's to observe, and must not reject the caller behind it.
     const failing = pager.next({ signal: AbortSignal.abort() });
     const follower = pager.next();

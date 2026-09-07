@@ -29,6 +29,16 @@ export interface EventRecorder<TInput, TOutput> {
    * @returns Resolves when the predicate holds.
    */
   waitFor: (predicate: (events: TransportEvent<TInput, TOutput>[]) => boolean) => Promise<void>;
+  /**
+   * Resolve with the first recorded event that satisfies `match`, waiting for
+   * one to arrive when none has yet. Use it where the test then asserts on
+   * that event, so the wait and the read are one step.
+   * @param match - The condition the event must satisfy.
+   * @returns The matching event.
+   */
+  waitForEvent: (
+    match: (event: TransportEvent<TInput, TOutput>) => boolean,
+  ) => Promise<TransportEvent<TInput, TOutput>>;
 }
 
 /**
@@ -38,6 +48,13 @@ export interface EventRecorder<TInput, TOutput> {
 export const createEventRecorder = <TInput, TOutput>(): EventRecorder<TInput, TOutput> => {
   const events: TransportEvent<TInput, TOutput>[] = [];
   const waiters: { predicate: (events: TransportEvent<TInput, TOutput>[]) => boolean; resolve: () => void }[] = [];
+
+  const waitFor = async (predicate: (events: TransportEvent<TInput, TOutput>[]) => boolean): Promise<void> => {
+    if (predicate(events)) return;
+    await new Promise<void>((resolve) => {
+      waiters.push({ predicate, resolve });
+    });
+  };
 
   return {
     events,
@@ -52,11 +69,12 @@ export const createEventRecorder = <TInput, TOutput>(): EventRecorder<TInput, TO
         }
       }
     },
-    waitFor: async (predicate) => {
-      if (predicate(events)) return;
-      await new Promise<void>((resolve) => {
-        waiters.push({ predicate, resolve });
-      });
+    waitFor,
+    waitForEvent: async (match) => {
+      await waitFor((all) => all.some((event) => match(event)));
+      const found = events.find((event) => match(event));
+      if (!found) throw new Error('waitForEvent settled with no matching event');
+      return found;
     },
   };
 };

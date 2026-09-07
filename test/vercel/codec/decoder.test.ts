@@ -1218,6 +1218,18 @@ describe('Vercel decoder', () => {
       expect(messages[0]?.parts).toEqual([{ type: 'text', text: 'Hello world' }]);
     });
 
+    it('decodes an ai-input regenerate wire into the message it regenerates from', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: '' },
+        { [HEADER_STREAM]: 'false', kind: 'regenerate', messageId: 'asst-3' },
+      );
+
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(inputs).toEqual([{ kind: 'regenerate', payload: { messageId: 'asst-3' } }]);
+      expect(outputs).toHaveLength(0);
+    });
+
     it('decodes agent-published data-* events under ai-output as output events, not message parts', () => {
       const decoder = createDecoder();
       const msg = withHeaders(

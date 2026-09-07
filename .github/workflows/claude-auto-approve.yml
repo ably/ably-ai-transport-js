@@ -94,13 +94,15 @@ jobs:
             - Documentation, comments, log message tweaks
             - Trivial dependency bumps (patch versions, dev-only deps, type-definition packages, where the diff doesn't suggest behaviour changes)
             - Pure formatting / lint fixes
-            - CI workflow tweaks
+            - CI changes to an existing workflow that leave its permissions, triggers, and secret usage as they are — bumping a pinned action, adjusting a test matrix, correcting a step's command, changing a timeout
 
             This is not exhaustive — apply judgement. The question to ask is "if this merged with no human review, what is the realistic worst case?" If the worst case is a small, easily-revertable issue and the change looks sound, it's low-risk.
 
             **needs-human** — should be reviewed by a human. Everything not classified as low-risk.
 
             Treat any change to published API surface as needs-human, including changes to an entry point's `index.ts` re-exports, even when the diff looks small.
+
+            Treat a change to what CI is *allowed to do* as needs-human, however small the diff: a new workflow file, or an edit to a `permissions:` block, a trigger list, the secrets a job reads, or the scopes of a token it mints. The same goes for anything that changes who or what can approve, merge, or publish — including this auto-approve workflow and the scripts it calls. For this category the test is not whether the change is small, sound, or easy to revert; it is whether it widens what automation can do with no human in the loop.
 
             For dependabot PRs specifically: bumps of dev-only, test-only, or type-definition packages are low-risk. For other things, have a look around how the dependency is used in the repo and make a judgement call.
 

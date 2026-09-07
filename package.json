@@ -28,6 +28,12 @@
       "import": "./dist/vercel/ably-ai-transport-vercel.js",
       "require": "./dist/vercel/ably-ai-transport-vercel.umd.cjs"
     },
+    "./vercel/react": {
+      "types": "./dist/vercel/react/index.d.ts",
+      "react-native": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs",
+      "import": "./dist/vercel/react/ably-ai-transport-vercel-react.js",
+      "require": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs"
+    },
     "./openai": {
       "types": "./dist/openai/index.d.ts",
       "react-native": "./dist/openai/ably-ai-transport-openai.umd.cjs",
@@ -37,11 +43,12 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:openai",
+    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:vercel-react && pnpm run build:openai",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
     "build:react": "vite build --config ./src/react/vite.config.ts --emptyOutDir",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
+    "build:vercel-react": "vite build --config ./src/vercel/react/vite.config.ts --emptyOutDir",
     "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "prepare": "pnpm run build",
     "lint": "eslint .",
@@ -109,6 +116,7 @@
     }
   },
   "devDependencies": {
+    "@ai-sdk/react": "^4.0.30",
     "@eslint/compat": "^2.0.5",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^10.0.1",

@@ -28,6 +28,7 @@ export default [
   security.configs.recommended,
   {
     ignores: [
+      'demo/**',
       '**/eslint.config.js',
       '**/dist',
       '**/node_modules',
@@ -45,6 +46,7 @@ export default [
       '.claude/worktrees/**',
       'react/**',
       'vercel/**',
+      'vercel/react/**',
       'openai/**',
     ],
   },

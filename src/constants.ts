@@ -165,7 +165,7 @@ export const HEADER_STEER_TRANSPORT_MESSAGE_IDS = 'steer-transport-message-ids';
  * Omitted when the run produced no output (nothing was considered).
  *
  * The bracket is the run's consumption receipt: it is published after every
- * output of the run, so a client (live, or replaying a history walk) resolves
+ * output of the run, so a client (live, or replaying a history read) resolves
  * "was this input processed?" from one event by id membership, without
  * scanning the run's outputs. Checklist semantics — the list only contains
  * ids an attempt actually took, so a skipped input is never falsely claimed.

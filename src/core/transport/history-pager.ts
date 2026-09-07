@@ -2,7 +2,7 @@
  * The shared per-transport history pager: the lazily opened backward cursor
  * plus the single-flight chain both transports run their `history()` calls
  * through. The pager owns the cursor's lifetime and the serialisation; the
- * walk itself lives in {@link walkHistoryBatch}, and the caller supplies the
+ * read itself lives in {@link readHistoryBatch}, and the caller supplies the
  * channel, page size, decoder, and decode-failure surface.
  */
 
@@ -11,8 +11,8 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import type { Decoder } from '../codec/types.js';
-import type { WalkHistoryBatchContext } from './history-walk.js';
-import { walkHistoryBatch } from './history-walk.js';
+import type { HistoryBatchContext } from './history-batch.js';
+import { readHistoryBatch } from './history-batch.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 import type { TransportHistoryOptions, TransportHistoryResult } from './types/transport.js';
 
@@ -34,7 +34,7 @@ export interface HistoryPagerOptions<TInput, TOutput> {
   decoder: Decoder<TInput, TOutput>;
   /** Logger for diagnostics. */
   logger?: Logger;
-  /** Called with each wrapped decode failure (see {@link walkHistoryBatch}). */
+  /** Called with each wrapped decode failure (see {@link readHistoryBatch}). */
   onDecodeError?: (err: Ably.ErrorInfo) => void;
 }
 
@@ -50,8 +50,8 @@ export class HistoryPager<TInput, TOutput> {
   private readonly _pageSize: number;
   private readonly _decoder: Decoder<TInput, TOutput>;
   private readonly _logger: Logger | undefined;
-  private readonly _onDecodeError: WalkHistoryBatchContext<TInput, TOutput>['onDecodeError'];
-  /** The lazily opened backward cursor; `undefined` until the first walk. */
+  private readonly _onDecodeError: HistoryBatchContext<TInput, TOutput>['onDecodeError'];
+  /** The lazily opened backward cursor; `undefined` until the first read. */
   private _cursor: HistoryPagesCursor | undefined;
   /** Tail of the single-flight chain — always a settled or in-flight void promise. */
   private _tail: Promise<void> = Promise.resolve();
@@ -76,7 +76,7 @@ export class HistoryPager<TInput, TOutput> {
     const prev = this._tail;
     const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
       await prev;
-      return this._walk(opts);
+      return this._readBatch(opts);
     })();
     this._tail = (async (): Promise<void> => {
       try {
@@ -88,12 +88,14 @@ export class HistoryPager<TInput, TOutput> {
     return mine;
   }
 
-  private async _walk(opts: TransportHistoryOptions | undefined): Promise<TransportHistoryResult<TInput, TOutput>> {
+  private async _readBatch(
+    opts: TransportHistoryOptions | undefined,
+  ): Promise<TransportHistoryResult<TInput, TOutput>> {
     // Check before the cursor is opened, so an already-aborted call costs no
     // attach and no page fetch. The signal is deliberately not bound to the
     // cursor: it is shared across calls, and an aborted signal would wedge its
     // `hasNext()` at false, making a later call report `exhausted` for a
-    // channel it never finished walking.
+    // channel it never finished reading.
     if (opts?.signal?.aborted) {
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
@@ -102,7 +104,7 @@ export class HistoryPager<TInput, TOutput> {
       untilAttach: true,
       logger: this._logger,
     });
-    return walkHistoryBatch(
+    return readHistoryBatch(
       {
         cursor: this._cursor,
         decoder: this._decoder,

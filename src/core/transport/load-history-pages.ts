@@ -144,7 +144,7 @@ const fetchPageWithRetry = async (
  * Caller drives the cursor — calling `next()` until it returns `undefined`
  * or stopping early when a domain-specific stop condition is met
  * (e.g. complete-message counter satisfied, target transport-message-id found,
- * parent chain walk reaches root).
+ * parent chain traversal reaches root).
  *
  * The initial Ably history call is awaited eagerly so the returned cursor
  * already knows whether there are pages available (via `hasNext()`).

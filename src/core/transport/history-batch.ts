@@ -1,5 +1,5 @@
 /**
- * The shared history batch walk behind {@link ClientTransport.history} and
+ * The shared history batch read behind {@link ClientTransport.history} and
  * {@link AgentTransport.history}: page the channel backwards through a
  * {@link HistoryPagesCursor} and classify each wire message into a
  * {@link TransportEvent}, returning one chronological batch per call.
@@ -7,7 +7,7 @@
  * Each transport owns its cursor and decoder (both share their live stream's
  * decoder, so a stream spanning the attach boundary is decoded once) and the
  * single-flight serialisation of concurrent calls — this module owns only the
- * walk itself.
+ * read itself.
  */
 
 import * as Ably from 'ably';
@@ -21,15 +21,15 @@ import { classifyWireMessage } from './receive-transport.js';
 import type { TransportEvent, TransportHistoryOptions, TransportHistoryResult } from './types/transport.js';
 
 /**
- * The pieces a transport hands the walk: its cursor, its decoder, and how a
+ * The pieces a transport hands the history read: its cursor, its decoder, and how a
  * decode failure surfaces.
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface WalkHistoryBatchContext<TInput, TOutput> {
+export interface HistoryBatchContext<TInput, TOutput> {
   /** The backward page cursor to advance. The caller keeps it across calls so each batch resumes where the last stopped. */
   cursor: HistoryPagesCursor;
-  /** The decoder to classify wires on. Advancing it here mutates its per-stream state, so the caller decides which decoder the walk shares. */
+  /** The decoder to classify wires on. Advancing it here mutates its per-stream state, so the caller decides which decoder the history read shares. */
   decoder: Decoder<TInput, TOutput>;
   /** Logger for diagnostics; decode failures and batch completion are logged here. */
   logger?: Logger;
@@ -62,8 +62,8 @@ export interface WalkHistoryBatchContext<TInput, TOutput> {
  * @param opts - The caller's batch bounds.
  * @returns The batch of classified events and the exhaustion flag.
  */
-export const walkHistoryBatch = async <TInput, TOutput>(
-  ctx: WalkHistoryBatchContext<TInput, TOutput>,
+export const readHistoryBatch = async <TInput, TOutput>(
+  ctx: HistoryBatchContext<TInput, TOutput>,
   opts: TransportHistoryOptions | undefined,
 ): Promise<TransportHistoryResult<TInput, TOutput>> => {
   const { cursor, decoder, logger } = ctx;
@@ -78,7 +78,7 @@ export const walkHistoryBatch = async <TInput, TOutput>(
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
     const chunk = await cursor.next();
-    reportPage(opts?.onPage, 'walkHistoryBatch', logger);
+    reportPage(opts?.onPage, 'readHistoryBatch', logger);
     // `next()` returning undefined means the cursor is permanently spent —
     // genuine exhaustion.
     if (!chunk) break;
@@ -96,7 +96,7 @@ export const walkHistoryBatch = async <TInput, TOutput>(
         event = classifyWireMessage(decoder, wire);
       } catch (error) {
         const err = wrapMessageProcessingError(error);
-        logger?.error('walkHistoryBatch(); decode failed, message skipped', {
+        logger?.error('readHistoryBatch(); decode failed, message skipped', {
           serial: wire.serial,
           code: err.code,
         });
@@ -107,7 +107,7 @@ export const walkHistoryBatch = async <TInput, TOutput>(
     }
   }
 
-  logger?.debug('walkHistoryBatch(); batch collected', {
+  logger?.debug('readHistoryBatch(); batch collected', {
     events: events.length,
     exhausted: !cursor.hasNext(),
   });

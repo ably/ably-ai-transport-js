@@ -40,20 +40,19 @@ export const fSourceId = strField('sourceId', '');
 
 // --- input-side bindings (shared by the input descriptors' encode/decode) ---
 
-/** Domain message id (`message.id`) stamped on every user-message part — distinct from the `transport-message-id` wire header. */
+/** Domain message id (`message.id`) stamped on every user-message part — distinct from the `transport-message-id` wire header, which the transport tier owns. */
 export const fMessageId = strField('messageId');
+/**
+ * The domain message id an action addresses — the assistant message an
+ * approval decision patches, or the message a regeneration starts from. Shares
+ * the `messageId` header with {@link fMessageId} and carries the same kind of
+ * value, but is defaulted to total because those bodies require it.
+ */
+export const fTargetMessageId = strField('messageId', '');
 /** Whether the user approved a tool execution — defaulted to total so an absent header reads `false`. */
 export const fApproved = boolField('approved', false);
 /** Optional human-readable reason on a tool-approval response. */
 export const fReason = strField('reason');
-
-/**
- * The domain message id an action addresses — the message a regeneration
- * starts from. Shares the `messageId` header with {@link fMessageId} and
- * carries the same kind of value, but is defaulted to total because those
- * bodies require it.
- */
-export const fTargetMessageId = strField('messageId', '');
 
 /**
  * Validated finish reason. Mirrors the AI SDK's `FinishReason` literals and

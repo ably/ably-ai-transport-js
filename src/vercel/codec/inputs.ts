@@ -43,21 +43,23 @@ const isEncodablePart = (part: AI.UIMessage['parts'][number]): boolean =>
 export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly InputDescriptor<VercelInput>[] => [
   // --- tool resolution: the AI SDK's own chunk as the body ---------------------
 
-  // The whole chunk rides the wire data, so the decoded body is exactly what
-  // the provider's reducer consumes. Malformed wire data throws at this trust
-  // boundary — the receive path drops the one message and surfaces an error.
+  // The chunk is the wire data, so the decoded body carries exactly what the
+  // provider's reducer consumes; the addressed message id is a header beside
+  // it. Malformed wire data throws at this trust boundary — the receive path
+  // drops the one message and surfaces an error.
   event('chunk', {
+    fields: [fTargetMessageId],
     data: {
-      encode: (chunk) => chunk,
-      decode: (d) => readToolOutputChunkWireData(d),
+      encode: (payload) => payload.chunk,
+      decode: (d) => ({ chunk: readToolOutputChunkWireData(d) }),
     },
   }),
 
   // --- approval decision: the codec-defined body -------------------------------
 
-  event('approval', { fields: [fToolCallId, fApproved, fReason] }),
+  event('approval', { fields: [fTargetMessageId, fToolCallId, fApproved, fReason] }),
 
-  // --- regeneration signal --------------------------------------------------------
+  // --- regeneration signal ------------------------------------------------------
 
   // `regenerate` names the message useChat is regenerating from. The id is
   // domain data for the agent to act on; it describes no conversation

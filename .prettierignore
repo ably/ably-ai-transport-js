@@ -1,3 +1,22 @@
 ably-common/
 specification/
+.next/
+.next-e2e/
+.vercel/
+next-env.d.ts
 pnpm-lock.yaml
+# shared-frontend owns its own format:check (see its CI job); its prettier
+# version is pinned inside the package and may drift from the root's, so skip
+# it here to avoid two prettier versions racing on the same file.
+demo/shared-frontend/
+
+# Playwright run artifacts (gitignored; not source)
+**/test-results/
+
+# WDK-generated workflow routes, written into the source tree when the demo runs
+# (a nested .gitignore covers them for git; prettier does not read nested ones)
+demo/**/.well-known/workflow/
+
+# Vendored shadcn/ui primitives — regeneratable, kept in shadcn's own formatting
+demo/**/src/components/ui/
+demo/**/src/lib/utils.ts

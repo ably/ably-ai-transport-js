@@ -106,12 +106,12 @@ export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
 /**
  * Invoke a caller's per-page progress callback inside an error bracket. The
  * callback reports progress and nothing more, so a throw from it is logged and
- * the walk carries on: failing the scan it is reporting on would turn a
- * heartbeat bug into a lost history read, and there is no error surface a
- * progress-only callback belongs on. Every history walk reports through here so
+ * the scan carries on: failing the scan it is reporting on would turn a
+ * heartbeat bug into a lost page of history, and there is no error surface a
+ * progress-only callback belongs on. Every history read reports through here so
  * the isolation cannot drift between them.
  * @param onPage - The caller's callback, or undefined when none was supplied.
- * @param site - The reporting walk's name, for the log line.
+ * @param site - The reporting read's name, for the log line.
  * @param logger - Optional logger for the throw.
  */
 export const reportPage = (onPage: (() => void) | undefined, site: string, logger?: Logger): void => {

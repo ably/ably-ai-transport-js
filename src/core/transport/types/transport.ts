@@ -239,7 +239,7 @@ export interface TransportHistoryOptions {
    * Called after each page fetch completes, before the next fetch begins. A
    * durable consumer uses it as a heartbeat while a long scan pages the
    * channel; it observes progress only, and its return value is ignored. A
-   * throw is logged and the walk continues — the callback cannot fail the
+   * throw is logged and the history read continues — the callback cannot fail the
    * call it is reporting on.
    */
   onPage?: () => void;
@@ -350,7 +350,7 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
    * Page the channel's history backwards from the attach point and return the
    * classified events as a batch — never emitted to `subscribe` handlers.
    * Each call returns the next older slice and leaves the cursor paused, so
-   * repeated calls walk toward the start of the channel. Decoding shares the
+   * repeated calls reach back toward the start of the channel. Decoding shares the
    * live stream's decoder, so a stream spanning the attach boundary is not
    * double-decoded; a single undecodable message is skipped and emitted on
    * `error`. Single-flight: concurrent calls serialise. Requires
@@ -453,7 +453,7 @@ export interface RunEndResult {
    * A run publishes nothing after its end, and the end serializes after the
    * run's outputs, so every message this run put on the channel is at or
    * before this serial. That is what an application needs to record a
-   * watermark for the conversation it just stored: a later reader walks the
+   * watermark for the conversation it just stored: a later reader reads the
    * channel back only as far as it. Note the bound covers *this* run's
    * messages, not another participant's — a store on a shared channel is
    * complete up to this serial only if it accounts for everything else below
@@ -748,7 +748,7 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * throwaway decoder so it never perturbs the live receive stream's dedup
    * state. Resolves `undefined` when no matching input is found in history —
    * including when `opts.limit` bounded the scan before the whole channel was
-   * walked, so a bounded caller decides what a miss means for its own retry
+   * read, so a bounded caller decides what a miss means for its own retry
    * semantics.
    * @param eventId - The `event-id` to match (the invocation's `inputEventId`).
    * @param opts - Optional scan bounds; see {@link TransportHistoryOptions}.
@@ -762,7 +762,7 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * classified events as a batch — never emitted to `subscribe` handlers — so
    * the agent can assemble prior conversation context for an inference call.
    * Each call returns the next older slice and leaves the cursor paused, so
-   * repeated calls walk toward the start of the channel. Decoding shares the
+   * repeated calls reach back toward the start of the channel. Decoding shares the
    * live stream's decoder, so a stream spanning the attach boundary is not
    * double-decoded ({@link locateInput}'s throwaway scans stay separate); a
    * single undecodable message is skipped and emitted on `error`.

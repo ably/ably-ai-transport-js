@@ -5,9 +5,9 @@
  * explicit `toolName`) for a dynamic tool, or `tool-${name}` for a
  * statically-declared tool (the codec preserves whichever the source used).
  * Both shapes carry `toolCallId` and `state`. The guard accepts either so the
- * tool-scanning helpers in `tool-registry.ts` match tool parts uniformly, and
- * so the cross-representation rule lives in one place rather than being
- * re-spelled per call site.
+ * transport's unresolved-tool detection and the React overlay merge can match
+ * tool parts uniformly — and so the cross-representation rule lives in one
+ * place rather than being re-spelled per call site.
  */
 
 import type * as AI from 'ai';

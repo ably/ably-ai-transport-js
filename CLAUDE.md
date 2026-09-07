@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`@ably/ai-transport` — an Ably transport and the wire codecs for building AI applications on it. The transport carries runs, steps and codec events over one Ably channel and holds no conversation state; the application merges the event stream into its own messages. Ships as a single npm package with four entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
+`@ably/ai-transport` — an Ably transport and the wire codecs for building AI applications on it. The transport carries runs, steps and codec events over one Ably channel and holds no conversation state; the application merges the event stream into its own messages. Ships as a single npm package with five entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
 
 ## Commands
 

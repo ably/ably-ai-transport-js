@@ -3,7 +3,11 @@
 ## Layout
 
 The generic layer lives in `src/core/` and `src/react/`; each codec lives in its own directory
-(`src/vercel/`, `src/openai/`, …) under a `codec/` subdirectory. A codec entry
+(`src/vercel/`, `src/openai/`, …) with the wire format under a `codec/`
+subdirectory. A codec directory may ship more than the codec: `src/vercel/`
+also carries a `transport/` (convenience factories pre-bound to the codec, plus
+the adapter that satisfies the interface Vercel's `useChat` expects) and a
+`react/` layered on the generic React entry point. A codec entry
 point may also ship provider-shaped helpers outside `codec/` — modules that
 map a provider result onto transport types or derive loop state from provider
 items rather than defining wire format. Such a helper may depend on the
@@ -11,17 +15,18 @@ generic layer and on its own provider SDK, never on another codec. Shared
 header/event/message-name constants, Ably message helpers, and the SDK's own
 identity sit at the top of `src/`. Tests mirror `src/` under `test/`.
 
-The package ships four entry points, each with its own `index.ts` (see the
+The package ships five entry points, each with its own `index.ts` (see the
 table). That `index.ts` is the authoritative list of what is public — only
 types and functions it re-exports are public API. A new codec adds a new entry
 point rather than changing an existing one.
 
-| Entry point                 | Purpose                                            | Peer deps        |
-| --------------------------- | -------------------------------------------------- | ---------------- |
-| `@ably/ai-transport`        | Core, codec-agnostic transport and codec contracts | `ably`           |
-| `@ably/ai-transport/react`  | Generic React hooks and providers for any codec    | `ably`, `react`  |
-| `@ably/ai-transport/vercel` | Vercel AI SDK wire codec                           | `ably`, `ai`     |
-| `@ably/ai-transport/openai` | OpenAI Responses wire codec                        | `ably`, `openai` |
+| Entry point                       | Purpose                                                                  | Peer deps             |
+| --------------------------------- | ------------------------------------------------------------------------ | --------------------- |
+| `@ably/ai-transport`              | Core, codec-agnostic transport and codec contracts                       | `ably`                |
+| `@ably/ai-transport/react`        | Generic React hooks and providers for any codec                          | `ably`, `react`       |
+| `@ably/ai-transport/vercel`       | Vercel AI SDK codec, transport factories, and the chat-transport adapter | `ably`, `ai`          |
+| `@ably/ai-transport/vercel/react` | React hooks for Vercel's `useChat`                                       | `ably`, `ai`, `react` |
+| `@ably/ai-transport/openai`       | OpenAI Responses wire codec                                              | `ably`, `openai`      |
 
 Each row's Purpose is a summary, not a symbol list — the entry point's own
 `index.ts` is the authoritative surface.
@@ -208,7 +213,13 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     same order — ably-js compares them order-sensitively, so two resolvers that
     disagree reattach the channel or silently revert its mode set. See
     `src/core/channel-options.ts`.
-11. **No message assembly in the SDK** — no reducer, no merge driver, no
-    projection type. The application demultiplexes a batch's `message` events
-    by their transport-message-id and merges each bucket with the provider's own
-    machinery.
+11. **No message assembly anywhere in the package** — no reducer, no merge
+    driver and no projection type. A codec may **demultiplex**, which is
+    deciding which wire messages belong to one logical message, because that is
+    a fact about the wire and only the codec holds the keys for it: see
+    `readSince` in `src/vercel/transport/chat-transport.ts`, which groups on the
+    transport-message-id and then joins the groups whose `start` chunk names the
+    same message. Turning a group into a message is the application's, through
+    the provider's own reducer; `demo/shared-frontend/src/lib/assemble-messages.ts`
+    is the worked example. A consumer of the core transport gets no grouping at
+    all, because a logical message is a codec concept.

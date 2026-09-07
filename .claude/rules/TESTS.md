@@ -75,18 +75,56 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
   retry: the trigger is published before the agent attaches, and the scan is
   bounded at the attach point, so the platform has persisted it by then.
 
+### Where the tier lives
+
+Every integration test sits under `test/integration/`, in a subdirectory
+mirroring the part of `src/` it exercises: `test/integration/core/` for the
+codec-agnostic transports and `test/integration/vercel/` for the Vercel codec,
+its chat-transport adapter, and the useChat wiring. Both vitest configs select
+the tier by filename (`*.integration.test.ts`), so a new subdirectory needs no
+config change.
+
+### What every test in the tier owes
+
+Each one has three jobs, and they matter equally: exercise only the public API
+(what an `index.ts` re-exports, never a private field), read as the code a
+developer would write to get the behaviour, and fail when the behaviour breaks.
+The second one constrains how a test is written. The API calls stay in the body
+of the test, and helpers cover only what a developer does not write themselves:
+a channel name, a fixture output stream, and waiting for an event. A local
+helper that wraps a sequence of API calls hides the thing the test exists to
+show.
+
 ### What the tier covers today
 
-**Codec level**, in `test/vercel/codec/wire-codec.integration.test.ts`: a text
-and tool-call roundtrip over a real channel, proving the wire format and Ably's
-message serialization.
+**Codec level**, in `test/integration/vercel/wire-codec.integration.test.ts`: a
+text and tool-call roundtrip over a real channel, proving the wire format and
+Ably's message serialization.
 
-**Transport level**, in `test/integration/transport.integration.test.ts`:
-send-and-stream, a tool call resolving through the transport, the cancel chain,
-steering settling for a client running with `echoMessages: false`, sequential
-and concurrent runs, backwards history paging, the attach boundary, error
-propagation, multi-client sync, and durable cross-process re-entry through
-`adoptRun`.
+**Transport level**, in `test/integration/core/transport.integration.test.ts`:
+a whole turn from send to reply, a cancel that aborts a streaming run, steering
+with both its promises settling, a client observing a run another participant
+started, a tool call resolving through the transport, steering settling for a
+client running with `echoMessages: false`, sequential and concurrent runs,
+backwards history paging, the attach boundary, error propagation, and durable
+cross-process re-entry through `adoptRun`.
+
+**Adapter level**, in `test/integration/vercel/chat-transport.integration.test.ts`:
+a send streaming its reply, a foreign run reaching an idle client and a busy
+one, a regenerate, an edit waking a fresh run, a refresh resuming an in-flight
+run from its store's serial, a superseded step attempt erroring the stream and
+its repair, reading a finished conversation out of history, and withholding an
+in-flight run for a resume. Failures reaching useChat's status and `onError`
+live beside it in `use-chat-error-propagation.integration.test.ts`, the one
+integration file that mounts a real `useChat`.
+
+The tests that hold a run open across a refresh or a cancel share two rules
+worth stating once. A route that means to leave its run in flight does not
+await its `pipe`, and whatever finishes that run later must await the pipe
+before publishing the terminal, because ending a run while its pipe is still
+flushing cuts the rest of the reply off the wire. And a test waiting for a
+partial reply waits for a `text-delta` rather than any output event: a streamed
+message opens on its first delivery and its text arrives on a later append.
 
 Rather than list the scenarios here — the suite's own `it` titles are the
 authoritative list — this is what the tier is _for_, and what a new scenario

@@ -1,0 +1,28 @@
+# Supply chain hardening: only allow build scripts for known packages.
+allowBuilds:
+  # Rust-based module resolver used by eslint-plugin-import-x.
+  unrs-resolver: true
+  # Image-processing native binary used by Next.js for image optimisation.
+  sharp: true
+  # SWC compiler — powers the Vercel Workflow directive transform
+  # (`"use workflow"` / `"use step"`) that `withWorkflow` installs.
+  '@swc/core': true
+  # Bundler used by Vitest for test transforms.
+  esbuild: true
+  # Native CBOR decoder pulled in transitively by the Workflow runtime.
+  cbor-extract: true
+
+# Reject packages published less than 7 days ago, except for Ably-owned
+# packages which we trust without a cooldown.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - '@ably/*'
+  - 'ably'
+
+# Pin ai / react to the exact versions the linked SDK was built against so
+# tsc sees a single Tool / UIMessage / RealtimeChannel type identity between
+# the demo's node_modules and the SDK's dist declarations.
+overrides:
+  ai: '7.0.32'
+  react: '19.2.6'
+  react-dom: '19.2.6'

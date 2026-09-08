@@ -8,6 +8,7 @@ export type {
   ClientTransport,
   ClientTransportOptions,
   DeliverEventResult,
+  InvocationData,
   LocatedInput,
   OpenRunHooks,
   OpenRunOptions,
@@ -18,6 +19,7 @@ export type {
   RunEndParams,
   RunEndReason,
   RunEndResult,
+  RunIdentity,
   RunLifecycleEvent,
   RunStepTransport,
   SteerOutcome,
@@ -39,6 +41,7 @@ export {
   createAgentTransport,
   createClientTransport,
   createReceiveTransport,
+  Invocation,
 } from './core/transport/index.js';
 
 // Channel resolution for a caller-owned channel: the SDK's channel agent

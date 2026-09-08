@@ -5,7 +5,9 @@
     "./src/react/index.ts",
     "./src/vercel/index.ts",
     "./src/vercel/react/index.ts",
-    "./src/openai/index.ts"
+    "./src/openai/index.ts",
+    "./src/temporal/index.ts",
+    "./src/temporal/workflow/index.ts"
   ],
   "out": "typedoc/generated",
   "treatWarningsAsErrors": false,

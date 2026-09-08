@@ -258,6 +258,9 @@ export class DefaultAgentRunTransport<TInput, TOutput> implements AgentRunTransp
       get stepId() {
         return step.stepId;
       },
+      get ended() {
+        return step.ended;
+      },
       pipe: async (source: PipeSource<TOutput>): Promise<StreamResult> => {
         await ensureStarted();
         return step.pipe(source);

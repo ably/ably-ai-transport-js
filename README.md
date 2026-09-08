@@ -24,6 +24,7 @@ Everything you need to get started with Ably AI Transport:
 
 - [Get started with the Core SDK.](https://ably.com/docs/ai-transport/getting-started/core-sdk)
 - [Get started with Vercel AI SDK.](https://ably.com/docs/ai-transport/getting-started/vercel-ai-sdk)
+- [Get started with Temporal.](https://ably.com/docs/ai-transport/getting-started/temporal)
 
 ---
 
@@ -33,16 +34,17 @@ Ably aims to support a wide range of platforms. If you experience any compatibil
 
 This SDK supports the following platforms:
 
-| Platform      | Support                                                                                   |
-| ------------- | ----------------------------------------------------------------------------------------- |
-| Node.js       | Version 22 or newer.                                                                      |
-| Browsers      | All major desktop and mobile browsers, including Chrome, Firefox, Edge, and Safari.       |
-| TypeScript    | Fully supported, the library is written in TypeScript and ships its own type definitions. |
-| React         | Versions 18 and 19, through `@ably/ai-transport/react`.                                   |
-| Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                    |
-| OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                   |
+| Platform      | Support                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| Node.js       | Version 22 or newer.                                                                       |
+| Browsers      | All major desktop and mobile browsers, including Chrome, Firefox, Edge, and Safari.        |
+| TypeScript    | Fully supported, the library is written in TypeScript and ships its own type definitions.  |
+| React         | Versions 18 and 19, through `@ably/ai-transport/react`.                                    |
+| Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                     |
+| OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                    |
+| Temporal      | TypeScript SDK v1, through the durable-execution helpers in `@ably/ai-transport/temporal`. |
 
-The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
+The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, `react`, and the `@temporalio/*` packages are optional peer dependencies, each needed only by the entry point that uses it.
 
 ---
 

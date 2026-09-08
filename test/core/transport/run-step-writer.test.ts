@@ -119,6 +119,23 @@ describe('createRunStepWriter', () => {
     await expect(ended.send({ type: 'text' })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
+  it('reports ended once the step is closed, whether or not it ever started', async () => {
+    const { writer } = setup();
+
+    const started = writer.createStep();
+    expect(started.ended).toBe(false);
+    await started.start();
+    expect(started.ended).toBe(false);
+    await started.end();
+    expect(started.ended).toBe(true);
+
+    // A step closed before it started publishes nothing, and still reads as
+    // ended so a caller does not try to close it again.
+    const unstarted = writer.createStep();
+    await unstarted.end();
+    expect(unstarted.ended).toBe(true);
+  });
+
   it('a send publish failure marks the step failed, so a bare end() settles failed', async () => {
     const { writer, emitted } = setup({ codec: createFailingCodec() });
 

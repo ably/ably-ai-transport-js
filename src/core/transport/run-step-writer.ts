@@ -340,7 +340,11 @@ export const createRunStepWriter = <TInput, TOutput>(
     lastStepId = stepId;
     lastStepReason = reason;
     if (stepStartSerial === undefined) {
-      logger?.warn('RunStepWriter.closeStep(); no step-start-serial for step, skipping step-end', { runId, stepId });
+      // A step that never published has no `ai-step-start` to close, so there
+      // is no `ai-step-end` to publish. This is a routine path, not a fault: a
+      // helper that ends the step after every body reaches it whenever the
+      // body returned before producing output.
+      logger?.debug('RunStepWriter.closeStep(); step never started, no step-end to publish', { runId, stepId });
       return undefined;
     }
     const scopes = stepScopes(stepClientId);
@@ -682,6 +686,9 @@ export const createRunStepWriter = <TInput, TOutput>(
     return {
       get stepId() {
         return stepId;
+      },
+      get ended() {
+        return state === 'settled';
       },
       start: async (): Promise<void> => {
         logger?.trace('WriterStep.start();', { runId, stepId });

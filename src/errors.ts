@@ -27,6 +27,12 @@ export enum ErrorCode {
   InsufficientCapability = 40160,
 
   /**
+   * The requested resource does not exist (Ably 40400) — e.g. the input event
+   * an invocation was woken for is not present in the scanned channel history.
+   */
+  NotFound = 40400,
+
+  /**
    * The operation conflicted with the current state of what it addressed
    * (Ably 40900), so it could not be completed.
    *

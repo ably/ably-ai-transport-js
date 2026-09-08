@@ -10,5 +10,9 @@ export default defineConfig({
     // repeats are gone and the number lives here instead. It is not a response
     // to anything getting slower.
     testTimeout: 45_000,
+    // The Temporal area boots a throwaway Temporal server and bundles workflow
+    // code with webpack in `beforeAll`, which does not fit vitest's 10s hook
+    // default. Matches `vitest.config.temporal.ts`, where the same work runs.
+    hookTimeout: 60_000,
   },
 });

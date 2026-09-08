@@ -1,0 +1,27 @@
+# Supply chain hardening: only allow build scripts for known packages.
+allowBuilds:
+  # Rust-based module resolver used by eslint-plugin-import-x.
+  unrs-resolver: true
+  # Image-processing native binary used by Next.js for image optimisation.
+  sharp: true
+  # Native Rust compiler used by @temporalio/worker for workflow bundling.
+  '@swc/core': true
+  # Native JS/TS bundler; a transitive dep of the Temporal worker.
+  esbuild: true
+  # Native protobuf codec used across the Temporal SDKs.
+  protobufjs: true
+
+# Reject packages published less than 7 days ago, except for Ably-owned
+# packages which we trust without a cooldown.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - '@ably/*'
+  - 'ably'
+
+# Pin ai / react to the exact versions the linked SDK was built against so
+# tsc sees a single UIMessage / RealtimeChannel type identity between the
+# demo's node_modules and the SDK's dist declarations.
+overrides:
+  ai: '7.0.32'
+  react: '19.2.6'
+  react-dom: '19.2.6'

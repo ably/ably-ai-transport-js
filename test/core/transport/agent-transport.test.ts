@@ -1181,6 +1181,19 @@ describe('createAgentTransport', () => {
       expect(again.serial).toBeUndefined();
     });
 
+    it('publishes the start and the end under idempotent ids built from the run and invocation ids', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1', invocationId: 'inv-1' });
+      await run.end({ reason: 'complete' });
+
+      // A fresh-process retry republishes both events under the same ids, so
+      // Ably drops the duplicates rather than landing a second start or end.
+      const byName = new Map(channel.publishCalls.map((message) => [message.name, message.id]));
+      expect(byName.get('ai-run-start')).toBe('inv-1-run-1-start');
+      expect(byName.get('ai-run-end')).toBe('inv-1-run-1-end');
+    });
+
     it('publishes ai-run-start with a minted run-id and returns the run handle', async () => {
       const { transport, channel } = await setup({ clientId: 'agent-a' });
 
@@ -1636,10 +1649,14 @@ describe('createAgentTransport', () => {
       const run = transport.openRun({ runId: 'run-1' });
       const step = run.createStep();
       await step.send({ type: 'text', text: 'hi' });
+      expect(step.ended).toBe(false);
       await run.end({ reason: 'complete' });
 
       const names = channel.publishNames();
       expect(names.indexOf('ai-step-end')).toBeLessThan(names.indexOf('ai-run-end'));
+      // The auto-close settles the step, so a holder of the step handle can
+      // see it is closed without ending it again.
+      expect(step.ended).toBe(true);
     });
 
     it('publishes ai-run-end and leaves the handle terminal', async () => {

@@ -313,6 +313,52 @@ describe('RunManager', () => {
     });
   });
 
+  describe('idempotent message ids', () => {
+    // A retry that republishes a run's start or end under the same run and
+    // invocation must land once, so those two publishes carry an id built from
+    // that identity alone. Ably drops a later publish with the same id.
+    it('publishes run-start under an id built from the invocation and run ids', async () => {
+      await manager.startRun('run-1', 'user-a', { invocationId: 'inv-1' });
+
+      expect(channel.publishCalls[0]?.id).toBe('inv-1-run-1-start');
+    });
+
+    it('publishes run-start with no id when there is no invocation id to build one from', async () => {
+      await manager.startRun('run-1', 'user-a');
+
+      expect(channel.publishCalls[0]).not.toHaveProperty('id');
+    });
+
+    it('publishes run-resume with no id', async () => {
+      await manager.startRun('run-1', 'user-a', { invocationId: 'inv-1', continuation: true });
+
+      expect(channel.publishCalls[0]?.name).toBe(EVENT_RUN_RESUME);
+      expect(channel.publishCalls[0]).not.toHaveProperty('id');
+    });
+
+    it('publishes run-end under an id built from the invocation and run ids', async () => {
+      await manager.startRun('run-1', 'user-a', { invocationId: 'inv-1' });
+      await manager.endRun('run-1', 'complete', { invocationId: 'inv-1' });
+
+      expect(channel.publishCalls[1]?.id).toBe('inv-1-run-1-end');
+    });
+
+    it('publishes run-end with no id when the attribution carries no invocation id', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete');
+
+      expect(channel.publishCalls[1]).not.toHaveProperty('id');
+    });
+
+    it('publishes run-suspend with no id', async () => {
+      await manager.startRun('run-1', 'user-a', { invocationId: 'inv-1' });
+      await manager.suspendRun('run-1', { invocationId: 'inv-1' });
+
+      expect(channel.publishCalls[1]?.name).toBe(EVENT_RUN_SUSPEND);
+      expect(channel.publishCalls[1]).not.toHaveProperty('id');
+    });
+  });
+
   describe('getClientId', () => {
     it('returns clientId for active run', async () => {
       await manager.startRun('run-1', 'user-a');

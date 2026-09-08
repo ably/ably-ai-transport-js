@@ -39,8 +39,6 @@ export interface RunActivityOptions {
   openRun?: ActivityOptions;
   /** Overrides for publishing the run's terminal. */
   endRun?: ActivityOptions;
-  /** Overrides for suspending the run. */
-  suspendRun?: ActivityOptions;
   /** Overrides for the failure-path cleanup. */
   cleanupRun?: ActivityOptions;
 }
@@ -82,30 +80,49 @@ export interface RunHandle {
    */
   end(params: { reason: RunEndReason; errorMessage?: string }): Promise<void>;
   /**
-   * Publish `ai-run-suspend`.
-   *
-   * Fails if a step is still open, since suspending mid-step would strand the
-   * step bracket.
-   */
-  suspend(): Promise<void>;
-  /**
    * Best-effort failure cleanup: end the run as `error` so a waiting client
    * unsticks. Publishes without reading wire state, so it also fires over an
-   * already-ended run and over one this workflow parked with {@link suspend}.
+   * already-ended run.
    * @param errorMessage - Message for the published error.
    */
   cleanup(errorMessage?: string): Promise<void>;
 }
 
-/** Applied to the three activities the workflow drives deliberately. */
+/**
+ * Applied to the three activities the workflow drives deliberately.
+ *
+ * `heartbeatTimeout` is set because the framing activities heartbeat by
+ * default, and Temporal's contract forbids beating without it
+ * (`Info.heartbeatTimeoutMs`). Setting it is also what lets a Temporal-side
+ * cancel reach a running activity, since cancellation is delivered on the
+ * heartbeat.
+ *
+ * The 30 seconds is copied, not imported. Temporal defines no default for
+ * `ActivityOptions.heartbeatTimeout` — unset is a supported state, which is why
+ * the worker carries a `defaultHeartbeatThrottleInterval` for it. That option's
+ * own default, 30 seconds, is the nearest Temporal-authored value for "how
+ * often should heartbeats flow when nobody said", so it is the value matched
+ * here. It cannot be read at runtime: nothing in `@temporalio/worker` exports
+ * it, and this module is workflow-side and so cannot import worker code at all.
+ *
+ * The pump beats every 5 seconds and Core throttles a set timeout to 0.8 of it,
+ * so beats flow about every 24 seconds against a 30-second deadline. Raising
+ * this value raises the latency of a Temporal-side cancel with it.
+ */
 const DEFAULT_ACTIVITY_OPTIONS: ActivityOptions = {
   startToCloseTimeout: '2 minutes',
+  heartbeatTimeout: '30 seconds',
   retry: { maximumAttempts: 3 },
 };
 
 /**
  * Cleanup is best-effort and must not hold up a terminate: one attempt, tight
  * timeout.
+ *
+ * Deliberately no `heartbeatTimeout`. This arm exists to run when the workflow
+ * is being cancelled, so it wants no cancellation delivered to it, and a
+ * heartbeat deadline as long as its own `startToCloseTimeout` could not fire
+ * before that timeout did anyway.
  */
 const CLEANUP_ACTIVITY_OPTIONS: ActivityOptions = {
   startToCloseTimeout: '30 seconds',
@@ -130,7 +147,7 @@ const optionsFor = (
  * Open a run: create it, locate its trigger, and publish its opening event.
  *
  * "Open" covers two cases. A fresh turn creates a run and publishes
- * `ai-run-start`. A continuation RESUMES the run its trigger names, publishing
+ * `ai-run-start`. A continuation RESUMES the run its trigger references, publishing
  * `ai-run-resume` — so this does not always mean a new run. The SDK tells them
  * apart from the trigger's `run-id` header, which is also why the run-id pinning
  * below only applies to a fresh run.
@@ -152,9 +169,6 @@ export const openRun = async (invocation: InvocationData, options: OpenRunOption
     endRun: proxyActivities<Pick<FramingActivities, 'endRun'>>(
       optionsFor('endRun', DEFAULT_ACTIVITY_OPTIONS, overrides),
     ).endRun,
-    suspendRun: proxyActivities<Pick<FramingActivities, 'suspendRun'>>(
-      optionsFor('suspendRun', DEFAULT_ACTIVITY_OPTIONS, overrides),
-    ).suspendRun,
     cleanupRun: proxyActivities<Pick<FramingActivities, 'cleanupRun'>>(
       optionsFor('cleanupRun', CLEANUP_ACTIVITY_OPTIONS, overrides),
     ).cleanupRun,
@@ -174,9 +188,6 @@ export const openRun = async (invocation: InvocationData, options: OpenRunOption
         reason: params.reason,
         ...(params.errorMessage !== undefined && { errorMessage: params.errorMessage }),
       });
-    },
-    suspend: async () => {
-      await activities.suspendRun({ ids, invocation });
     },
     cleanup: async (errorMessage) => {
       await activities.cleanupRun({ ids, invocation, ...(errorMessage !== undefined && { errorMessage }) });
@@ -199,9 +210,8 @@ export const openRun = async (invocation: InvocationData, options: OpenRunOption
  * Best-effort, not guaranteed, and deliberately so. Cleanup gets one attempt
  * with a short timeout — retrying would let a hanging cleanup hold up a
  * terminate — and it reads no wire state, so it publishes its error terminal
- * over an already-terminal run and over one `suspend` had parked. It also only
- * fires on a throw: a `body` that returns without publishing a terminal leaves
- * the run open.
+ * over an already-terminal run too. It also only fires on a throw: a `body`
+ * that returns without publishing a terminal leaves the run open.
  *
  * On success nothing is published: the application publishes its own terminal,
  * which is free inside an activity that already has the run loaded.
@@ -239,7 +249,7 @@ export async function withRun<T>(
   } catch (error) {
     await CancellationScope.nonCancellable(async () => {
       try {
-        await run.cleanup(error instanceof Error ? error.message : 'workflow failed');
+        await run.cleanup(failureMessage(error));
       } catch {
         /* best-effort — `body`'s error is the one that matters */
       }
@@ -248,10 +258,31 @@ export async function withRun<T>(
   }
 }
 
-export type {
-  CleanupRunInput,
-  EndRunInput,
-  FramingActivities,
-  OpenRunInput,
-  SuspendRunInput,
-} from './activity-types.js';
+/** Depth bound on the cause walk, so a cyclic chain cannot spin. */
+const MAX_CAUSE_DEPTH = 10;
+
+/**
+ * The most specific message in an error's cause chain.
+ *
+ * Temporal wraps a failed activity, so the error reaching workflow code reports
+ * `"Activity task failed"` and carries what actually went wrong underneath it as
+ * `cause`. Publishing the wrapper would put that phrase on the channel as the
+ * turn's error, which tells a waiting client nothing. Walking to the innermost
+ * message keeps the terminal actionable, and a body that throws in workflow code
+ * has no chain to walk so its own message is used unchanged.
+ * @param error - Whatever `body` threw.
+ * @returns The innermost message, or a default when there is none to read.
+ */
+const failureMessage = (error: unknown): string => {
+  let deepest = error instanceof Error ? error.message : '';
+  let cursor: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    if (!(cursor instanceof Error)) break;
+    if (cursor.message !== '') deepest = cursor.message;
+    // `cause` is typed `unknown`, so the loop re-checks the guard each pass.
+    cursor = cursor.cause;
+  }
+  return deepest === '' ? 'workflow failed' : deepest;
+};
+
+export type { CleanupRunInput, EndRunInput, FramingActivities, OpenRunInput } from './activity-types.js';

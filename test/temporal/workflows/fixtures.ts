@@ -77,16 +77,6 @@ export const endsFromWorkflow = async (input: FixtureInput): Promise<void> =>
   });
 
 /**
- * Opens a run and suspends it from the workflow.
- * @param input - The invocation and its id.
- * @returns Resolves once the suspend is published.
- */
-export const suspendsFromWorkflow = async (input: FixtureInput): Promise<void> =>
-  withRun(input.invocation, { invocationId: input.invocationId }, async (run) => {
-    await run.suspend();
-  });
-
-/**
  * Opens a run and blocks, so a test can cancel the workflow mid-body. Sleeps
  * rather than awaiting a bare promise: only cancellation-aware operations reject
  * when the workflow is cancelled.

@@ -142,7 +142,12 @@ export default [
     },
   },
   {
-    files: ['src/temporal/workflow/**/*.ts'],
+    // The shim, plus the fixture workflows the test tiers bundle. A fixture
+    // runs in the same sandbox the shim does, and its bundler strips types per
+    // file with no type information — so a value import of something that
+    // happens to be a type is followed by webpack and pulls `ably` in. Linting
+    // the fixtures turns that runtime bundling failure into a lint error.
+    files: ['src/temporal/workflow/**/*.ts', 'test/**/workflows/**/*.ts'],
 
     plugins: {
       '@typescript-eslint': fixupPluginRules(typescriptEslint),

@@ -50,7 +50,6 @@ const main = async (): Promise<void> => {
       activities: {
         openRun: () => Promise.resolve(ids),
         endRun: () => Promise.resolve(),
-        suspendRun: () => Promise.resolve(),
         cleanupRun: () => Promise.resolve(),
       },
     });

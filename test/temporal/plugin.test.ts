@@ -33,15 +33,10 @@ describe('createAblyTransportPlugin', () => {
     expect(plugin().name).toBe('@ably/ai-transport');
   });
 
-  it('registers the four framing activities', () => {
+  it('registers the three framing activities', () => {
     const configured = plugin().configureWorker(workerOptions());
 
-    expect(Object.keys(configured.activities ?? {}).toSorted()).toEqual([
-      'cleanupRun',
-      'endRun',
-      'openRun',
-      'suspendRun',
-    ]);
+    expect(Object.keys(configured.activities ?? {}).toSorted()).toEqual(['cleanupRun', 'endRun', 'openRun']);
   });
 
   it('adds to the consumer activities rather than replacing them', () => {

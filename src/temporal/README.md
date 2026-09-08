@@ -28,21 +28,26 @@ A durable agent has two halves. **Inference** is yours: the model, the system
 prompt, the tool registry, when to stop. **Framing** is the run lifecycle around
 it, and it is identical in every integration:
 
-| Activity     | Publishes                        | What it does                                                    |
-| ------------ | -------------------------------- | --------------------------------------------------------------- |
-| `openRun`    | `ai-run-start` / `ai-run-resume` | Creates the run, finds its trigger in channel history, opens it |
-| `endRun`     | `ai-run-end`                     | Publishes a terminal                                            |
-| `suspendRun` | `ai-run-suspend`                 | Parks the run awaiting client input                             |
-| `cleanupRun` | `ai-run-end{error}`              | Closes a run whose turn failed, so a waiting client unsticks    |
+| Activity     | Publishes           | What it does                                                    |
+| ------------ | ------------------- | --------------------------------------------------------------- |
+| `openRun`    | `ai-run-start`      | Creates the run, finds its trigger in channel history, opens it |
+| `endRun`     | `ai-run-end`        | Publishes a terminal                                            |
+| `cleanupRun` | `ai-run-end{error}` | Closes a run whose turn failed, so a waiting client unsticks    |
 
-The plugin registers all four, so none of them appear in your code. Two carry
+Every run this plugin opens starts and ends. It parks none, so there is no
+suspend activity, no `RunHandle.suspend()` and no continuation to resume. An
+application that does want to park a run still can: an activity holding the core
+run handle calls `run.suspend()` on it, which costs nothing extra there. What is
+gone is the shim's way of parking one from workflow code.
+
+The plugin registers all three, so none of them appear in your code. Two carry
 subtleties worth knowing: `openRun` pins the run id to the invocation id, which
 is what makes a retry re-enter the same run rather than opening a second one in
 parallel; and `cleanupRun` reads no wire state before publishing, so it ends the run
 `error` whatever state the run was in. On an already-ended run that costs a
-second `ai-run-end` a reader ignores. On a run the workflow had parked with
-`suspend`, it replaces the park with an error terminal — see the note on
-`cleanup` below.
+second `ai-run-end` on the channel, which the shipped Vercel adapter absorbs
+idempotently, and which a consumer merging the event stream itself should
+absorb by honouring the first terminal in serial order.
 
 ## Worker setup
 
@@ -73,16 +78,71 @@ const worker = await Worker.create({
 
 `createClient` is required: the SDK never reads your environment or builds Ably
 clients for you. It is called once per activity, and the client is closed before
-the activity returns. Leave `echoMessages` at its default — `openRun` completes
-on the opening event arriving back over the subscription, so a client that does
-not echo its own publishes leaves the activity waiting for its timeout. A client per activity is a correctness requirement, not
+the activity returns. `echoMessages` can be either setting: every framing
+activity confirms its own publish from the acknowledgement and never reads its
+own echo. A client per activity is a correctness requirement, not
 tidiness — a transport takes its channel from `client.channels.get(name)`, which
 caches per name, and detaching that channel detaches it for every holder, so two
 transports sharing a client on one channel would break each other.
 
-Other options: `logger`, `heartbeat` (off by default; turn it on if conversations
-are long enough that paging history could look like a hang), `maxHistoryPages`
-and `historyPageSize`.
+Other options: `logger`, `heartbeat`, `maxHistoryPages` and `historyPageSize`.
+
+### `heartbeat` and Temporal-side cancellation
+
+`heartbeat` is on by default, and it does two things rather than one.
+
+The first is progress reporting, so a long history scan does not look like a
+hang.
+
+The second is why it defaults on. `@temporalio/activity` states the rule:
+"Activities can only receive Cancellation if they emit heartbeats or are Local
+Activities". Every framing activity passes
+`Context.current().cancellationSignal` into the transport, so without a beat
+that signal stays inert and a workflow cancelled through
+`WorkflowHandle.cancel()`, the CLI or the Web UI does not reach the run until
+the activity finishes on its own.
+
+That is a separate path from the SDK's own `ai-cancel` message, which a client
+publishes and the transport routes onto the run's `abortSignal`. That one works
+regardless, because it arrives over the channel rather than from Temporal.
+
+**`heartbeat: true` is a request, and the activity's own options decide whether
+it is honoured.** `Info.heartbeatTimeoutMs` states the contract: "if this
+timeout is defined, the Activity must heartbeat before the timeout is reached.
+The Activity must **not** heartbeat in case this timeout is not defined." So the
+pump reads that value per activity and stays silent without one, which means
+the default costs nothing for an activity scheduled without a heartbeat
+deadline. An activity scheduled without one reports it as `0` rather than
+absent, so the gate tests for a positive value.
+
+`withRun` supplies `heartbeatTimeout: '30 seconds'` for the three activities it
+drives, so the pump beats out of the box and a Temporal-side cancel reaches a
+running framing activity. Override it like any other activity option:
+
+```ts
+await withRun(invocation, { activityOptions: { default: { heartbeatTimeout: '1 minute' } } }, body);
+```
+
+Raising it raises the latency of a Temporal-side cancel with it: Core throttles
+heartbeats to 0.8 of the timeout, so 30 seconds means beats flow about every 24.
+
+**Do not set it below about 10 seconds.** The pump's interval is a fixed 5
+seconds, and Core throttles a set timeout to 0.8 of it, so beats actually leave
+every `max(5s, 0.8 × timeout)`. Below roughly 6 seconds that figure exceeds the
+timeout itself and the activity fails its heartbeat deadline instead of
+reporting faster. A short timeout buys no speed here; it only cuts the margin.
+
+Two notes on that number. Temporal defines no default for
+`ActivityOptions.heartbeatTimeout` — unset is a supported state, which is why
+the worker carries a `defaultHeartbeatThrottleInterval` for that case. Its
+default, 30 seconds, is the nearest Temporal-authored value for how often
+heartbeats should flow when nobody said, so it is the one matched here. It is
+copied rather than imported: nothing in `@temporalio/worker` exports it, and the
+shim is workflow-side and cannot import worker code regardless.
+
+`cleanupRun` is scheduled with no heartbeat timeout on purpose. It exists to run
+while the workflow is being cancelled, so it wants no cancellation delivered to
+it.
 
 ## Workflow
 
@@ -120,14 +180,10 @@ workflow task, so no cleanup activity runs.
 Best-effort is literal, and deliberate. Cleanup gets one attempt with a short
 timeout, because retrying would let a hanging cleanup hold up a terminate; it
 reads no wire state, so it publishes its error terminal over a run that already
-ended (a second `ai-run-end` a reader ignores) and over one `suspend` had parked
-(replacing the park); and its own failure is swallowed so the body's error
+ended too — a second `ai-run-end`, which a reader is expected to absorb by
+honouring the first terminal. Its own failure is swallowed so the body's error
 reaches Temporal unmasked. It also only fires on
 a throw — a body that returns without publishing a terminal leaves the run open.
-
-"Opens the run" covers two cases: a fresh turn creates one, and a continuation
-resumes the run its trigger names (`ai-run-start` versus `ai-run-resume`). It is
-not always a new run.
 
 On success `withRun` publishes nothing — see below.
 
@@ -165,12 +221,11 @@ cleanup cannot hold up a terminate.
 Both styles are safe. They differ only in cost.
 
 **Inside the activity that ran the work (cheapest).** Your inference activity
-already holds the run handle, so `run.end(...)` or `run.suspend()` there costs
-nothing extra. This is what the `temporal-agent` demo does.
+already holds the run handle, so `run.end(...)` there costs nothing extra. This
+is what the `temporal-agent` demo does.
 
-**From the workflow, via the handle.** `run.end({ reason })` and `run.suspend()`
-put the whole lifecycle in one place and show every terminal in the Temporal
-history. Each call is a fresh process, so it pays a new connection and an
+**From the workflow, via the handle.** `run.end({ reason })` puts the whole
+lifecycle in one place and shows every terminal in the Temporal history. Each call is a fresh process, so it pays a new connection and an
 `adoptRun`. That is a bounded cost, not one that grows with response length: a
 streamed response is a single Ably message that grows by append, so paging back
 to the run's start stays a handful of messages per turn.
@@ -194,7 +249,7 @@ npm never hits this, because the peer dependency resolves to a single copy.
 
 `stepIdFor(invocationId)` gives you a globally-unique `stepId` for
 `run.createStep({ stepId })`. It is workflow-scoped, so multiple workflows can
-publish to the same run (a suspend plus its continuation) without their step-1s
+publish to the same run without their step-1s
 colliding.
 
 ```ts

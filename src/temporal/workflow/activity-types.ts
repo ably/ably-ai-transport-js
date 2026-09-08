@@ -37,14 +37,6 @@ export interface EndRunInput {
   errorMessage?: string;
 }
 
-/** Input to the `suspendRun` activity. */
-export interface SuspendRunInput {
-  /** The open run's identity, as returned by `openRun`. */
-  ids: RunIdentity;
-  /** The invocation this activity serves; only its `channelName` is read, to resolve the channel. */
-  invocation: InvocationData;
-}
-
 /** Input to the `cleanupRun` activity. */
 export interface CleanupRunInput {
   /** The open run's identity, as returned by `openRun`. */
@@ -73,15 +65,10 @@ export interface FramingActivities {
    */
   endRun(input: EndRunInput): Promise<void>;
   /**
-   * Adopt the run and publish `ai-run-suspend`.
-   * @param input - The run's identity and its invocation.
-   */
-  suspendRun(input: SuspendRunInput): Promise<void>;
-  /**
    * Best-effort failure cleanup: adopt the run and end it as `error` so a
    * waiting client unsticks. Reads no wire state first, so it publishes over an
-   * already-ended run (a second terminal a reader ignores) and over one parked
-   * by `suspendRun` (which replaces the park with an error terminal).
+   * already-ended run too — a second terminal a reader is expected to absorb by
+   * honouring the first.
    * @param input - The run's identity, its invocation, and the failure message.
    */
   cleanupRun(input: CleanupRunInput): Promise<void>;

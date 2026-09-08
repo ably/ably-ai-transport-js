@@ -14,7 +14,7 @@
  * Activities publish their own terminals. The inference activity already holds
  * an open transport on the run's channel, so publishing `ai-run-end` there
  * costs nothing; doing it from here via `run.end()` would pay a fresh activity
- * with its own connect. The handle exposes `end()` and `suspend()` for
+ * with its own connect. The handle exposes `end()` for
  * orchestrations that prefer it.
  *
  * Cancels need no signal or listener activity. When the client publishes

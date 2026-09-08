@@ -36,9 +36,18 @@ vi.mock('../../src/core/transport/agent-transport.js', () => ({
 /** The activity cancellation signal the Context stub hands out; reset per test. */
 let mockCancellationSignal: AbortSignal = new AbortController().signal;
 
+/** The heartbeat spy every stubbed activity Context hands out. */
+const mockHeartbeat = vi.fn();
+/** The activity's heartbeat timeout; undefined models an activity with none. */
+let mockHeartbeatTimeoutMs: number | undefined = 30_000;
+
 vi.mock('@temporalio/activity', () => ({
   Context: {
-    current: () => ({ cancellationSignal: mockCancellationSignal, heartbeat: vi.fn() }),
+    current: () => ({
+      cancellationSignal: mockCancellationSignal,
+      heartbeat: mockHeartbeat,
+      info: { heartbeatTimeoutMs: mockHeartbeatTimeoutMs },
+    }),
   },
 }));
 
@@ -64,7 +73,6 @@ interface StubRunHandle {
   runId: string;
   opened: Promise<void>;
   end: ReturnType<typeof vi.fn<(params: { reason: string; error?: unknown }) => Promise<void>>>;
-  suspend: ReturnType<typeof vi.fn>;
 }
 
 interface StubTransport {
@@ -87,7 +95,7 @@ interface StubTransport {
  * @param runId - The run's id.
  * @returns The event.
  */
-const lifecycle = (type: 'start' | 'suspend' | 'resume' | 'end', runId: string): Event =>
+const lifecycle = (type: 'start' | 'suspend' | 'end', runId: string): Event =>
   ({
     kind: 'run-lifecycle',
     // CAST: only kind/runId/type are read by the open-echo wait.
@@ -107,6 +115,20 @@ const located = (meta: { transportMessageId?: string; runId?: string }): Located
 
 let transport: StubTransport;
 let runHandle: StubRunHandle;
+/** Receive-stream handlers the activity registered; it should register none. */
+let subscribedHandlers: Set<(event: Event) => void>;
+
+/**
+ * Run an open and return the page hook it handed the locate scan.
+ * @param opts - Factory options for the activities under test.
+ * @param opts.heartbeat - Whether to ask for heartbeating; omit for the default.
+ * @returns The `onPage` hook, or undefined when none was passed.
+ */
+const pageHookFrom = async (opts?: { heartbeat?: boolean }): Promise<(() => void) | undefined> => {
+  await activities(opts).openRun({ invocation, invocationId: 'wf-1' });
+  const [, scanOpts] = transport.locateInput.mock.calls[0] ?? [];
+  return scanOpts?.onPage;
+};
 let client: { close: ReturnType<typeof vi.fn>; channels: { get: ReturnType<typeof vi.fn> } };
 let createClient: ReturnType<typeof vi.fn>;
 
@@ -115,11 +137,13 @@ let createClient: ReturnType<typeof vi.fn>;
  * @param opts - Optional configuration forwarded to the factory.
  * @param opts.maxHistoryPages - Page bound for the history scans.
  * @param opts.historyPageSize - Wire-message limit per page.
- * @returns The four framing activities.
+ * @param opts.heartbeat - Whether to ask for heartbeating; omit for the default.
+ * @returns The three framing activities.
  */
 const activities = (opts?: {
   maxHistoryPages?: number;
   historyPageSize?: number;
+  heartbeat?: boolean;
 }): ReturnType<typeof createFramingActivities> =>
   createFramingActivities({
     codec,
@@ -131,13 +155,12 @@ const activities = (opts?: {
 beforeEach(() => {
   vi.clearAllMocks();
   const handlers = new Set<(event: Event) => void>();
+  subscribedHandlers = handlers;
   runHandle = {
     runId: 'run-1',
     opened: Promise.resolve(),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     end: vi.fn(() => Promise.resolve()),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    suspend: vi.fn(() => Promise.resolve()),
   };
   transport = {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
@@ -153,14 +176,9 @@ beforeEach(() => {
     history: vi.fn(() => Promise.resolve({ events: [lifecycle('start', 'run-1')], exhausted: true })),
     openRun: vi.fn((opts?: OpenRunOptions) => {
       // Mirror the transport's precedence: the located input's continuation
-      // id, else the caller's pin, else minted; the input decides the echo type.
-      const triggerRunId = opts?.input?.meta.runId;
-      runHandle.runId = triggerRunId ?? opts?.runId ?? 'minted';
-      // A published open echoes back on the receive stream.
-      queueMicrotask(() => {
-        const type = triggerRunId === undefined ? 'start' : 'resume';
-        for (const handler of handlers) handler(lifecycle(type, runHandle.runId));
-      });
+      // id, else the caller's pin, else minted. `opened` is already resolved,
+      // standing in for an acknowledged opening publish.
+      runHandle.runId = opts?.input?.meta.runId ?? opts?.runId ?? 'minted';
       return runHandle;
     }),
     adoptRun: vi.fn((runId: string) => {
@@ -173,6 +191,7 @@ beforeEach(() => {
   // A live (un-aborted) signal, restoring the default for any test that
   // swapped in an already-aborted one.
   mockCancellationSignal = new AbortController().signal;
+  mockHeartbeatTimeoutMs = 30_000;
   // CAST: the stub implements only what the activities call.
   vi.mocked(createAgentTransport).mockImplementation(
     () => transport as unknown as ReturnType<typeof createAgentTransport>,
@@ -195,15 +214,14 @@ describe('openRun', () => {
     expect(result).toEqual({ runId: 'wf-1', invocationId: 'wf-1' });
   });
 
-  it('rejects fast when the opening publish fails', async () => {
+  it('rejects fast when the opening publish is refused', async () => {
     const failure = new Ably.ErrorInfo('publish refused', 50000, 500);
     transport.openRun.mockImplementationOnce(() => {
-      // A failed opening publish: `opened` rejects and no echo ever arrives.
       runHandle.opened = Promise.reject(failure);
       // .catch(): pre-handled, matching the transport's own guarantee, so the
       // stub cannot surface an unhandled rejection of its own.
       runHandle.opened.catch(() => {
-        /* observed via the activity's race */
+        /* observed at the activity's await */
       });
       return runHandle;
     });
@@ -213,14 +231,28 @@ describe('openRun', () => {
     });
   });
 
-  it('rejects fast when the activity is already cancelled', async () => {
-    // An already-aborted signal never fires `abort`, so the open-echo wait
-    // must check it up front rather than waiting for an event that cannot come.
+  it('confirms the open from the publish acknowledgement, not from an echo', async () => {
+    // The stub delivers no opening echo and the activity still completes, so
+    // a client running with `echoMessages: false` opens a run fine. It also
+    // registers no receive handler, which is what makes the echo irrelevant
+    // rather than merely unused. The refusal case above covers the await
+    // itself: a rejected `opened` fails the activity.
+    await expect(activities().openRun({ invocation, invocationId: 'wf-1' })).resolves.toEqual({
+      runId: 'wf-1',
+      invocationId: 'wf-1',
+    });
+    expect(subscribedHandlers.size).toBe(0);
+  });
+
+  it('rejects without opening when the activity is already cancelled', async () => {
+    // The opening publish is not abortable, so a cancelled activity must fail
+    // before it puts an opening event on the channel.
     mockCancellationSignal = AbortSignal.abort();
 
     await expect(activities().openRun({ invocation, invocationId: 'wf-1' })).rejects.toBeErrorInfoWithCode(
       ErrorCode.OperationCancelled,
     );
+    expect(transport.openRun).not.toHaveBeenCalled();
   });
 
   it('re-enters the run a continuation trigger names', async () => {
@@ -269,6 +301,33 @@ describe('openRun', () => {
     expect(transport.close).toHaveBeenCalledTimes(1);
     expect(client.close).toHaveBeenCalledTimes(1);
   });
+
+  describe('the history scan page hook', () => {
+    it('is passed by default, and reports progress when the activity has a heartbeat timeout', async () => {
+      const onPage = await pageHookFrom();
+
+      expect(onPage).toBeTypeOf('function');
+      onPage?.();
+      expect(mockHeartbeat).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays silent when the activity has no heartbeat timeout', async () => {
+      // Temporal's contract: an activity must not heartbeat when no
+      // heartbeatTimeout is defined, whatever the SDK option asked for.
+      mockHeartbeatTimeoutMs = undefined;
+
+      const onPage = await pageHookFrom();
+
+      onPage?.();
+      expect(mockHeartbeat).not.toHaveBeenCalled();
+    });
+
+    it('is not passed at all when heartbeating is turned off', async () => {
+      const onPage = await pageHookFrom({ heartbeat: false });
+
+      expect(onPage).toBeUndefined();
+    });
+  });
 });
 
 describe('endRun', () => {
@@ -296,12 +355,14 @@ describe('endRun', () => {
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'error', error: wrapped });
   });
 
-  it('ends a run the wire already shows as suspended', async () => {
+  it('ends a run the application parked, without reading the wire first', async () => {
+    // The plugin parks no run, but an app activity holding the core run handle
+    // can, so this state is still reachable on a shared channel.
     transport.history.mockResolvedValue({ events: [lifecycle('suspend', 'run-1')], exhausted: true });
 
-    // No gate: the activity publishes regardless of what the wire holds.
     await activities().endRun({ ids, invocation, reason: 'complete' });
 
+    expect(transport.history).not.toHaveBeenCalled();
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'complete' });
   });
 
@@ -317,24 +378,6 @@ describe('endRun', () => {
   });
 });
 
-describe('suspendRun', () => {
-  it('adopts the run and suspends it', async () => {
-    await activities().suspendRun({ ids, invocation });
-
-    expect(transport.adoptRun).toHaveBeenCalledWith('run-1', { invocationId: 'wf-1' }, expect.anything());
-    expect(runHandle.suspend).toHaveBeenCalledTimes(1);
-  });
-
-  it('reads no history: the suspend publishes unconditionally', async () => {
-    transport.history.mockResolvedValue({ events: [lifecycle('end', 'run-1')], exhausted: true });
-
-    await activities().suspendRun({ ids, invocation });
-
-    expect(transport.history).not.toHaveBeenCalled();
-    expect(runHandle.suspend).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe('cleanupRun', () => {
   it('ends the run as error with the failure message', async () => {
     await activities().cleanupRun({ ids, invocation, errorMessage: 'workflow blew up' });
@@ -344,14 +387,11 @@ describe('cleanupRun', () => {
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'error', error: wrapped });
   });
 
-  it.each([
-    ['suspended', lifecycle('suspend', 'run-1')],
-    ['ended', lifecycle('end', 'run-1')],
-  ])('publishes its error terminal even for a %s run', async (_desc, event) => {
-    transport.history.mockResolvedValue({ events: [event], exhausted: true });
+  it('publishes its error terminal even for an already-ended run', async () => {
+    transport.history.mockResolvedValue({ events: [lifecycle('end', 'run-1')], exhausted: true });
 
-    // The cleanup arm reads no history. For an already-ended run this adds a
-    // second `ai-run-end` that readers ignore in favour of the first.
+    // The cleanup arm reads no history, so this adds a second `ai-run-end`
+    // that a reader absorbs by honouring the first.
     await activities().cleanupRun({ ids, invocation });
 
     const wrapped: unknown = expect.objectContaining({ code: ErrorCode.RunResponseStreamFailed });

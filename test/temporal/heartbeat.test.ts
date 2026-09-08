@@ -17,12 +17,25 @@ vi.mock('@temporalio/activity', () => ({
 
 import { Context } from '@temporalio/activity';
 
-import { withHeartbeat } from '../../src/temporal/heartbeat.js';
+import { beat, withHeartbeat } from '../../src/temporal/heartbeat.js';
 
 // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accepts the static method reference; it does not read `this`.
 const currentMock = vi.mocked(Context.current);
 
 const HEARTBEAT_INTERVAL_MS = 5000;
+
+/**
+ * Stub the activity Context the pump reads.
+ * @param heartbeat - The heartbeat spy to expose.
+ * @param heartbeatTimeoutMs - The activity's heartbeat timeout. Omit for an activity that has none.
+ */
+const contextWith = (heartbeat: ReturnType<typeof vi.fn>, heartbeatTimeoutMs?: number): void => {
+  // CAST: the pump reads only `heartbeat()` and `info.heartbeatTimeoutMs` off
+  // the activity Context, so the test supplies those rather than a whole one.
+  currentMock.mockReturnValue({ heartbeat, info: { heartbeatTimeoutMs } } as unknown as ReturnType<
+    typeof Context.current
+  >);
+};
 
 describe('withHeartbeat', () => {
   let heartbeat: ReturnType<typeof vi.fn>;
@@ -30,9 +43,7 @@ describe('withHeartbeat', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     heartbeat = vi.fn();
-    // CAST: the pump reads only `heartbeat()` off the activity Context, so the
-    // test supplies that one method rather than a whole Context.
-    currentMock.mockReturnValue({ heartbeat } as unknown as ReturnType<typeof Context.current>);
+    contextWith(heartbeat, 30_000);
   });
 
   afterEach(() => {
@@ -96,5 +107,81 @@ describe('withHeartbeat', () => {
 
     resolve('done');
     expect(await wrapped).toBe('done');
+  });
+
+  it('runs no timer when the activity reports a zero heartbeat timeout', async () => {
+    // Zero is how Temporal reports an unset heartbeat timeout, and its
+    // contract says such an activity must not heartbeat, so the request is
+    // overridden here.
+    contextWith(heartbeat, 0);
+    const { promise, resolve } = Promise.withResolvers<string>();
+    const wrapped = withHeartbeat(true, async () => await promise);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS * 3);
+    expect(heartbeat).not.toHaveBeenCalled();
+
+    resolve('done');
+    expect(await wrapped).toBe('done');
+  });
+});
+
+describe('beat', () => {
+  let heartbeat: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    heartbeat = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports progress when the activity has a heartbeat timeout', () => {
+    contextWith(heartbeat, 30_000);
+
+    beat();
+
+    expect(heartbeat).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports nothing when the activity has no heartbeat timeout', () => {
+    contextWith(heartbeat);
+
+    beat();
+
+    expect(heartbeat).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when the timeout is zero, which is how Temporal reports an unset one', () => {
+    // An activity scheduled without a heartbeat timeout reports the proto's
+    // zero Duration rather than undefined, so this is the real-world shape of
+    // "must not heartbeat" and not a synthetic edge case.
+    contextWith(heartbeat, 0);
+
+    beat();
+
+    expect(heartbeat).not.toHaveBeenCalled();
+  });
+
+  it('swallows a throw from outside an activity context', () => {
+    currentMock.mockImplementation(() => {
+      throw new Error('not in an activity context');
+    });
+
+    expect(() => {
+      beat();
+    }).not.toThrow();
+  });
+
+  it('swallows a throw from the heartbeat itself', () => {
+    heartbeat.mockImplementation(() => {
+      throw new Error('activity already given up on');
+    });
+    contextWith(heartbeat, 30_000);
+
+    expect(() => {
+      beat();
+    }).not.toThrow();
   });
 });

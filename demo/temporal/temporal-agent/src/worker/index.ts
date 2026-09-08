@@ -4,7 +4,7 @@
  *
  * Two sets of activities are registered. This app's own — inference and tool
  * execution — are passed in `activities`. The run's framing (`openRun`,
- * `endRun`, `suspendRun`, `cleanupRun`) comes from the SDK's plugin, which is
+ * `endRun`, `cleanupRun`) comes from the SDK's plugin, which is
  * why none of them appear in this repo's demo code.
  *
  * Loads `.env.local` explicitly — tsx doesn't do it for you the way Next does.

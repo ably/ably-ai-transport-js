@@ -14,6 +14,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Context } from '@temporalio/activity';
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -46,6 +47,11 @@ interface Recorded {
   activities: FramingActivities;
   /** The most recent input each activity received. */
   inputs: Record<string, unknown>;
+  /**
+   * The heartbeat timeout each activity ran under, as Temporal reported it to
+   * the activity. Undefined for an activity scheduled without one.
+   */
+  heartbeatTimeoutMs: Record<string, number | undefined>;
 }
 
 /**
@@ -56,13 +62,18 @@ interface Recorded {
 const recordActivities = (openRunFails = false): Recorded => {
   const calls: string[] = [];
   const inputs: Record<string, unknown> = {};
+  const heartbeatTimeoutMs: Record<string, number | undefined> = {};
   const record = (name: string, input: unknown): void => {
     calls.push(name);
     inputs[name] = input;
+    // Read the timeout off the live activity Context, so the assertion is on
+    // what Temporal actually scheduled rather than on the shim's own constant.
+    heartbeatTimeoutMs[name] = Context.current().info.heartbeatTimeoutMs;
   };
   return {
     calls,
     inputs,
+    heartbeatTimeoutMs,
     activities: {
       openRun: vi.fn(async (input): Promise<RunIdentity> => {
         record('openRun', input);
@@ -72,10 +83,6 @@ const recordActivities = (openRunFails = false): Recorded => {
       }),
       endRun: vi.fn(async (input): Promise<void> => {
         record('endRun', input);
-        await Promise.resolve();
-      }),
-      suspendRun: vi.fn(async (input): Promise<void> => {
-        record('suspendRun', input);
         await Promise.resolve();
       }),
       cleanupRun: vi.fn(async (input): Promise<void> => {
@@ -188,15 +195,6 @@ describe('withRun', () => {
     expect(recorded.inputs.endRun).toEqual({ ids, invocation, reason: 'complete' });
   });
 
-  it('suspends the run from the workflow when asked', async () => {
-    const recorded = recordActivities();
-
-    await runWorkflow('suspendsFromWorkflow', recorded);
-
-    expect(recorded.calls).toEqual(['openRun', 'suspendRun']);
-    expect(recorded.inputs.suspendRun).toEqual({ ids, invocation });
-  });
-
   it('still cleans up when the workflow is cancelled mid-body', async () => {
     const recorded = recordActivities();
     const taskQueue = `temporal-shim-cancel-${String(++taskQueueCounter)}`;
@@ -241,5 +239,43 @@ describe('withRun', () => {
     // The activity ran, which is what proves the merged options were accepted;
     // Temporal rejects a proxy whose options omit a required timeout.
     expect(recorded.calls).toEqual(['openRun']);
+  });
+
+  it('schedules the driven activities with a heartbeat timeout', async () => {
+    // The framing activities heartbeat by default, and Temporal forbids beating
+    // without a heartbeat timeout, so the SDK default has to supply one.
+    const recorded = recordActivities();
+
+    await runWorkflow('endsFromWorkflow', recorded);
+
+    expect(recorded.heartbeatTimeoutMs.openRun).toBe(30_000);
+    expect(recorded.heartbeatTimeoutMs.endRun).toBe(30_000);
+  });
+
+  it('schedules cleanup with no heartbeat timeout', async () => {
+    // Cleanup runs while the workflow is being cancelled, so it wants no
+    // cancellation delivered to it.
+    //
+    // Zero, not undefined: an activity scheduled without a heartbeat timeout
+    // reports the proto's zero Duration. That is why the pump's own gate tests
+    // for a positive value rather than a present one.
+    const recorded = recordActivities();
+
+    await expect(runWorkflow('bodyThrows', recorded)).rejects.toThrow();
+
+    expect(recorded.calls).toContain('cleanupRun');
+    expect(recorded.heartbeatTimeoutMs.cleanupRun).toBe(0);
+  });
+
+  it('keeps the default heartbeat timeout when a caller overrides other options', async () => {
+    // The merge is a shallow spread per activity, so an override that names
+    // only a timeout must not drop the heartbeat deadline underneath it.
+    const recorded = recordActivities();
+
+    await runWorkflow('happyPath', recorded, {
+      activityOptions: { openRun: { startToCloseTimeout: '90 seconds' } },
+    });
+
+    expect(recorded.heartbeatTimeoutMs.openRun).toBe(30_000);
   });
 });

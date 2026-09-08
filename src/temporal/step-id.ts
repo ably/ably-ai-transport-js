@@ -2,13 +2,16 @@
  * Deterministic-id helper for Temporal-based agents.
  *
  * Temporal `activityId`s are unique within a workflow, not across workflows —
- * the first activity in every workflow is `"1"`. But the SDK's `stepId`
- * supersede semantics operate at the run's whole-lifetime scope, so bare
- * `activityId`s would collide when multiple workflows publish to the same
- * run (e.g. a suspend + continuation) and the SDK would treat different
- * workflows' step-1s as retries of the same step, eating earlier attempts'
- * output. Prefixing with the run's invocation id keeps every stepId
- * globally traceable and collision-free.
+ * the first activity in every workflow is `"1"`. The SDK's `stepId` supersede
+ * semantics operate at the run's whole-lifetime scope, so bare `activityId`s
+ * would collide wherever more than one workflow publishes to a single run: the
+ * SDK would read two workflows' step-1s as retries of one step and eat the
+ * earlier attempt's output. Prefixing with the run's invocation id keeps every
+ * stepId globally traceable and collision-free.
+ *
+ * The plugin itself no longer creates that overlap, since every run it opens is
+ * owned by one workflow from start to terminal. The prefix earns its place for
+ * a consumer that drives one run from more than one workflow.
  */
 
 import { Context } from '@temporalio/activity';

@@ -23,8 +23,11 @@ workflow half fails here, because the sandbox has no `ably` and no
 
 Keep it to what only a real execution can prove: which activities get scheduled
 and in what order, cleanup firing on failure and surviving cancellation, and
-determinism on replay. Activity bodies are faked — their behaviour belongs in the
-unit tier. This tier needs no Ably credentials and touches no channel.
+determinism on replay. Activity bodies are faked, so this tier needs no Ably
+credentials and touches no channel. Their behaviour is covered twice elsewhere:
+against mocks in the unit tier, and against a real channel in
+`test/integration/temporal/`, which boots its own Temporal server inside the
+integration tier rather than adding a fourth one here.
 
 ## Unit tests
 
@@ -61,6 +64,7 @@ Integration tests can be written at two levels:
 
 - **Codec level**: Test encode/decode roundtrips over a real Ably channel without standing up a full transport. A codec-level test publishes encoded messages to a channel and verifies the decoder reconstructs the expected output. This validates the wire format and Ably message serialization without transport machinery.
 - **Transport level**: exercise send → stream → receive through `ClientTransport` and `AgentTransport` over a real channel — run lifecycle, stream routing, steering, cancel, and history paging.
+- **Integration level**: drive a host framework's own runtime over a real channel. `test/integration/temporal/` boots a Temporal server and registers the real plugin, so the framing activities publish from inside real activities. This is the only level where a framework's scheduling and the platform's wire meet.
 
 ### Environment
 
@@ -134,6 +138,37 @@ in-flight run for a resume. Failures reaching useChat's status and `onError`
 live beside it in `use-chat-error-propagation.integration.test.ts`, the one
 integration file that mounts a real `useChat`.
 
+**Integration level**, in `test/integration/temporal/temporal.integration.test.ts`:
+a whole durable turn pinned to its invocation id, a terminal published from
+workflow code across three processes, a Temporal retry superseding its dead
+attempt's step, one invocation id opening twice into a single run, the cleanup
+arm closing a failed turn, the same arm surviving a workflow cancel, and a
+duplicate terminal landing on the channel.
+
+That file owns three constraints the other areas do not. It uses
+`TestWorkflowEnvironment.createLocal()` rather than `createTimeSkipping()`,
+because its activities do real network I/O and a server free to fast-forward
+its clock could fire `startToCloseTimeout` mid-request; a consequence is that a
+`sleep()` in a fixture really sleeps, so no fixture waits one out. It shares one
+server, one webpack bundle and one long-lived worker across the file rather than
+calling `worker.runUntil` per test, because a worker shutdown cancels in-flight
+activities and these hold real Ably clients. And its `beforeAll` carries its own
+120s timeout for the server boot and the bundle.
+
+It also brings its own codec. `test/integration/temporal/test-codec.ts` carries
+one input kind and one text-stream output group, so nothing on screen belongs to
+a provider — a borrowed codec would put its framing events and its reducer
+between the reader and the subject. It is a real codec built with `defineCodec`,
+not a hand-rolled `WireCodec`, because the `stream(...)` descriptor is what makes
+the SDK's own encoder core produce the create-append-close sequence this tier
+exists to exercise. Its `assembleText` checks the stream brackets while joining,
+which is the well-formedness proof a provider's reducer used to give for free.
+
+Its fixture workflows are linted by the same rule that guards
+`src/temporal/workflow/`: the bundler strips types per file with no type
+information, so a value import of something that happens to be a type drags
+`ably` into the sandbox bundle.
+
 The tests that hold a run open across a refresh or a cancel share two rules
 worth stating once. A route that means to leave its run in flight does not
 await its `pipe`, and whatever finishes that run later must await the pipe
@@ -155,6 +190,9 @@ should need to earn a place in it:
   every serial a terminal reports come from the platform.
 - **`echoMessages: false`.** A client that never receives its own publish can
   only settle a steer from the publish acknowledgement, which needs a real ack.
+- **A real durable-execution retry.** One `activityId` across attempts, and the
+  `stepId` supersede that follows from it, exist only when Temporal itself
+  schedules the retry. A faked retry re-implements the rule it is testing.
 
 `test/core/transport/codec-transport.test.ts` is the unit test that composes a
 real codec with both real transports against a mock channel, so the

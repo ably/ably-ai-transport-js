@@ -25,14 +25,8 @@ import { Invocation } from '../core/transport/invocation.js';
 import type { AgentTransport, RunIdentity } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { Logger } from '../logger.js';
-import { withHeartbeat } from './heartbeat.js';
-import type {
-  CleanupRunInput,
-  EndRunInput,
-  FramingActivities,
-  OpenRunInput,
-  SuspendRunInput,
-} from './workflow/activity-types.js';
+import { beat, withHeartbeat } from './heartbeat.js';
+import type { CleanupRunInput, EndRunInput, FramingActivities, OpenRunInput } from './workflow/activity-types.js';
 
 /**
  * Configuration for the framing activities. A consumer supplies this to
@@ -46,15 +40,29 @@ export interface FramingActivitiesOptions<TInput, TOutput> {
    * Builds the Ably client for one activity. Called once per activity
    * invocation; the returned client is closed before the activity returns.
    *
-   * The client must echo its own publishes — leave `echoMessages` at its
-   * default. `openRun` completes on the opening event coming back over the
-   * subscription, so a client with `echoMessages: false` never sees it and the
-   * activity sits until its `startToCloseTimeout` and then retries.
+   * No echo requirement: every framing activity confirms its own publish from
+   * the acknowledgement, so `echoMessages: false` is fine.
    */
   createClient: () => Ably.Realtime;
   /** Logger propagated into every transport. */
   logger?: Logger;
-  /** Report progress to Temporal while paging history. Defaults to false. */
+  /**
+   * Report progress to Temporal while an activity runs. Defaults to true.
+   *
+   * Two consequences, and the second is why it defaults on. It reports
+   * progress, so a long history scan does not look like a hang. It also carries
+   * Temporal's cancellation: a server-originated cancel reaches an activity
+   * only while it heartbeats (a worker shutdown is the exception, since the
+   * worker delivers that one locally), so with this off, a workflow cancelled through
+   * `WorkflowHandle.cancel()`, the CLI or the Web UI does not reach the
+   * `cancellationSignal` these activities pass to the transport. A client's own
+   * `ai-cancel` message is unaffected, because that arrives over the channel.
+   *
+   * This is a request, not a guarantee. An activity with no `heartbeatTimeout`
+   * in its options must not heartbeat, so the pump stays silent for it whatever
+   * this is set to. Set `heartbeatTimeout` in the workflow's `activityOptions`
+   * to have it beat.
+   */
   heartbeat?: boolean;
   /** Most history pages a scan fetches before giving up. Omit to page to channel exhaustion. */
   maxHistoryPages?: number;
@@ -70,7 +78,7 @@ export interface FramingActivitiesOptions<TInput, TOutput> {
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  * @param options - Codec, client factory, and paging behaviour.
- * @returns The four activities, ready to register on a worker.
+ * @returns The three activities, ready to register on a worker.
  */
 export const createFramingActivities = <TInput, TOutput>(
   options: FramingActivitiesOptions<TInput, TOutput>,
@@ -79,14 +87,14 @@ export const createFramingActivities = <TInput, TOutput>(
   // Each layer adds its own context, so a transport built inside an activity
   // is distinguishable in the log from any other AgentTransport.
   const logger = options.logger?.withContext({ component: 'FramingActivities' });
-  const heartbeat = options.heartbeat ?? false;
+  const heartbeat = options.heartbeat ?? true;
 
-  /** Per-page heartbeat for the history scans, when enabled. */
-  const onPage = heartbeat
-    ? (): void => {
-        Context.current().heartbeat();
-      }
-    : undefined;
+  /**
+   * Per-page heartbeat for the history scans, when enabled. `beat` applies
+   * Temporal's own gate, so a page hook on an activity with no heartbeat
+   * timeout is a no-op rather than a contract breach.
+   */
+  const onPage = heartbeat ? beat : undefined;
 
   /**
    * Run `body` against a connected agent transport on its own client, closing
@@ -98,7 +106,7 @@ export const createFramingActivities = <TInput, TOutput>(
    * @param body - The work to run against the transport.
    * @returns Whatever `body` returns.
    */
-  const inTransport = async <T>(
+  const withAgentTransport = async <T>(
     invocationData: OpenRunInput['invocation'],
     body: (ctx: { transport: AgentTransport<TInput, TOutput>; invocation: Invocation }) => Promise<T>,
   ): Promise<T> => {
@@ -132,49 +140,11 @@ export const createFramingActivities = <TInput, TOutput>(
     }
   };
 
-  /**
-   * Resolve once the run's opening event (`ai-run-start` / `ai-run-resume`)
-   * echoes back on the receive stream — the confirmation that the open reached
-   * the wire, so the activity can report success and hand off. Rejects when
-   * the activity is cancelled first.
-   * @param transport - The connected transport to observe.
-   * @param runId - The run whose opening echo to await.
-   * @param signal - The activity's cancellation signal.
-   * @returns Resolves on the opening echo.
-   */
-  const awaitRunOpen = async (
-    transport: AgentTransport<TInput, TOutput>,
-    runId: string,
-    signal: AbortSignal,
-  ): Promise<void> =>
-    new Promise((resolve, reject) => {
-      // An already-aborted signal never fires `abort`, so check it before
-      // subscribing: otherwise this promise never settles and the activity
-      // stalls to its startToClose timeout instead of failing fast.
-      if (signal.aborted) {
-        reject(activityCancelled());
-        return;
-      }
-      const onAbort = (): void => {
-        unsubscribe();
-        reject(activityCancelled());
-      };
-      const unsubscribe = transport.subscribe((event) => {
-        if (event.kind !== 'run-lifecycle' || event.event.runId !== runId) return;
-        if (event.event.type === 'start' || event.event.type === 'resume') {
-          signal.removeEventListener('abort', onAbort);
-          unsubscribe();
-          resolve();
-        }
-      });
-      signal.addEventListener('abort', onAbort);
-    });
-
   return {
     openRun: async (input: OpenRunInput): Promise<RunIdentity> => {
       const cancelSignal = Context.current().cancellationSignal;
       logger?.trace('framingActivities.openRun();', { invocationId: input.invocationId });
-      return inTransport(input.invocation, async ({ transport, invocation }) => {
+      return withAgentTransport(input.invocation, async ({ transport, invocation }) => {
         // The trigger was published before this process attached, so it sits
         // in channel history. Locate it and no more: this activity runs no
         // inference, so it never needs the rest of the conversation. A retry
@@ -207,55 +177,32 @@ export const createFramingActivities = <TInput, TOutput>(
           serial: located.meta.serial,
         });
 
-        // The located input drives the open: its run-id header names the run
+        // A cancelled activity must not put a fresh opening event on the
+        // channel, and the opening publish is not itself abortable, so the
+        // check belongs before the open rather than after it.
+        if (cancelSignal.aborted) throw activityCancelled();
+
+        // The located input drives the open: its run-id header references the run
         // a continuation re-enters (publishing `ai-run-resume`); without one, a
         // fresh turn opens under the pinned `runId` — the invocation id, which
-        // a durable framework holds constant across retries, so a
+        // Temporal holds constant across an activity's retries, so a
         // fresh-process retry re-enters the SAME run instead of minting a new
         // id and opening a parallel one.
-        const { promise: openFailed, reject: failOpen } = Promise.withResolvers<never>();
-        // .catch(): the race below observes the rejection; without a pre-attached
-        // handler the losing branch would surface as an unhandled rejection.
-        openFailed.catch(() => {
-          /* observed via the race */
-        });
         const run = transport.openRun(
           {
             input: located,
             runId: input.invocationId,
             invocationId: input.invocationId,
           },
-          {
-            signal: cancelSignal,
-            onError: (error) => {
-              failOpen(error);
-            },
-          },
+          { signal: cancelSignal },
         );
-        // The opening publish is fire-and-forget inside openRun, so a publish
-        // failure never reaches this frame on its own — race it against the
-        // echo, or a failed open would hang this activity until its Temporal
-        // timeout instead of failing fast for retry. A successful open still
-        // waits for the echo, so the hand-off to the next activity happens
-        // strictly after the open is on the wire. Subscribing after openRun is
-        // safe: no await separates them, so the echo cannot be delivered in
-        // between. The transport reports the failure on both paths — the
-        // `onError` hook and the handle's `opened` — so both feed the same
-        // rejection and whichever calls it first decides what this activity
-        // throws. That is usually `onError`, whose error is wrapped as
-        // `SendFailed`; the second call is a no-op.
-        //
-        // .catch(): rejection-only view — `opened` resolving must not settle
-        // the race, only the echo may.
-        run.opened.catch(failOpen);
-        const opened = awaitRunOpen(transport, run.runId, cancelSignal);
-        // The loser of the race stays pending with its abort listener
-        // attached; pre-handle it so a later cancel cannot surface as an
-        // unhandled rejection.
-        opened.catch(() => {
-          /* observed via the race */
-        });
-        await Promise.race([opened, openFailed]);
+        // `opened` settles with the opening publish's acknowledgement. Awaiting
+        // it does both jobs this activity needs: it hands off to the next
+        // activity strictly after the open is accepted onto the channel, and it
+        // fails the activity fast for retry when the publish is refused, rather
+        // than stalling to the startToClose timeout. The activity never reads
+        // its own echo, so nothing here requires the client to echo publishes.
+        await run.opened;
         logger?.debug('framingActivities.openRun(); run open', { runId: run.runId });
 
         return { runId: run.runId, invocationId: input.invocationId };
@@ -265,11 +212,12 @@ export const createFramingActivities = <TInput, TOutput>(
     endRun: async (input: EndRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
       logger?.trace('framingActivities.endRun();', { runId: input.ids.runId, reason: input.reason });
-      await inTransport(input.invocation, async ({ transport }) => {
+      await withAgentTransport(input.invocation, async ({ transport }) => {
         // No wire-state check: this activity adopts and publishes. A retry
         // after a crash that already published puts a second `ai-run-end` on
-        // the channel, which readers absorb by respecting the first terminal
-        // in serial order.
+        // the channel. The SDK's own Vercel adapter absorbs that idempotently;
+        // a consumer merging the stream itself is expected to honour the first
+        // terminal in serial order.
         const run = transport.adoptRun(
           input.ids.runId,
           { invocationId: input.ids.invocationId },
@@ -290,20 +238,6 @@ export const createFramingActivities = <TInput, TOutput>(
       });
     },
 
-    suspendRun: async (input: SuspendRunInput): Promise<void> => {
-      logger?.trace('framingActivities.suspendRun();', { runId: input.ids.runId });
-      const cancelSignal = Context.current().cancellationSignal;
-      await inTransport(input.invocation, async ({ transport }) => {
-        // No wire-state check, as in `endRun`: adopt and publish.
-        const run = transport.adoptRun(
-          input.ids.runId,
-          { invocationId: input.ids.invocationId },
-          { signal: cancelSignal },
-        );
-        await run.suspend();
-      });
-    },
-
     cleanupRun: async (input: CleanupRunInput): Promise<void> => {
       // Warn, not trace: this arm only runs because the workflow threw, and it
       // publishes a terminal over whatever state the run was in.
@@ -312,20 +246,14 @@ export const createFramingActivities = <TInput, TOutput>(
       });
       // No cancellation signal: this is the cleanup arm, so it must still run
       // while the workflow itself is being cancelled.
-      await inTransport(input.invocation, async ({ transport }) => {
+      await withAgentTransport(input.invocation, async ({ transport }) => {
         // No wire-state check: the cleanup arm publishes its error terminal
         // unconditionally, because reading the run's state would mean a history
         // scan on the one path that has to stay cheap and cancellation-proof.
         //
-        // Two consequences follow. On a run that already ended, this adds a
-        // second `ai-run-end` that readers ignore in favour of the first, so
-        // the cost is channel noise rather than a wrong state. On a run the
-        // workflow parked with `suspend`, the park is replaced by an error
-        // terminal: a suspend is not terminal, so there is a real state change
-        // here, and a client that had treated the park as the end of the turn
-        // sees the turn error afterwards. That is the intended reading for now
-        // — the orchestrator died, so nothing will resume the park — but it is
-        // the sharp edge of this arm, not an accident.
+        // One consequence follows. On a run that already ended, this adds a
+        // second `ai-run-end`; a reader honouring the first terminal sees
+        // channel noise rather than a wrong state.
         const run = transport.adoptRun(input.ids.runId, { invocationId: input.ids.invocationId });
         await run.end({
           reason: 'error',
@@ -341,8 +269,8 @@ export const createFramingActivities = <TInput, TOutput>(
 };
 
 /**
- * The error an open-echo wait rejects with when the activity is cancelled,
- * whether the signal aborts mid-wait or was already aborted on entry.
+ * The error `openRun` throws when the activity was already cancelled before it
+ * could put the opening event on the channel.
  * @returns The cancellation error.
  */
 const activityCancelled = (): Ably.ErrorInfo =>

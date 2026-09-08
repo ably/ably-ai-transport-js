@@ -1,17 +1,32 @@
 # `@ably/ai-transport/temporal`
 
-Temporal support for building durable agents. Codec-agnostic.
+This package streams the output of agents running on Temporal to clients over Ably. Temporal provides the durable execution to run your agent, and Ably provides the durable transport to deliver the agent's responses to clients at scale. Your Temporal activities publish their output straight to the browser over an Ably channel, and when Temporal retries an activity, the retry's output replaces the output of the attempt that failed.
 
-Two halves, split by where they run:
+## What you get
 
-| Import                                 | Runs on              | Contains                                                     |
-| -------------------------------------- | -------------------- | ------------------------------------------------------------ |
-| `@ably/ai-transport/temporal`          | the worker           | `createAblyTransportPlugin`, `stepIdFor`, the activity types |
-| `@ably/ai-transport/temporal/workflow` | the workflow sandbox | `withRun`, `openRun`, `RunHandle`                            |
+- **Streaming from activities.** An activity publishes tokens to every client in the conversation as the model produces them. Nothing proxies through Temporal, a database, or your own API server.
+- **Clean retries.** When Temporal retries a failed activity, the retry's output supersedes the failed attempt's output in the conversation, so the user never sees the failed attempt.
+- **Recovery on the client.** Messages arrive in order, and a client that reconnects or joins late reads the stream back without gaps.
+- **Cancel and steer over the channel.** A client cancels a run mid-stream, or sends a follow-up message to steer the agent's output, and the activity holding the run receives it over the same channel.
+- **The run lifecycle handled for you.** The plugin opens the run when your workflow starts, and if your workflow fails it ends the run with an error. When your workflow succeeds, your own code ends the run from wherever the last output was published.
 
-Workflow code must import the `/workflow` subpath. The worker half reaches for
-`ably` and `@temporalio/activity`, neither of which exists inside Temporal's
-workflow sandbox.
+## The two main concepts
+
+- A **run** is one turn, from the user's prompt to the agent's answer. Every run opens with an `ai-run-start` message and ends with an `ai-run-end` message. Clients wait on that end message to know the turn is over and the agent has finished responding.
+- A **step** is one unit of output within a run, and maps to one Temporal activity. Steps have a step id, and a retrying activity publishes its new output under the same step id as the failed activity to indicate that the second output supersedes the first.
+
+The plugin opens and closes the run, and you write the Temporal activities that do the agent's work, such as calling the model and running tools. Each of those activities publishes its output to the run as a step.
+
+## Entry points
+
+There are two entry points, split by where the code runs:
+
+| Import                                 | Runs on              | Contains                                                                 |
+| -------------------------------------- | -------------------- | ------------------------------------------------------------------------ |
+| `@ably/ai-transport/temporal`          | the worker           | `createAblyTransportPlugin`, `createActivityHelpers`, the activity types |
+| `@ably/ai-transport/temporal/workflow` | the workflow sandbox | `withRun`, `openRun`, `RunHandle`                                        |
+
+Workflow code must import from the `/workflow` entry point. The worker entry point uses `ably` and `@temporalio/activity`, and neither is allowed to exist inside Temporal's workflow sandbox, because Ably does network I/O and Temporal forbids I/O in workflow code so that it can replay a workflow deterministically.
 
 ## Install
 
@@ -19,186 +34,212 @@ workflow sandbox.
 npm install @ably/ai-transport ably @temporalio/activity @temporalio/worker @temporalio/client @temporalio/workflow
 ```
 
-`@temporalio/activity`, `@temporalio/worker` and `@temporalio/workflow` are
-optional peer dependencies — required only if you import from `/temporal`.
+`@temporalio/activity`, `@temporalio/worker` and `@temporalio/workflow` are optional peer dependencies of `@ably/ai-transport`. You need them when you import from `/temporal`.
 
-## What the plugin gives you
+## What the plugin registers
 
-A durable agent has two halves. **Inference** is yours: the model, the system
-prompt, the tool registry, when to stop. **Framing** is the run lifecycle around
-it, and it is identical in every integration:
+The plugin registers three activities on your worker. `withRun` schedules them from your workflow, and they show in your Temporal history under these names.
 
-| Activity     | Publishes           | What it does                                                    |
-| ------------ | ------------------- | --------------------------------------------------------------- |
-| `openRun`    | `ai-run-start`      | Creates the run, finds its trigger in channel history, opens it |
-| `endRun`     | `ai-run-end`        | Publishes a terminal                                            |
-| `cleanupRun` | `ai-run-end{error}` | Closes a run whose turn failed, so a waiting client unsticks    |
+| Activity     | Publishes                  | What it does                                                                    |
+| ------------ | -------------------------- | ------------------------------------------------------------------------------- |
+| `openRun`    | `ai-run-start`             | Finds the message that started the turn in channel history and opens the run    |
+| `endRun`     | `ai-run-end`               | Ends the run                                                                    |
+| `cleanupRun` | `ai-run-end` with an error | Ends a run whose workflow failed, so a client waiting on the stream is released |
 
-Every run this plugin opens starts and ends. It parks none, so there is no
-suspend activity, no `RunHandle.suspend()` and no continuation to resume. An
-application that does want to park a run still can: an activity holding the core
-run handle calls `run.suspend()` on it, which costs nothing extra there. What is
-gone is the shim's way of parking one from workflow code.
+A retry of `openRun` re-enters the same run. If the worker crashes after the run opened, the retried activity picks that run up and your workflow continues in it, so clients see one run.
 
-The plugin registers all three, so none of them appear in your code. Two carry
-subtleties worth knowing: `openRun` pins the run id to the invocation id, which
-is what makes a retry re-enter the same run rather than opening a second one in
-parallel; and `cleanupRun` reads no wire state before publishing, so it ends the run
-`error` whatever state the run was in. On an already-ended run that costs a
-second `ai-run-end` on the channel, which the shipped Vercel adapter absorbs
-idempotently, and which a consumer merging the event stream itself should
-absorb by honouring the first terminal in serial order.
+`cleanupRun` ends the run with an error whatever state the run is in. If one of your activities had already ended the run, the channel carries a second `ai-run-end`. If you merge the event stream yourself, treat the first `ai-run-end` as the end of the run and ignore any later one.
 
 ## Worker setup
 
-The plugin takes whichever codec your agent publishes with — nothing here reads
-a codec's wire types, so the Vercel one below is an example rather than a
-requirement.
+The worker takes a codec. Codecs translate your event format into Ably messages and back again. There are built-in codecs for the Vercel AI SDK in `@ably/ai-transport/vercel` and for OpenAI in `@ably/ai-transport/openai`, and you can define a custom codec for your own event structure.
+
+The plugin's options are the codec and a function that builds an Ably client. Put them in a module of their own, because your own activities use the same options later on:
+
+```ts
+// transport.ts
+import * as Ably from 'ably';
+import type { ActivityHelpersOptions } from '@ably/ai-transport/temporal';
+
+import { codec } from './codec.js'; // the codec your agent publishes with
+
+export const transportOptions: ActivityHelpersOptions<MyInput, MyOutput> = {
+  codec,
+  createClient: () => new Ably.Realtime({ key: process.env.ABLY_API_KEY }),
+};
+```
+
+Register the plugin in `Worker.create` with those options:
 
 ```ts
 import { NativeConnection, Worker } from '@temporalio/worker';
 import { createAblyTransportPlugin } from '@ably/ai-transport/temporal';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 
-import * as activities from './activities.js'; // YOUR inference and tool activities
+import * as activities from './activities.js'; // your inference and tool activities
+import { transportOptions } from './transport.js';
+
+const connection = await NativeConnection.connect({ address: 'localhost:7233' });
 
 const worker = await Worker.create({
   connection,
   taskQueue: 'my-agent',
   workflowsPath: require.resolve('./workflows'),
   activities,
-  plugins: [
-    createAblyTransportPlugin({
-      codec: createUIMessageCodec(),
-      createClient: () => new Ably.Realtime({ key: process.env.ABLY_API_KEY }),
-    }),
-  ],
+  plugins: [createAblyTransportPlugin(transportOptions)],
 });
 ```
 
-`createClient` is required: the SDK never reads your environment or builds Ably
-clients for you. It is called once per activity, and the client is closed before
-the activity returns. `echoMessages` can be either setting: every framing
-activity confirms its own publish from the acknowledgement and never reads its
-own echo. A client per activity is a correctness requirement, not
-tidiness — a transport takes its channel from `client.channels.get(name)`, which
-caches per name, and detaching that channel detaches it for every holder, so two
-transports sharing a client on one channel would break each other.
+`createClient` is required, and the plugin calls it once per activity. Return a new `Ably.Realtime` each time, because two activities sharing one client would share one channel object and one activity closing would detach the other's channel. The plugin closes each client before its activity returns. `echoMessages` can be on or off.
 
-Other options: `logger`, `heartbeat`, `maxHistoryPages` and `historyPageSize`.
-
-### `heartbeat` and Temporal-side cancellation
-
-`heartbeat` is on by default, and it does two things rather than one.
-
-The first is progress reporting, so a long history scan does not look like a
-hang.
-
-The second is why it defaults on. `@temporalio/activity` states the rule:
-"Activities can only receive Cancellation if they emit heartbeats or are Local
-Activities". Every framing activity passes
-`Context.current().cancellationSignal` into the transport, so without a beat
-that signal stays inert and a workflow cancelled through
-`WorkflowHandle.cancel()`, the CLI or the Web UI does not reach the run until
-the activity finishes on its own.
-
-That is a separate path from the SDK's own `ai-cancel` message, which a client
-publishes and the transport routes onto the run's `abortSignal`. That one works
-regardless, because it arrives over the channel rather than from Temporal.
-
-**`heartbeat: true` is a request, and the activity's own options decide whether
-it is honoured.** `Info.heartbeatTimeoutMs` states the contract: "if this
-timeout is defined, the Activity must heartbeat before the timeout is reached.
-The Activity must **not** heartbeat in case this timeout is not defined." So the
-pump reads that value per activity and stays silent without one, which means
-the default costs nothing for an activity scheduled without a heartbeat
-deadline. An activity scheduled without one reports it as `0` rather than
-absent, so the gate tests for a positive value.
-
-`withRun` supplies `heartbeatTimeout: '30 seconds'` for the three activities it
-drives, so the pump beats out of the box and a Temporal-side cancel reaches a
-running framing activity. Override it like any other activity option:
-
-```ts
-await withRun(invocation, { activityOptions: { default: { heartbeatTimeout: '1 minute' } } }, body);
-```
-
-Raising it raises the latency of a Temporal-side cancel with it: Core throttles
-heartbeats to 0.8 of the timeout, so 30 seconds means beats flow about every 24.
-
-**Do not set it below about 10 seconds.** The pump's interval is a fixed 5
-seconds, and Core throttles a set timeout to 0.8 of it, so beats actually leave
-every `max(5s, 0.8 × timeout)`. Below roughly 6 seconds that figure exceeds the
-timeout itself and the activity fails its heartbeat deadline instead of
-reporting faster. A short timeout buys no speed here; it only cuts the margin.
-
-Two notes on that number. Temporal defines no default for
-`ActivityOptions.heartbeatTimeout` — unset is a supported state, which is why
-the worker carries a `defaultHeartbeatThrottleInterval` for that case. Its
-default, 30 seconds, is the nearest Temporal-authored value for how often
-heartbeats should flow when nobody said, so it is the one matched here. It is
-copied rather than imported: nothing in `@temporalio/worker` exports it, and the
-shim is workflow-side and cannot import worker code regardless.
-
-`cleanupRun` is scheduled with no heartbeat timeout on purpose. It exists to run
-while the workflow is being cancelled, so it wants no cancellation delivered to
-it.
+The other options are `logger`, `heartbeat`, `maxHistoryPages` and `historyPageSize`. The heartbeat section below covers `heartbeat`.
 
 ## Workflow
 
+Your workflow wraps its operations in `withRun`. The workflow below is a sketch: `callModel` and `runTool` stand for your own activities, and the loop is your own agent logic.
+
 ```ts
 import { proxyActivities } from '@temporalio/workflow';
+import type { InvocationData } from '@ably/ai-transport';
 import { withRun } from '@ably/ai-transport/temporal/workflow';
 
-const { runInferenceStep, runToolStep } = proxyActivities<typeof activities>({
+import type * as activities from './activities.js';
+
+// Your activities, proxied as usual. Each one adopts the run from `ids`,
+// publishes its output as a step, and returns what the workflow needs to
+// decide what to do next.
+const { callModel, runTool } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
   retry: { maximumAttempts: 3 },
 });
 
-export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
+export async function chatWorkflow(input: { invocation: InvocationData }): Promise<void> {
+  // `withRun` opens the run before the body starts, and ends it with an
+  // error if the body throws. `run.ids` carries the run's identity, and
+  // every activity needs it to publish into the run.
   await withRun(input.invocation, async (run) => {
-    let outcome = await runInferenceStep({ ids: run.ids, invocation: input.invocation });
+    // Call the model once. The activity streams the model's output to the
+    // client as a step and returns any tool calls the model asked for.
+    let result = await callModel({ ids: run.ids, invocation: input.invocation });
 
-    while (outcome.kind === 'server-tools') {
-      for (const call of outcome.serverToolCalls) {
-        await runToolStep({ ids: run.ids, invocation: input.invocation, toolCall: call });
+    // While the model wants tools, run them and call the model again. Each
+    // tool result is its own step, so a retry of a failed tool replaces
+    // only that tool's output.
+    while (result.toolCalls.length > 0) {
+      for (const call of result.toolCalls) {
+        await runTool({ ids: run.ids, invocation: input.invocation, toolCall: call });
       }
-      outcome = await runInferenceStep({ ids: run.ids, invocation: input.invocation });
+      result = await callModel({ ids: run.ids, invocation: input.invocation });
     }
+
+    // The turn is over. `callModel` ended the run inside the activity, so
+    // there is nothing left to publish here.
   });
 }
 ```
 
-`withRun` opens the run, runs the body, and on a failure makes a **best-effort
-attempt to close the run**. That attempt is the reason to use it: an unclosed run
-leaves the browser waiting on a stream that never ends, and remembering to clean
-up by hand is the easiest part of a durable agent to forget. It runs in a
-non-cancellable scope, so it still fires when the workflow itself is cancelled. A
-_terminated_ workflow is beyond its reach: a terminate dispatches no further
-workflow task, so no cleanup activity runs.
+`withRun` opens the run, runs your code, and if your code throws it ends the run with an error. Without that cleanup, a failed turn leaves the browser waiting on a stream that never ends. The cleanup runs even when the workflow is cancelled. A terminated workflow gets no cleanup, because Temporal runs no more of a terminated workflow's code.
 
-Best-effort is literal, and deliberate. Cleanup gets one attempt with a short
-timeout, because retrying would let a hanging cleanup hold up a terminate; it
-reads no wire state, so it publishes its error terminal over a run that already
-ended too — a second `ai-run-end`, which a reader is expected to absorb by
-honouring the first terminal. Its own failure is swallowed so the body's error
-reaches Temporal unmasked. It also only fires on
-a throw — a body that returns without publishing a terminal leaves the run open.
+The cleanup is best-effort: it gets one attempt with a 30 second timeout, so a hanging cleanup cannot hold up a terminate. If the cleanup fails, your code's error still reaches Temporal unchanged. It runs only when your code throws, so code that returns without ending the run leaves the run open.
 
-On success `withRun` publishes nothing — see below.
+On success `withRun` publishes nothing. Your code ends the run, and the section on where to end the run covers the two places to do it.
 
-`invocationId` defaults to the workflow id, which is right when you start one
-workflow per POST, as the demo does. Pass it explicitly when one workflow serves
-several turns: the workflow id is the same for all of them, so every turn would
-otherwise merge onto the first one's run. Whatever you pass must be the id the
-client was handed. Nothing validates it, and if the two diverge a retry opens a
-second parallel run on the same channel.
+### Inside an activity
+
+Every activity runs in a fresh process, so each one has to build an Ably client and a transport, re-enter the run, publish, and close both afterwards. `createActivityHelpers` takes the same options as the plugin and returns three functions that do that for you, each built on the one before:
+
+- `withAgentTransport(invocation, body)` builds an Ably client and a connected agent transport on the invocation's channel, runs your body with them, and closes both afterwards.
+- `withRun(input, body)` does that and then adopts the run named by `input.ids`, or opens a run when `input` carries an `invocationId` instead, and hands your body the run and its identity.
+- `withStep(input, body)` does that and wraps your body in one step keyed on the Temporal activity id. It ends the step when your body returns, ends it as failed and rethrows when your body throws, and leaves the step alone if your body already ended it or ended the run, which closes the step too. It never ends the run.
+
+Add the helpers to the module that holds the plugin options. They cannot live in the module you hand to `Worker.create({ activities })`, because Temporal registers every export of that module as an activity.
+
+```ts
+// transport.ts, continued
+import { createActivityHelpers } from '@ably/ai-transport/temporal';
+
+export const { withStep } = createActivityHelpers(transportOptions);
+```
+
+The `callModel` activity from the workflow above then looks like this:
+
+```ts
+import type { InvocationData, RunIdentity } from '@ably/ai-transport';
+
+import { streamModel } from './model.js'; // your model call, returning a stream of your codec's output events
+import { withStep } from './transport.js';
+
+export async function callModel(input: { ids: RunIdentity; invocation: InvocationData }) {
+  return withStep(input, async ({ step, run }) => {
+    // The step is keyed on this activity's id. A retry of this activity has
+    // the same id, so the retry's output supersedes this attempt's output in
+    // the conversation.
+    const { stream, toolCalls } = await streamModel(run.abortSignal);
+    await step.pipe(stream);
+
+    // When the model asked for no tools the turn is over, so end the run
+    // here, where the transport is already connected.
+    if (toolCalls.length === 0) await run.end({ reason: 'complete' });
+    return { toolCalls };
+  });
+}
+```
+
+`withStep` adopts the run with the activity's cancellation signal, so a Temporal cancel aborts the model call through `run.abortSignal`. To react to a client's cancel or steering message, or to keep an activity out of Temporal's cancellation, pass hooks between the input and the body:
+
+```ts
+await withStep(input, { onSteer: handleSteer, cancellable: false }, async ({ step }) => {
+  // ...
+});
+```
+
+Temporal activity ids are unique within one workflow, and every run the plugin opens belongs to one workflow from start to end, so the activity id alone identifies the step within its run.
+
+The workflow's `withRun` from the `/workflow` entry point and the activity helper's `withRun` share a name because they do the same job at different scopes. The workflow's wraps a whole turn and schedules the plugin's activities. The activity helper's wraps one activity and works on the run directly.
+
+### Using the run handle from workflow code
+
+`withRun` gives your code a `RunHandle`. It holds `ids`, the run's identity to pass to your activities, and two methods that each schedule one of the plugin's activities:
+
+- `run.end({ reason })` ends the run from workflow code. It schedules `endRun`, and an `errorMessage` goes with it when the reason is `'error'`.
+- `run.cleanup(errorMessage)` ends the run with an error. `withRun` calls this for you when your code throws.
+
+`openRun` returns the same handle without the cleanup, for a workflow that wants to own the failure path itself:
+
+```ts
+import { openRun } from '@ably/ai-transport/temporal/workflow';
+
+export async function chatWorkflow(input: { invocation: InvocationData }): Promise<void> {
+  const run = await openRun(input.invocation);
+  try {
+    const result = await callModel({ ids: run.ids, invocation: input.invocation });
+    await run.end({ reason: result.cancelled ? 'cancelled' : 'complete' });
+  } catch (error) {
+    await run.cleanup(error instanceof Error ? error.message : undefined);
+    throw error;
+  }
+}
+```
+
+### The invocation id
+
+The invocation id identifies one turn, and the plugin uses it as the run's id. You choose it when you start the workflow: generate a fresh id per turn, start the workflow with it as the workflow id, and `withRun` reads it back from `workflowInfo().workflowId`:
+
+```ts
+const invocationId = crypto.randomUUID();
+await client.workflow.start('chatWorkflow', { workflowId: invocationId, taskQueue, args: [{ invocation }] });
+```
+
+If your workflow id is something else, pass `invocationId` to `withRun` yourself:
+
+```ts
+await withRun(input.invocation, { invocationId: input.turnId }, body);
+```
+
+Whichever way you supply it, the id has to stay the same across retries of the workflow's activities and differ between turns. The plugin does not validate it, so an id that changes between attempts opens a second run on the same channel.
 
 ### Activity options
 
-Timeouts and retry policies come from workflow code, per activity, over a
-`default`. They cannot come from plugin options: the workflow sandbox cannot read
-worker-process state and stay deterministic.
+To set timeouts and retry policies for the plugin's activities, pass `activityOptions` to `withRun` or `openRun`. `default` applies to all three activities, and an entry named after an activity overrides `default` for that one:
 
 ```ts
 await withRun(
@@ -213,73 +254,41 @@ await withRun(
 );
 ```
 
-`cleanupRun` defaults to one attempt with a 30-second timeout, so a hanging
-cleanup cannot hold up a terminate.
+These options live in workflow code because the plugin cannot set them: workflow code cannot read the worker's configuration and stay deterministic. The defaults are:
 
-## Where to publish a terminal
+- `openRun` and `endRun`: a 2 minute `startToCloseTimeout`, a 30 second `heartbeatTimeout`, and 3 attempts.
+- `cleanupRun`: a 30 second `startToCloseTimeout`, no `heartbeatTimeout`, and 1 attempt.
 
-Both styles are safe. They differ only in cost.
+## Where to end the run
 
-**Inside the activity that ran the work (cheapest).** Your inference activity
-already holds the run handle, so `run.end(...)` there costs nothing extra. This
-is what the `temporal-agent` demo does.
+You end the run in one of two places:
 
-**From the workflow, via the handle.** `run.end({ reason })` puts the whole
-lifecycle in one place and shows every terminal in the Temporal history. Each call is a fresh process, so it pays a new connection and an
-`adoptRun`. That is a bounded cost, not one that grows with response length: a
-streamed response is a single Ably message that grows by append, so paging back
-to the run's start stays a handful of messages per turn.
+- **Inside the activity that published the last output.** The activity already holds the run, so `run.end(...)` there costs nothing extra. The `callModel` activity above does this.
+- **From the workflow, with `run.end({ reason })`.** This keeps the whole lifecycle in workflow code and shows the end of every run in the Temporal history. Each call is its own activity, so it opens a new Ably connection and reconnects to the run. That cost stays small however long the response is, because a streamed response is one Ably message that grows by append, so the activity pages back through only a handful of messages to find the run.
+
+## Heartbeats and cancellation from Temporal
+
+Two different things can cancel a turn:
+
+- A client publishes an `ai-cancel` message on the channel. The activity holding the run receives it on the run's `abortSignal`, with no heartbeat involved.
+- Temporal cancels the workflow, through `WorkflowHandle.cancel()`, the CLI or the Web UI. Temporal delivers that cancel to an activity only while the activity heartbeats.
+
+The plugin's activities heartbeat by default, so a Temporal cancel reaches them. The heartbeats also tell Temporal that a long history scan is still making progress.
+
+Temporal allows an activity to heartbeat only when its options set a `heartbeatTimeout`. The workflow's `withRun` sets 30 seconds on `openRun` and `endRun`, so they heartbeat out of the box. An activity scheduled without a `heartbeatTimeout` gets no heartbeats whatever the `heartbeat` option says. Override the timeout like any other activity option:
+
+```ts
+await withRun(invocation, { activityOptions: { default: { heartbeatTimeout: '1 minute' } } }, body);
+```
+
+Your own activities heartbeat the same way when they run inside the activity helpers, and the same rule applies: set `heartbeatTimeout` in the `proxyActivities` options that schedule them. Without it, a Temporal cancel does not reach the model call until the activity times out. A client's `ai-cancel` over the channel is unaffected either way.
+
+The timeout sets how quickly a Temporal cancel reaches the activity. Temporal sends a heartbeat about every 0.8 of the timeout, so 30 seconds means a cancel arrives within about 24 seconds. Keep the timeout at 10 seconds or more, because the plugin heartbeats every 5 seconds, so a timeout near 5 seconds gives the heartbeat no margin and a shorter one fails the activity on its heartbeat deadline.
+
+`cleanupRun` is the exception, because it runs after you cancel the workflow to end the run and release the waiting client, so it must not itself be cancelled. It is scheduled with no heartbeat timeout for that reason, and a Temporal cancel does not reach it.
 
 ## Troubleshooting
 
-**"activity type not registered"** on the first turn means the workflow imported
-the shim but the worker never registered the plugin. Add
-`plugins: [createAblyTransportPlugin({ ... })]` to `Worker.create`.
+**"activity type not registered"** on the first turn means the workflow imported `withRun` and the worker never registered the plugin. Add `plugins: [createAblyTransportPlugin({ ... })]` to `Worker.create`.
 
-**Consuming the SDK through a local link?** The shim imports
-`@temporalio/workflow`, and Node resolves that from the link's real path, so
-webpack can bundle two copies. Temporal's runtime classes use private fields, so
-a `CancellationScope` built by one copy cannot be read by the other
-("Cannot read private member #cancelRequested"). Alias the package to one copy in
-`bundlerOptions.webpackConfigHook`; see
-`demo/temporal/temporal-agent/src/worker/bundler.ts`. Installing from
-npm never hits this, because the peer dependency resolves to a single copy.
-
-## `stepIdFor`
-
-`stepIdFor(invocationId)` gives you a globally-unique `stepId` for
-`run.createStep({ stepId })`. It is workflow-scoped, so multiple workflows can
-publish to the same run without their step-1s
-colliding.
-
-```ts
-import { stepIdFor } from '@ably/ai-transport/temporal';
-
-const step = run.createStep({ stepId: stepIdFor(input.ids.invocationId) });
-```
-
-It reads `Context.current().info.activityId`, so call it inside an activity.
-
-**Why workflow-scoped?** Temporal's `activityId` is unique within one workflow,
-not across workflows. If two workflows both published under `step-id: "1"` on the
-same run, the SDK's supersede semantics would eat the earlier attempt's output.
-Prefixing with the invocation id keeps them distinct while still letting a retry
-of the same activity coalesce cleanly.
-
-## Maintaining the replay fixture
-
-Because this package ships workflow-side code, an SDK upgrade changes code inside
-workflows that are already running. `test/temporal/replay.temporal.test.ts`
-replays a recorded history against the current shim and fails if they disagree.
-
-If it fails, the shim's command sequence changed. Decide whether that is intended
-— it means in-flight executions would break on upgrade — then re-record:
-
-```sh
-temporal server start-dev                       # in another terminal
-pnpm tsx scripts/record-temporal-history.ts
-```
-
-The CLI is used deliberately: it emits canonical proto3 JSON, whereas the
-in-process `fetchHistory()` returns an internal representation that does not
-survive `JSON.stringify`.
+**"Cannot read private member #cancelRequested"** when consuming the SDK through a local link. The workflow entry point imports `@temporalio/workflow`, Node resolves that from the link's real path, and webpack bundles two copies. Temporal's runtime classes use private fields, so a `CancellationScope` built by one copy cannot be read by the other. Alias the package to one copy in `bundlerOptions.webpackConfigHook`, as `demo/temporal/temporal-agent/src/worker/bundler.ts` does. Installing from npm resolves the peer dependency to a single copy and never hits this.

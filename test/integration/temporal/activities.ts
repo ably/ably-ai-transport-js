@@ -8,31 +8,33 @@
  *
  * They reach the worker as an object passed to `Worker.create({ activities })`.
  * The fixture workflows import only their TYPES, so webpack never pulls any of
- * this into the workflow bundle.
+ * this into the workflow bundle. For the same reason the helpers object is not
+ * exported from here: Temporal would register it as an activity.
  *
  * None may be named `openRun`, `endRun` or `cleanupRun`: the plugin spreads its
  * own activities last, so it would win the clash and silently replace one.
  *
- * Each is fresh-process safe in the same way the framing activities are. It
- * builds its own Ably client, re-enters the open run with `adoptRun`, publishes,
- * and tears both down. Closing publishes no terminal, so a run left active stays
- * open on the wire for whatever runs next — which is the hand-off these tests
- * exist to prove.
+ * Each is built on the SDK's `withStep`, so it is fresh-process safe in the same
+ * way the framing activities are: it builds its own Ably client, re-enters the
+ * open run, publishes as one step keyed on the activity id, and tears both down.
+ * Closing publishes no terminal, so a run left active stays open on the wire for
+ * whatever runs next — which is the hand-off these tests exist to prove.
  */
 
 import { ApplicationFailure, Context } from '@temporalio/activity';
 
-import { channelAgent } from '../../../src/core/agent.js';
-import { createAgentTransport } from '../../../src/core/transport/agent-transport.js';
 import type { InvocationData } from '../../../src/core/transport/invocation.js';
-import type { AgentRunTransport, RunIdentity } from '../../../src/core/transport/types.js';
-import { stepIdFor } from '../../../src/temporal/step-id.js';
+import type { RunIdentity } from '../../../src/core/transport/types.js';
+import { createActivityHelpers } from '../../../src/temporal/activity-helpers.js';
 import { ablyRealtimeClient } from '../../helper/realtime-client.js';
-import type { TextChunk, UserPrompt } from './test-codec.js';
 import { createTestCodec, textReply } from './test-codec.js';
 
-/** Every activity here publishes with the codec the tests decode with. */
-const codec = createTestCodec();
+/**
+ * The helpers every activity here publishes through, bound to the codec the
+ * tests decode with. `ablyRealtimeClient` registers each client for
+ * `closeAllClients()`, so a client an activity failed to close is still swept.
+ */
+const { withStep } = createActivityHelpers({ codec: createTestCodec(), createClient: () => ablyRealtimeClient() });
 
 /**
  * What `answerStep` publishes on the attempt it is told to fail. A test asserts
@@ -67,69 +69,26 @@ export interface AnswerStepInput {
 }
 
 /**
- * Re-enter the run `ids` references and run `body` against it, tearing down the
- * transport and the client afterwards.
- * @param input - Names the run to re-enter and the channel it lives on.
- * @param body - The work to run against the adopted run.
- * @returns Whatever `body` returns.
- */
-const withAdoptedRun = async <T>(
-  input: Pick<AnswerStepInput, 'ids' | 'invocation'>,
-  body: (run: AgentRunTransport<TextChunk>) => Promise<T>,
-): Promise<T> => {
-  const client = ablyRealtimeClient();
-  try {
-    const channel = client.channels.get(input.invocation.channelName, {
-      params: { agent: channelAgent(codec) },
-    });
-    const transport = createAgentTransport<UserPrompt, TextChunk>({ channel, codec });
-    await transport.connect();
-    try {
-      // Attach without publishing: the plugin's own activity opened this run in
-      // a different process, and it is still open on the wire.
-      return await body(
-        transport.adoptRun(
-          input.ids.runId,
-          { invocationId: input.ids.invocationId },
-          { signal: Context.current().cancellationSignal },
-        ),
-      );
-    } finally {
-      transport.close();
-    }
-  } finally {
-    client.close();
-  }
-};
-
-/**
  * Publish one step's reply, and optionally the run's terminal.
  *
  * With `failFirstAttempt`, the first attempt publishes {@link DEAD_ATTEMPT_TEXT}
- * and throws instead. Temporal then retries under the same `activityId`, so both
- * attempts share the `stepId` that `stepIdFor` composes from it.
+ * and throws. `withStep` ends the step `failed` and closes the transport before
+ * rethrowing, so the dead attempt's output stays on the wire; Temporal then
+ * retries under the same `activityId`, so both attempts share one `stepId`.
  * @param input - The run to re-enter, what to say, and whether to fail once first.
  */
 export const answerStep = async (input: AnswerStepInput): Promise<void> => {
   const failNow = input.failFirstAttempt === true && Context.current().info.attempt === 1;
 
-  await withAdoptedRun(input, async (run) => {
-    const step = run.createStep({ stepId: stepIdFor(input.ids.invocationId) });
-
+  await withStep(input, async ({ step, run }) => {
     if (failNow) {
       await step.pipe(textReply(input.textId, DEAD_ATTEMPT_TEXT));
-      await step.end({ reason: 'failed' });
-      return;
+      throw new Error('inference died mid-step');
     }
 
     await step.pipe(textReply(input.textId, input.reply));
-    await step.end();
     if (input.publishTerminal) await run.end({ reason: 'complete' });
   });
-
-  // Thrown after the transport is closed, so the dead attempt's output stays on
-  // the wire for the retry to supersede rather than being rolled back.
-  if (failNow) throw new Error('inference died mid-step');
 };
 
 /**
@@ -141,10 +100,8 @@ export const answerStep = async (input: AnswerStepInput): Promise<void> => {
  * @param input - The run to re-enter and the text stream id to publish under.
  */
 export const failWithoutTerminal = async (input: AnswerStepInput): Promise<void> => {
-  await withAdoptedRun(input, async (run) => {
-    const step = run.createStep({ stepId: stepIdFor(input.ids.invocationId) });
+  await withStep(input, async ({ step }) => {
     await step.pipe(textReply(input.textId, input.reply));
-    await step.end({ reason: 'failed' });
+    throw ApplicationFailure.nonRetryable('inference exploded');
   });
-  throw ApplicationFailure.nonRetryable('inference exploded');
 };

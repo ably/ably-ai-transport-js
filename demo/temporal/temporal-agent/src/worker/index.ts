@@ -19,8 +19,7 @@ loadDotenv({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 
 import { NativeConnection, Worker } from '@temporalio/worker';
 import { createAblyTransportPlugin } from '@ably/ai-transport/temporal';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
-import { logger, makeAbly } from './ably.js';
+import { transportOptions } from './ably.js';
 import { bundlerOptions } from './bundler.js';
 import * as activities from './activities.js';
 import { TASK_QUEUE } from './shared.js';
@@ -36,13 +35,8 @@ async function main(): Promise<void> {
     workflowsPath: require.resolve('./workflows'),
     bundlerOptions,
     activities,
-    plugins: [
-      createAblyTransportPlugin({
-        codec: createUIMessageCodec(),
-        createClient: makeAbly,
-        logger,
-      }),
-    ],
+    // The same options build this app's own activity helpers in `ably.ts`.
+    plugins: [createAblyTransportPlugin(transportOptions)],
   });
   console.log(`worker: listening on ${TASK_QUEUE}`);
   await worker.run();

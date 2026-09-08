@@ -60,6 +60,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { channelAgent } from '../../../src/core/agent.js';
 import { createClientTransport } from '../../../src/core/transport/client-transport.js';
 import type { InvocationData } from '../../../src/core/transport/invocation.js';
+import type { TransportEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createAblyTransportPlugin } from '../../../src/temporal/plugin.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -80,6 +81,27 @@ const prompt: UserPrompt = { kind: 'user-prompt', payload: { text: 'hello agent'
 
 /** The text stream id every fixture answers under. */
 const REPLY_ID = 'a1';
+
+type Event = TransportEvent<UserPrompt, TextChunk>;
+
+/**
+ * The run and step lifecycle a browser saw, in delivery order, with the
+ * codec's own messages left out. Every test asserts the whole bracket, so the
+ * plugin's activities and the step helper are checked together.
+ * @param events - Everything the recorder saw.
+ * @returns The lifecycle events only.
+ */
+const lifecycleOf = (events: readonly Event[]): Event[] =>
+  events.filter((event) => event.kind === 'run-lifecycle' || event.kind === 'step-lifecycle');
+
+/**
+ * Whether the recorder has seen both a step end and the run's end.
+ * @param events - Everything the recorder saw.
+ * @returns True once both ends have been delivered.
+ */
+const stepAndRunEnded = (events: readonly Event[]): boolean =>
+  events.some((event) => event.kind === 'step-lifecycle' && event.event.type === 'step-end') &&
+  events.some((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
 
 let env: TestWorkflowEnvironment;
 let worker: Worker;
@@ -154,15 +176,20 @@ describe('durable runs over a real channel', () => {
     await handle.result();
     await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
 
-    // This is the baseline the other tests lean on, so it checks the whole run
-    // rather than one property. The run id is the invocation id the route
-    // minted, so a retry of the plugin's openRun re-enters this run instead of
-    // opening a second one.
-    expect(received.events.filter((event) => event.kind === 'run-lifecycle')).toMatchObject([
+    // This is the baseline the other tests lean on, so it checks the whole
+    // bracket: the plugin opens the run, the answering activity's one step
+    // starts and ends inside it, and the run ends. The run id is the
+    // invocation id the route minted, so a retry of the plugin's openRun
+    // re-enters this run instead of opening a second one. The step ends
+    // `complete` before the run does, because ending the run inside the step
+    // helper's body closes the open step first.
+    expect(lifecycleOf(received.events)).toMatchObject([
       {
         kind: 'run-lifecycle',
         event: { type: 'start', runId: invocationId, inputTransportMessageId: sent.transportMessageId },
       },
+      { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId, invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'complete' } },
       { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
     ]);
 
@@ -207,16 +234,19 @@ describe('durable runs over a real channel', () => {
     });
 
     await handle.result();
-    const ended = await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
+    await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
 
-    // The first test covers a run's shape, so what is left to assert here is the
-    // hand-off. The terminal references the runId the plugin's openRun opened, and its
-    // reason is `complete`, which only endRun publishes. The cleanup arm would
-    // have published `error`.
-    expect(ended).toMatchObject({
-      kind: 'run-lifecycle',
-      event: { type: 'end', runId: invocationId, reason: 'complete' },
-    });
+    // The same bracket as the first test, produced by three processes. The
+    // step ends `complete` from inside the answering activity, and the run's
+    // terminal references the runId the plugin's openRun opened with reason
+    // `complete`, which only endRun publishes. The cleanup arm would have
+    // published `error`.
+    expect(lifecycleOf(received.events)).toMatchObject([
+      { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'complete' } },
+      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
+    ]);
     expect(assembleText(received.events.flatMap((event) => (event.kind === 'message' ? event.outputs : [])))).toBe(
       'ended from above',
     );
@@ -240,10 +270,10 @@ describe('durable runs over a real channel', () => {
     // `failFirstAttempt` is what drives the retry, and it is the only thing
     // that differs from the first test. `answerStep` in ./activities.ts reads
     // it: on `Context.current().info.attempt === 1` it publishes
-    // DEAD_ATTEMPT_TEXT, ends the step `failed`, and throws. The fixture's
-    // `answerStep` proxy allows two attempts, so Temporal runs it again — and
-    // a retry keeps the same `activityId`, so `stepIdFor` yields the same
-    // `stepId` for both attempts.
+    // DEAD_ATTEMPT_TEXT and throws, and `withStep` ends the step `failed`. The
+    // fixture's `answerStep` proxy allows two attempts, so Temporal runs it
+    // again — and a retry keeps the same `activityId`, which `withStep` keys
+    // its step on, so both attempts share one `stepId`.
     const invocationId = crypto.randomUUID();
     const args: [FixtureInput] = [
       {
@@ -262,15 +292,26 @@ describe('durable runs over a real channel', () => {
     await handle.result();
     await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
 
-    // Two step attempts under one step id, and the retry's start carries the
-    // larger serial. That ordering is the supersede rule itself: a reader takes
-    // the largest serial for a step id, so the retry's output is the one that
-    // counts.
-    const starts = received.events.flatMap((event) =>
-      event.kind === 'step-lifecycle' && event.event.type === 'step-start' ? [event.event] : [],
-    );
-    expect(starts).toMatchObject([{ type: 'step-start' }, { type: 'step-start' }]);
-    expect(new Set(starts.map((step) => step.stepId)).size).toBe(1);
+    // One run, two step attempts under one step id. The dead attempt's step
+    // ends `failed` when the activity throws, the retry's step starts under
+    // the same id and ends `complete`, and each end references its own
+    // start's serial. The retry's start carries the larger serial, and that
+    // ordering is the supersede rule itself: a reader takes the largest serial
+    // for a step id, so the retry's output is the one that counts.
+    const lifecycle = lifecycleOf(received.events);
+    expect(lifecycle).toMatchObject([
+      { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'failed' } },
+      { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'complete' } },
+      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
+    ]);
+    const steps = lifecycle.flatMap((event) => (event.kind === 'step-lifecycle' ? [event.event] : []));
+    expect(new Set(steps.map((step) => step.stepId)).size).toBe(1);
+    const starts = steps.filter((step) => step.type === 'step-start');
+    const ends = steps.filter((step) => step.type === 'step-end');
+    expect(ends.map((end) => end.stepStartSerial)).toEqual(starts.map((start) => start.serial));
     const [deadSerial = '', winningSerial = ''] = starts.map((step) => step.serial);
     expect(winningSerial.localeCompare(deadSerial)).toBeGreaterThan(0);
 
@@ -398,19 +439,29 @@ describe('durable runs over a real channel', () => {
 
     // Wait for text rather than any output event: a streamed message opens on
     // its first delivery and its text arrives on a later append.
-    //
-    // Cancelling here lands mid-answer, so the answering activity's own
-    // step-end publish is aborted under it and the SDK logs that failure. That
-    // is the cancellation path working, not a teardown race: the cleanup arm
-    // still publishes the terminal this test asserts on.
     await received.waitFor((all) =>
       all.some((event) => event.kind === 'message' && event.outputs.some((output) => output.type === 'text-delta')),
     );
     await handle.cancel();
     await expect(handle.result()).rejects.toThrow();
 
-    const ended = await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
-    expect(ended).toMatchObject({ kind: 'run-lifecycle', event: { type: 'end', reason: 'error' } });
+    // The cancel lands mid-answer. The answering activity is scheduled without
+    // a heartbeat timeout, so Temporal's cancel never reaches it: it finishes
+    // its reply and ends its step `complete` on its own connection, while the
+    // cleanup arm ends the run `error` on another. Both land, and which lands
+    // first is a race between two connections, so the bracket is asserted per
+    // kind rather than as one ordered list.
+    await received.waitFor(stepAndRunEnded);
+    const lifecycle = lifecycleOf(received.events);
+    expect(lifecycle).toHaveLength(4);
+    expect(lifecycle.filter((event) => event.kind === 'run-lifecycle')).toMatchObject([
+      { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
+      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'error' } },
+    ]);
+    expect(lifecycle.filter((event) => event.kind === 'step-lifecycle')).toMatchObject([
+      { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'complete' } },
+    ]);
 
     client.close();
   });
@@ -446,14 +497,20 @@ describe('durable runs over a real channel', () => {
       (all) => all.filter((event) => event.kind === 'run-lifecycle' && event.event.type === 'end').length === 2,
     );
 
-    const ends = received.events.flatMap((event) =>
-      event.kind === 'run-lifecycle' && event.event.type === 'end' ? [event.event] : [],
-    );
-    expect(ends).toMatchObject([
-      { type: 'end', runId: invocationId, reason: 'complete' },
-      { type: 'end', runId: invocationId },
+    // One run and one step, then two terminals: the step ends `complete`
+    // inside the answering activity, and endRun publishes twice.
+    const lifecycle = lifecycleOf(received.events);
+    expect(lifecycle).toMatchObject([
+      { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'complete' } },
+      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
+      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
     ]);
     // Delivery order is serial order, so the first delivered is the one to honour.
+    const ends = lifecycle.flatMap((event) =>
+      event.kind === 'run-lifecycle' && event.event.type === 'end' ? [event.event] : [],
+    );
     const bySerial = ends.toSorted((a, b) => (a.serial ?? '').localeCompare(b.serial ?? ''));
     expect(bySerial[0]).toBe(ends[0]);
 

@@ -91,7 +91,13 @@ describe('mergeMessages', () => {
       messageEvent('cm-1', { outputs: toolCallChunks('a1', 'call-1', 'getLocation') }),
       messageEvent('cm-1', {
         inputs: [
-          { kind: 'chunk', payload: { type: 'tool-output-available', toolCallId: 'call-1', output: { lat: 1 } } },
+          {
+            kind: 'chunk',
+            payload: {
+              messageId: 'a1',
+              chunk: { type: 'tool-output-available', toolCallId: 'call-1', output: { lat: 1 } },
+            },
+          },
         ],
       }),
     ]);

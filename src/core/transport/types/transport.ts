@@ -916,6 +916,12 @@ export interface RunStepTransport<TOutput> {
   /** This step's id — stable across retry attempts of the same step. */
   readonly stepId: string;
   /**
+   * Whether the step has been closed, by its own {@link end} or by the run
+   * ending and auto-closing it. A helper that ends the step on the caller's
+   * behalf reads this to leave an already-closed step alone.
+   */
+  readonly ended: boolean;
+  /**
    * Pipe an output stream through the encoder, stamping every output with this
    * step's identity. Returns when the stream completes, is cancelled, or
    * errors.

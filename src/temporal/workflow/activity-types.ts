@@ -25,12 +25,21 @@ export interface OpenRunInput {
   invocationId: string;
 }
 
-/** Input to the `endRun` activity. */
-export interface EndRunInput {
+/**
+ * Input to any activity that re-enters a run already open: the identity
+ * `openRun` returned, and the invocation whose channel the run lives on. The
+ * plugin's own `endRun` and `cleanupRun` take this, and so does an
+ * application activity built on the worker-side helpers.
+ */
+export interface AdoptRunInput {
   /** The open run's identity, as returned by `openRun`. */
   ids: RunIdentity;
   /** The invocation this activity serves; only its `channelName` is read, to resolve the channel. */
   invocation: InvocationData;
+}
+
+/** Input to the `endRun` activity. */
+export interface EndRunInput extends AdoptRunInput {
   /** The terminal reason to publish. */
   reason: RunEndReason;
   /** Message for the published error, used only when `reason` is `'error'`. */
@@ -38,11 +47,7 @@ export interface EndRunInput {
 }
 
 /** Input to the `cleanupRun` activity. */
-export interface CleanupRunInput {
-  /** The open run's identity, as returned by `openRun`. */
-  ids: RunIdentity;
-  /** The invocation this activity serves; only its `channelName` is read, to resolve the channel. */
-  invocation: InvocationData;
+export interface CleanupRunInput extends AdoptRunInput {
   /** Message for the published error; a default is used when omitted. */
   errorMessage?: string;
 }

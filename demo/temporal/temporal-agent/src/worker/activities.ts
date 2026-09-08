@@ -9,52 +9,44 @@
  * the SDK's Temporal plugin, registered in `index.ts`. Those activities carry no
  * application logic, so there is nothing here to write.
  *
- * Each activity is fresh-process safe: it builds its own `Ably.Realtime`,
- * resolves the conversation's channel, creates an agent transport on it, and
- * re-enters the open run with `adoptRun` — attach without publishing, so
- * nothing reaches the wire until the activity publishes output or a terminal.
- * The activity that reaches a terminal outcome publishes it (`ai-run-end`)
- * inline before returning; closing the
- * transport publishes nothing, so a run left active stays open on the wire for
- * the next activity to re-enter.
- *
- * Every step uses `stepIdFor` (from `@ably/ai-transport/temporal`), which is
- * stable across Temporal retries of the same activity — so a fresh-process
+ * Each activity runs inside the SDK's `withStep`, bound in `ably.ts`. It builds
+ * its own `Ably.Realtime`, resolves the conversation's channel, creates an agent
+ * transport on it, re-enters the open run without publishing, and wraps the
+ * work in one step keyed on the Temporal activity id — so a fresh-process
  * retry's output SUPERSEDES the dead attempt's channel output instead of
- * appending beside it.
+ * appending beside it. The activity that reaches a terminal outcome publishes
+ * it (`ai-run-end`) inline before returning; closing the transport publishes
+ * nothing, so a run left active stays open on the wire for the next activity.
  *
  * Cancels arrive as `ai-cancel` on the channel; each activity's own transport
  * routes them to `run.abortSignal` via the SDK's built-in cancel routing, so no
  * separate listener activity is needed.
  */
 
-import { Context } from '@temporalio/activity';
 import { convertToModelMessages, readUIMessageStream, stepCountIs, streamText, toUIMessageStream } from 'ai';
 import type { UIMessage, UIMessageChunk } from 'ai';
 
-import {
-  channelAgent,
-  type AgentRunTransport,
-  type AgentTransport,
-  type InvocationData,
-  type RunIdentity,
+import type {
+  AgentRunTransport,
+  AgentTransport,
+  InvocationData,
+  RunIdentity,
+  RunStepTransport,
 } from '@ably/ai-transport';
 import {
   approvedPendingToolCalls,
-  createAgentTransport,
   pendingToolCalls,
   stripToolExecutes,
   vercelRunOutcome,
   type VercelInput,
   type VercelOutput,
 } from '@ably/ai-transport/vercel';
-import { stepIdFor } from '@ably/ai-transport/temporal';
 
 import { createModel } from '../app/api/chat/model.js';
 import { SYSTEM_PROMPT } from '../app/api/chat/prompt.js';
 import { tools } from '../app/api/chat/tools.js';
 import { mergeMessages } from '../lib/merge-messages.js';
-import { logger, makeAbly } from './ably.js';
+import { withStep } from './ably.js';
 import { filterServerToolCalls, publishRunTerminal } from './outcome.js';
 import type { InferenceOutcome, ToolCallInfo } from './shared.js';
 
@@ -62,30 +54,7 @@ import type { InferenceOutcome, ToolCallInfo } from './shared.js';
 // Vercel codec at its default instantiation.
 type Transport = AgentTransport<VercelInput, VercelOutput>;
 type Run = AgentRunTransport<VercelOutput>;
-
-/**
- * Run `body` against a connected agent transport on its own Ably client,
- * closing the transport and the client afterwards. Closing publishes no
- * terminal — the hand-off discipline a durable activity needs.
- */
-async function withAgentTransport<T>(
-  invocation: InvocationData,
-  body: (transport: Transport) => Promise<T>,
-): Promise<T> {
-  const ably = makeAbly();
-  try {
-    const channel = ably.channels.get(invocation.channelName, { params: { agent: channelAgent() } });
-    const transport = createAgentTransport({ channel, logger });
-    await transport.connect();
-    try {
-      return await body(transport);
-    } finally {
-      transport.close();
-    }
-  } finally {
-    ably.close();
-  }
-}
+type Step = RunStepTransport<VercelOutput>;
 
 /**
  * Page the channel's history to exhaustion and merge it into the conversation.
@@ -121,17 +90,10 @@ interface StepInput {
 }
 
 export async function runInferenceStep(input: StepInput): Promise<InferenceOutcome> {
-  const cancelSignal = Context.current().cancellationSignal;
-  return withAgentTransport(input.invocation, async (transport) => {
-    // Attach-without-publishing: the handle registers for cancel routing, and
-    // nothing reaches the wire until this activity publishes output or a
-    // terminal. The run's opening event was already published by the plugin's
-    // openRun activity.
-    const run = transport.adoptRun(input.ids.runId, { invocationId: input.ids.invocationId }, { signal: cancelSignal });
-
+  return withStep(input, async ({ transport, run, step }) => {
     const conversation = await loadConversation(transport);
 
-    const outcome = await runOneInference(run, conversation, stepIdFor(input.ids.invocationId));
+    const outcome = await runOneInference(run, step, conversation);
 
     await publishRunTerminal(run, outcome);
 
@@ -140,19 +102,18 @@ export async function runInferenceStep(input: StepInput): Promise<InferenceOutco
   });
 }
 
-// One inference pass, published as a single SDK step. The stepId is the
-// activity's stable id, so a retry re-runs the turn under the same id and
-// supersedes its prior attempt's output.
-async function runOneInference(run: Run, conversation: UIMessage[], stepId: string): Promise<InferenceOutcome> {
+// One inference pass, published as the step `withStep` opened. A pass that
+// returns before the model call leaves that step unstarted, which publishes
+// nothing when the helper ends it.
+async function runOneInference(run: Run, step: Step, conversation: UIMessage[]): Promise<InferenceOutcome> {
   // Pre-check: if this invocation was triggered by a `tool-approval-response`
   // (approved=true), the last assistant's tool part is in
   // `approval-responded` state and the framework owes it an output.
-  // Dispatch it as a server-tools step now, before opening a step or calling
-  // the model — the LLM would otherwise see an open `tool_use` with no matching
-  // `tool_result` and reject. Only match `approval-responded` here (not
-  // `input-available`) so this branch doesn't race with the post-`streamText`
-  // classification below, which is where a fresh call the model just emitted is
-  // handled.
+  // Dispatch it as a server-tools step now, before calling the model — the LLM
+  // would otherwise see an open `tool_use` with no matching `tool_result` and
+  // reject. Only match `approval-responded` here (not `input-available`) so
+  // this branch doesn't race with the post-`streamText` classification below,
+  // which is where a fresh call the model just emitted is handled.
   const approvedServerCalls = filterServerToolCalls(approvedPendingToolCalls(conversation));
   if (approvedServerCalls.length > 0) {
     return { kind: 'server-tools', serverToolCalls: approvedServerCalls };
@@ -166,8 +127,6 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
     // Never hand streamText an empty prompt ("messages must not be empty").
     return { kind: 'error', errorMessage: 'conversation merge returned no messages' };
   }
-
-  const step = run.createStep({ stepId });
 
   const result = streamText({
     model: createModel(),
@@ -185,6 +144,8 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
   const [wireStream, mergeStream] = toUIMessageStream({ stream: result.fullStream }).tee();
   const pipeResult = await step.pipe(wireStream);
   const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+  // Ended here with the outcome's reason, ahead of the terminal publish below.
+  // `withStep` ends the step again on return, which publishes nothing.
   await step.end(
     outcome.reason === 'error' ? { reason: 'failed' } : outcome.reason === 'cancelled' ? { reason: 'cancelled' } : {},
   );
@@ -227,21 +188,15 @@ async function lastMergedMessage(stream: ReadableStream<UIMessageChunk>): Promis
 // -----------------------------------------------------------------------------
 
 export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo }): Promise<void> {
-  const stepId = stepIdFor(input.ids.invocationId);
-  const cancelSignal = Context.current().cancellationSignal;
-
-  // `tool.execute()` throws are typically retryable: Temporal re-runs this
-  // activity under the same `stepId`, and the retry supersedes the failed
-  // attempt's output via the SDK's step-start-serial supersede semantics. That
-  // only works because the run is re-entered with `adoptRun` and never
-  // ended here — ending would publish `ai-run-end` and every retry would find
-  // the run terminal. Workflow-level `cleanupRun` marks the run 'error' once
-  // retries are truly exhausted.
-  await withAgentTransport(input.invocation, async (transport) => {
-    const run = transport.adoptRun(input.ids.runId, { invocationId: input.ids.invocationId }, { signal: cancelSignal });
-
-    const step = run.createStep({ stepId });
-
+  // `tool.execute()` throws are typically retryable: `withStep` ends the step
+  // `failed` and rethrows, Temporal re-runs this activity under the same
+  // `stepId`, and the retry supersedes the failed attempt's output via the
+  // SDK's step-start-serial supersede semantics. That only works because the
+  // run is re-entered with `adoptRun` and never ended here — ending would
+  // publish `ai-run-end` and every retry would find the run terminal.
+  // Workflow-level `cleanupRun` marks the run 'error' once retries are truly
+  // exhausted.
+  await withStep(input, async ({ step }) => {
     // CAST: the registry is a heterogeneous tool map, so indexing it by a
     // name that arrived over the wire loses the per-tool input types. Narrowed
     // to the one shape this call needs, and guarded below.
@@ -254,6 +209,5 @@ export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo })
       toolCallId: input.toolCall.toolCallId,
       output,
     });
-    await step.end({});
   });
 }

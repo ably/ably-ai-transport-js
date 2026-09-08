@@ -285,4 +285,4 @@ const failureMessage = (error: unknown): string => {
   return deepest === '' ? 'workflow failed' : deepest;
 };
 
-export type { CleanupRunInput, EndRunInput, FramingActivities, OpenRunInput } from './activity-types.js';
+export type { AdoptRunInput, CleanupRunInput, EndRunInput, FramingActivities, OpenRunInput } from './activity-types.js';

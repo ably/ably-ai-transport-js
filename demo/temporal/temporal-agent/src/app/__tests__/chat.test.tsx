@@ -31,6 +31,7 @@ const mockChatTransport: ChatTransport = {
   streaming: false,
   onStreamingChange: () => () => {},
   onForeignRun: () => () => {},
+  onForeignInput: () => () => {},
 };
 
 // The hydration hook connects the client transport before walking, so the pair

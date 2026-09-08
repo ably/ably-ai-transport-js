@@ -166,7 +166,7 @@ export const mergeMessages = async (events: readonly VercelTransportEvent[]): Pr
     for (const input of event.inputs) {
       switch (input.kind) {
         case 'chunk':
-          routeChunk(input.payload, id);
+          routeChunk(input.payload.chunk, id);
           break;
         case 'message':
           mergeMessage(bucket, input.payload);

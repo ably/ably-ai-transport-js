@@ -1636,10 +1636,14 @@ describe('createAgentTransport', () => {
       const run = transport.openRun({ runId: 'run-1' });
       const step = run.createStep();
       await step.send({ type: 'text', text: 'hi' });
+      expect(step.ended).toBe(false);
       await run.end({ reason: 'complete' });
 
       const names = channel.publishNames();
       expect(names.indexOf('ai-step-end')).toBeLessThan(names.indexOf('ai-run-end'));
+      // The auto-close settles the step, so a holder of the step handle can
+      // see it is closed without ending it again.
+      expect(step.ended).toBe(true);
     });
 
     it('publishes ai-run-end and leaves the handle terminal', async () => {

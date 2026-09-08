@@ -382,7 +382,10 @@ describe('cleanupRun', () => {
   it('ends the run as error with the failure message', async () => {
     await activities().cleanupRun({ ids, invocation, errorMessage: 'workflow blew up' });
 
-    expect(transport.adoptRun).toHaveBeenCalledWith('run-1', { invocationId: 'wf-1' });
+    // The cleanup arm adopts without Temporal's cancellation signal, so it
+    // still runs while the workflow itself is being cancelled.
+    expect(transport.adoptRun).toHaveBeenCalledWith('run-1', { invocationId: 'wf-1' }, expect.anything());
+    expect(transport.adoptRun.mock.calls[0]?.[2]).not.toHaveProperty('signal');
     const wrapped: unknown = expect.objectContaining({ message: 'workflow blew up' });
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'error', error: wrapped });
   });

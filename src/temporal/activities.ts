@@ -54,10 +54,11 @@ export const createFramingActivities = <TInput, TOutput>(
       logger?.trace('framingActivities.endRun();', { runId: input.ids.runId, reason: input.reason });
       await withRun(input, async ({ run }) => {
         // No wire-state check: this activity adopts and publishes. A retry
-        // after a crash that already published puts a second `ai-run-end` on
-        // the channel. The SDK's own Vercel adapter absorbs that idempotently;
-        // a consumer merging the stream itself is expected to honour the first
-        // terminal in serial order.
+        // after a crash that already published republishes the terminal under
+        // the same idempotent message id, so Ably drops it inside its
+        // two-minute dedupe window. A retry later than that lands as a second
+        // `ai-run-end`, which the SDK's own Vercel adapter absorbs; a consumer
+        // merging the stream itself honours the first terminal in serial order.
         if (input.reason === 'error') {
           await run.end({
             reason: 'error',
@@ -86,9 +87,11 @@ export const createFramingActivities = <TInput, TOutput>(
         // unconditionally, because reading the run's state would mean a history
         // scan on the one path that has to stay cheap and cancellation-proof.
         //
-        // One consequence follows. On a run that already ended, this adds a
-        // second `ai-run-end`; a reader honouring the first terminal sees
-        // channel noise rather than a wrong state.
+        // On a run that already ended, this publishes under the same
+        // idempotent message id as the terminal already there, so Ably drops it
+        // and the first terminal stands. Past the two-minute dedupe window it
+        // lands as a second `ai-run-end`, and a reader honouring the first
+        // terminal sees channel noise rather than a wrong state.
         await run.end({
           reason: 'error',
           error: new Ably.ErrorInfo(

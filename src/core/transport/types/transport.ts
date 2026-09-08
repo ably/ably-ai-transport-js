@@ -459,6 +459,11 @@ export interface RunEndResult {
    * complete up to this serial only if it accounts for everything else below
    * it too.
    *
+   * The end publishes under an idempotent message id built from the run and
+   * invocation ids, so a retry of the same end is dropped by Ably and its
+   * acknowledgement reports the first end's serial. The watermark holds
+   * either way.
+   *
    * `undefined` when the acknowledgement reported no serial, which is what a
    * conflated publish does.
    */

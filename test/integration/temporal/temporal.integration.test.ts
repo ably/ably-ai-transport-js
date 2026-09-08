@@ -65,7 +65,7 @@ import { ErrorCode } from '../../../src/errors.js';
 import { createAblyTransportPlugin } from '../../../src/temporal/plugin.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { createEventRecorder } from '../helpers.js';
+import { createEventRecorder, drainHistory } from '../helpers.js';
 import * as appActivities from './activities.js';
 import { DEAD_ATTEMPT_TEXT } from './activities.js';
 import type { TextChunk, UserPrompt } from './test-codec.js';
@@ -93,6 +93,30 @@ type Event = TransportEvent<UserPrompt, TextChunk>;
  */
 const lifecycleOf = (events: readonly Event[]): Event[] =>
   events.filter((event) => event.kind === 'run-lifecycle' || event.kind === 'step-lifecycle');
+
+/**
+ * The run lifecycle events stored on the channel, oldest first, as a browser
+ * joining now would read them back. Live delivery can only show what arrived;
+ * history shows what Ably kept, which is how a test proves a duplicate publish
+ * was dropped rather than merely late. A transport pages history back from its
+ * own attach point, so this attaches a fresh client after the fact rather than
+ * reusing the one that watched the run live.
+ * @param channelName - The conversation's channel.
+ * @returns The stored run-lifecycle events.
+ */
+const storedRunLifecycle = async (channelName: string): Promise<Event[]> => {
+  const lateJoiner = createClientTransport<UserPrompt, TextChunk>({
+    channel: ablyRealtimeClient().channels.get(channelName, { params: { agent: channelAgent(codec) } }),
+    codec,
+  });
+  await lateJoiner.connect();
+  try {
+    const stored = await drainHistory(lateJoiner);
+    return stored.filter((event) => event.kind === 'run-lifecycle');
+  } finally {
+    lateJoiner.close();
+  }
+};
 
 /**
  * Whether the recorder has seen both a step end and the run's end.
@@ -329,10 +353,11 @@ describe('durable runs over a real channel', () => {
     client.close();
   });
 
-  it('re-enters one run when the same invocation id opens twice', async () => {
+  it('publishes one run-start when the same invocation id opens twice', async () => {
     // What a fresh-process retry of the plugin's `openRun` looks like on the
-    // channel: a second `ai-run-start` under the same pinned run id, rather
-    // than a parallel run the browser is not watching.
+    // channel: the second open publishes `ai-run-start` under the same pinned
+    // run id and the same message id, so Ably drops it and the browser sees
+    // one run opened once, rather than a parallel run it is not watching.
     const channelName = uniqueChannelName('tmp-reopen');
 
     const client = createClientTransport<UserPrompt, TextChunk>({
@@ -358,13 +383,65 @@ describe('durable runs over a real channel', () => {
     await handle.result();
     await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
 
-    // Two opens, one run: the second `ai-run-start` references the run id the first
-    // published rather than opening a run alongside it.
-    expect(received.events.filter((event) => event.kind === 'run-lifecycle')).toMatchObject([
-      { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
+    // Two opens, one run, one start. Both opens were acknowledged before the
+    // workflow settled, so history is the proof that the second was dropped
+    // rather than late.
+    expect(lifecycleOf(received.events)).toMatchObject([
       { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
       { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId } },
     ]);
+    expect(await storedRunLifecycle(channelName)).toMatchObject([
+      { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
+      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId } },
+    ]);
+
+    client.close();
+  });
+
+  it('keeps the terminal the activity published when the cleanup arm publishes over it', async () => {
+    // The cleanup arm reads no wire state, so when an activity has already
+    // ended the run and the workflow then fails, the arm publishes an `error`
+    // terminal over a `complete` one. Both carry the same message id, and Ably
+    // keeps the first, so the browser sees the turn complete rather than
+    // failed. Without the id a reader taking the latest terminal would show a
+    // finished answer as an error.
+    const channelName = uniqueChannelName('tmp-cleanup-over');
+
+    const client = createClientTransport<UserPrompt, TextChunk>({
+      channel: ablyRealtimeClient().channels.get(channelName, { params: { agent: channelAgent(codec) } }),
+      codec,
+    });
+    await client.connect();
+    const received = createEventRecorder<UserPrompt, TextChunk>();
+    client.subscribe(received.record);
+
+    const sent = await client.publishInput(prompt);
+
+    const invocationId = crypto.randomUUID();
+    const args: [FixtureInput] = [
+      { invocation: { channelName, inputEventId: sent.eventId }, invocationId, reply: 'answered, then failed' },
+    ];
+    const handle = await env.client.workflow.start('endsThenFails', {
+      workflowId: invocationId,
+      taskQueue: TASK_QUEUE,
+      args,
+    });
+
+    // The workflow fails after the answer, and the cleanup arm's publish is
+    // acknowledged before the failure reaches the client.
+    await expect(handle.result()).rejects.toThrow();
+    await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
+
+    const bracket = [
+      { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId } },
+      { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'complete' } },
+      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
+    ];
+    expect(lifecycleOf(received.events)).toMatchObject(bracket);
+    expect(await storedRunLifecycle(channelName)).toMatchObject(
+      bracket.filter((event) => event.kind === 'run-lifecycle'),
+    );
 
     client.close();
   });
@@ -466,10 +543,10 @@ describe('durable runs over a real channel', () => {
     client.close();
   });
 
-  it('leaves both terminals on the channel when the run is ended twice', async () => {
+  it('publishes one terminal when the run is ended twice', async () => {
     // What a retry of the plugin's `endRun` after a publish-then-crash puts on
-    // the wire. Neither the transport nor the channel dedupes, so a reader
-    // absorbs it by honouring the first terminal in serial order.
+    // the wire. The second `ai-run-end` carries the same message id as the
+    // first, so Ably drops it and the channel holds one terminal.
     const channelName = uniqueChannelName('tmp-double');
 
     const client = createClientTransport<UserPrompt, TextChunk>({
@@ -493,26 +570,22 @@ describe('durable runs over a real channel', () => {
     });
 
     await handle.result();
-    await received.waitFor(
-      (all) => all.filter((event) => event.kind === 'run-lifecycle' && event.event.type === 'end').length === 2,
-    );
+    await received.waitForEvent((event) => event.kind === 'run-lifecycle' && event.event.type === 'end');
 
-    // One run and one step, then two terminals: the step ends `complete`
-    // inside the answering activity, and endRun publishes twice.
-    const lifecycle = lifecycleOf(received.events);
-    expect(lifecycle).toMatchObject([
+    // One run and one step, then one terminal: the step ends `complete` inside
+    // the answering activity, endRun publishes twice, and Ably keeps the first.
+    // Both publishes were acknowledged before the workflow settled, so history
+    // is the proof that the second was dropped rather than late.
+    const bracket = [
       { kind: 'run-lifecycle', event: { type: 'start', runId: invocationId } },
       { kind: 'step-lifecycle', event: { type: 'step-start', runId: invocationId } },
       { kind: 'step-lifecycle', event: { type: 'step-end', runId: invocationId, reason: 'complete' } },
       { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
-      { kind: 'run-lifecycle', event: { type: 'end', runId: invocationId, reason: 'complete' } },
-    ]);
-    // Delivery order is serial order, so the first delivered is the one to honour.
-    const ends = lifecycle.flatMap((event) =>
-      event.kind === 'run-lifecycle' && event.event.type === 'end' ? [event.event] : [],
+    ];
+    expect(lifecycleOf(received.events)).toMatchObject(bracket);
+    expect(await storedRunLifecycle(channelName)).toMatchObject(
+      bracket.filter((event) => event.kind === 'run-lifecycle'),
     );
-    const bySerial = ends.toSorted((a, b) => (a.serial ?? '').localeCompare(b.serial ?? ''));
-    expect(bySerial[0]).toBe(ends[0]);
 
     client.close();
   });

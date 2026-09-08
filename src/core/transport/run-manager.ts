@@ -188,6 +188,24 @@ interface ActiveRunEntry {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * The idempotent message id for a run's opening or closing publish.
+ *
+ * Ably stores one message per id on a channel and drops a later publish with
+ * the same id, so a retry that republishes a run's start or end lands once.
+ * The id is built from the run's identity alone, which is what a retry has:
+ * nothing time-based or random, or the retry would mint a fresh id and land
+ * twice. Ably's dedupe holds for two minutes after the first publish, so a
+ * reader still honours the first terminal in serial order for one that lands
+ * later than that.
+ * @param invocationId - The invocation publishing the event.
+ * @param runId - The run the event belongs to.
+ * @param phase - Which end of the run the publish is.
+ * @returns The id to publish under.
+ */
+const runLifecycleMessageId = (invocationId: string, runId: string, phase: 'start' | 'end'): string =>
+  `${invocationId}-${runId}-${phase}`;
+
 class DefaultRunManager implements RunManager {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _logger: Logger | undefined;
@@ -225,12 +243,22 @@ class DefaultRunManager implements RunManager {
       inputTransportMessageId: metadata?.inputTransportMessageId,
     });
 
+    // A fresh start carries an idempotent message id, so a retry that
+    // republishes the opening event under the same run and invocation is
+    // dropped by Ably rather than landing as a second `ai-run-start`. A resume
+    // carries none: it is the opening event of a later invocation, and the
+    // scope of what should be published once is the start and end of a run.
+    const id =
+      !continuation && metadata?.invocationId !== undefined
+        ? runLifecycleMessageId(metadata.invocationId, runId, 'start')
+        : undefined;
     await this._channel.publish({
+      ...(id !== undefined && { id }),
       name: continuation ? EVENT_RUN_RESUME : EVENT_RUN_START,
       extras: { ai: { transport: headers } },
     });
 
-    this._logger?.debug('DefaultRunManager.startRun(); run started', { runId });
+    this._logger?.debug('DefaultRunManager.startRun(); run started', { runId, id });
   }
 
   async suspendRun(runId: string, attribution?: RunTerminalAttribution): Promise<void> {
@@ -250,12 +278,25 @@ class DefaultRunManager implements RunManager {
     // (AIT-ST6b4: explicit, never automatic). error-code / error-message are
     // generic transport headers, so any codec or consumer can read them.
     const errorAttribution = reason === 'error' && error ? { errorCode: error.code, errorMessage: error.message } : {};
-    const serial = await this._publishTerminal(EVENT_RUN_END, runId, {
-      reason,
-      ...attribution,
-      ...errorAttribution,
-    });
-    this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason, serial });
+    // The end carries an idempotent message id, so a retry that republishes
+    // the terminal under the same run and invocation is dropped by Ably rather
+    // than landing as a second `ai-run-end`. Ably keeps the first publish's
+    // content, so an `error` terminal published over a `complete` one loses.
+    const id =
+      attribution?.invocationId === undefined
+        ? undefined
+        : runLifecycleMessageId(attribution.invocationId, runId, 'end');
+    const serial = await this._publishTerminal(
+      EVENT_RUN_END,
+      runId,
+      {
+        reason,
+        ...attribution,
+        ...errorAttribution,
+      },
+      id,
+    );
+    this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason, serial, id });
     return serial;
   }
 
@@ -277,6 +318,7 @@ class DefaultRunManager implements RunManager {
    *   receipt. Omitted when absent or empty.
    * @param attribution.errorCode - Numeric error code; set for run-end only when a terminal error is surfaced.
    * @param attribution.errorMessage - Error message; paired with errorCode.
+   * @param id - An idempotent message id for the publish, or none to let Ably assign one.
    * @returns The terminal's own channel serial, or `undefined` when the publish reported none.
    */
   private async _publishTerminal(
@@ -291,10 +333,15 @@ class DefaultRunManager implements RunManager {
       errorCode?: number;
       errorMessage?: string;
     },
+    id?: string,
   ): Promise<string | undefined> {
     const resolvedClientId = this._activeRuns.get(runId)?.clientId ?? '';
     const headers = buildLifecycleHeaders({ runId, runClientId: resolvedClientId, ...attribution });
-    const result = await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
+    const result = await this._channel.publish({
+      ...(id !== undefined && { id }),
+      name: eventName,
+      extras: { ai: { transport: headers } },
+    });
     this._activeRuns.delete(runId);
     // The terminal's own channel serial, which an application records as the
     // watermark for what it stored. May be undefined if the publish reported

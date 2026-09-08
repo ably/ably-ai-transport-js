@@ -46,9 +46,9 @@ The plugin registers three activities on your worker. `withRun` schedules them f
 | `endRun`     | `ai-run-end`               | Ends the run                                                                    |
 | `cleanupRun` | `ai-run-end` with an error | Ends a run whose workflow failed, so a client waiting on the stream is released |
 
-A retry of `openRun` re-enters the same run. If the worker crashes after the run opened, the retried activity picks that run up and your workflow continues in it, so clients see one run.
+A retry of `openRun` re-enters the same run. If the worker crashes after the run opened, the retried activity picks that run up and your workflow continues in it, so clients see one run. The retry's `ai-run-start` carries the same Ably message id as the first, so Ably drops it and the channel holds one start.
 
-`cleanupRun` ends the run with an error whatever state the run is in. If one of your activities had already ended the run, the channel carries a second `ai-run-end`. If you merge the event stream yourself, treat the first `ai-run-end` as the end of the run and ignore any later one.
+`cleanupRun` ends the run with an error whatever state the run is in. If one of your activities had already ended the run, the cleanup arm's `ai-run-end` carries the same message id as the one already on the channel, so Ably drops it and the terminal your activity published stands. Ably deduplicates for two minutes after the first publish, so a cleanup that lands later than that puts a second `ai-run-end` on the channel. If you merge the event stream yourself, treat the first `ai-run-end` as the end of the run and ignore any later one.
 
 ## Worker setup
 

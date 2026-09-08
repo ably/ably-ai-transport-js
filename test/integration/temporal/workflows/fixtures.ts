@@ -19,7 +19,7 @@
  * and the non-retryable throw in `failWithoutTerminal`.
  */
 
-import { proxyActivities, sleep } from '@temporalio/workflow';
+import { ApplicationFailure, proxyActivities, sleep } from '@temporalio/workflow';
 
 import type { InvocationData } from '../../../../src/core/transport/invocation.js';
 import { openRun, withRun } from '../../../../src/temporal/workflow/index.js';
@@ -138,6 +138,25 @@ export const parksAfterAnswering = async (input: FixtureInput): Promise<void> =>
       publishTerminal: false,
     });
     await sleep('1 hour');
+  });
+
+/**
+ * Answers and ends the run from inside the answering activity, then fails, so
+ * `withRun`'s cleanup arm publishes an `error` terminal over the `complete`
+ * one the activity already published.
+ * @param input - The invocation, its id, and the reply.
+ * @returns Rejects with the failure, after cleanup has run.
+ */
+export const endsThenFails = async (input: FixtureInput): Promise<void> =>
+  withRun(input.invocation, { invocationId: input.invocationId }, async (run) => {
+    await answerStep({
+      ids: run.ids,
+      invocation: input.invocation,
+      textId: 'a1',
+      reply: input.reply,
+      publishTerminal: true,
+    });
+    throw ApplicationFailure.nonRetryable('failed after answering');
   });
 
 /**

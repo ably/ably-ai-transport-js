@@ -141,9 +141,13 @@ integration file that mounts a real `useChat`.
 **Integration level**, in `test/integration/temporal/temporal.integration.test.ts`:
 a whole durable turn pinned to its invocation id, a terminal published from
 workflow code across three processes, a Temporal retry superseding its dead
-attempt's step, one invocation id opening twice into a single run, the cleanup
-arm closing a failed turn, the same arm surviving a workflow cancel, and a
-duplicate terminal landing on the channel.
+attempt's step, one invocation id opening twice into a single run with one
+`ai-run-start`, the cleanup arm closing a failed turn, the same arm surviving a
+workflow cancel, an end published twice landing once, and the cleanup arm's
+terminal dropped over a run the activity already ended. The last three rest on
+the idempotent message ids the run manager stamps on `ai-run-start` and
+`ai-run-end`, and each reads channel history as the proof that a duplicate was
+dropped rather than late.
 
 That file owns three constraints the other areas do not. It uses
 `TestWorkflowEnvironment.createLocal()` rather than `createTimeSkipping()`,

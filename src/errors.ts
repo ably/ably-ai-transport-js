@@ -52,23 +52,6 @@ export enum ErrorCode {
   SessionSubscriptionFailed = 104001,
 
   /**
-   * The run's `onCancel` hook threw while the SDK was processing a cancel
-   * message — the SDK never reaches the abort, so the run is **not** cancelled
-   * and keeps running. A failure to route the cancel to its run at all is
-   * {@link ErrorCode.RunCancelRoutingFailed} instead.
-   */
-  RunCancelHandlerFailed = 104002,
-
-  /**
-   * A lifecycle event publish failed, at either tier: a run's `ai-run-start` /
-   * `ai-run-suspend` / `ai-run-end`, or a step's `ai-step-start` /
-   * `ai-step-end`. The event is not on the channel, so clients do not observe
-   * the run or step entering that phase. The underlying publish failure is the
-   * `cause`.
-   */
-  RunLifecycleEventPublishFailed = 104003,
-
-  /**
    * An operation was attempted on a transport or encoder that has already been
    * closed.
    */
@@ -117,22 +100,6 @@ export enum ErrorCode {
    * available.
    */
   SessionHistoryFetchFailed = 104011,
-
-  /**
-   * The run's `onSteer` hook threw while the SDK was notifying it that a
-   * steering message arrived for the run. The steer is already recorded on the
-   * run by then, so the run is unaffected; only the notification failed.
-   */
-  RunSteerHandlerFailed = 104012,
-
-  /**
-   * An inbound cancel message could not be delivered to the run it targets —
-   * the dispatch itself failed before any hook ran. The cancel is neither
-   * carried out nor rejected, so the run keeps running as though the message
-   * had not arrived. A cancel that reached its run but whose `onCancel` hook
-   * threw is {@link ErrorCode.RunCancelHandlerFailed} instead.
-   */
-  RunCancelRoutingFailed = 104013,
 }
 
 /**

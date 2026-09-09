@@ -41,6 +41,8 @@ export default [
       '**/coverage/',
       // Generated API-docs output (gitignored); never source to lint.
       'typedoc/**',
+      // Demo apps carry their own lint config and are not in this project's tsconfig.
+      'demo/**',
       '.github',
       '.claude/worktrees/**',
       'react/**',

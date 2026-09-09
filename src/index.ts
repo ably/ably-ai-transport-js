@@ -1,32 +1,8 @@
 // Core transport
 export type {
-  AdoptRunOptions,
-  AgentRunTransport,
-  AgentTransport,
-  AgentTransportOptions,
-  CancelRequest,
-  ClientTransport,
-  ClientTransportOptions,
   DeliverEventResult,
-  LocatedInput,
-  OpenRunHooks,
-  OpenRunOptions,
   PipeSource,
-  PublishInputOptions,
-  PublishInputResult,
   ReceiveTransport,
-  RunEndParams,
-  RunEndReason,
-  RunEndResult,
-  RunLifecycleEvent,
-  RunStepTransport,
-  SteerOutcome,
-  SteerResult,
-  StepEndParams,
-  StepEndReason,
-  StepEndResult,
-  StepLifecycleEvent,
-  StepOptions,
   StreamResult,
   TransportEvent,
   TransportHistoryOptions,
@@ -34,12 +10,7 @@ export type {
   TransportReceiver,
   WireMeta,
 } from './core/transport/index.js';
-export {
-  buildTransportHeaders,
-  createAgentTransport,
-  createClientTransport,
-  createReceiveTransport,
-} from './core/transport/index.js';
+export { createReceiveTransport } from './core/transport/index.js';
 
 // Channel resolution for a caller-owned channel: the SDK's channel agent
 // param and the mode-set union, for an application that resolves its own
@@ -49,80 +20,27 @@ export { OBJECT_MODES, resolveChannelModes } from './core/channel-options.js';
 
 // Core codec
 export type {
-  BatchAssembleContext,
-  BatchMessageHeaders,
-  BatchSpec,
   ChannelWriter,
-  DataCodec,
   DecodedMessage,
   Decoder,
   DecoderCore,
   DecoderCoreHooks,
-  DefineCodecConfig,
-  DeltaDecodeContext,
   Encoder,
   EncoderCore,
   EncoderCoreOptions,
   EncoderOptions,
-  EndDecodeContext,
-  EscapeHatchCore,
   Extras,
-  FieldFor,
-  HeaderBuilder,
-  HeaderField,
-  InputBuilder,
-  InputDescriptor,
-  InputEventSpec,
-  LifecycleDiscreteContext,
-  LifecyclePolicy,
-  LifecycleTracker,
   MessagePayload,
-  OutputBuilder,
-  OutputDecodeContext,
-  OutputDescriptor,
-  OutputEncodeHatchContext,
-  OutputEventSpec,
-  OutputStreamSpec,
-  PartBuilder,
-  PartSpec,
-  PhaseConfig,
   StreamPayload,
   StreamSequenceState,
   WireCodec,
   WriteOptions,
 } from './core/codec/index.js';
-export {
-  boolField,
-  createDecoderCore,
-  createEncoderCore,
-  createLifecycleTracker,
-  defineCodec,
-  enumField,
-  jsonField,
-  strField,
-} from './core/codec/index.js';
-
-// Constants
-export {
-  EVENT_CANCEL,
-  EVENT_RUN_END,
-  EVENT_RUN_START,
-  HEADER_ERROR_CODE,
-  HEADER_ERROR_MESSAGE,
-  HEADER_INPUT_CLIENT_ID,
-  HEADER_ROLE,
-  HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_ID,
-  HEADER_RUN_REASON,
-  HEADER_STATUS,
-  HEADER_STREAM,
-  HEADER_STREAM_ID,
-  HEADER_TRANSPORT_MESSAGE_ID,
-} from './constants.js';
+export { createDecoderCore, createEncoderCore } from './core/codec/index.js';
 
 // Utilities
 export type { Stripped } from './utils.js';
-export { getCodecHeaders, getTransportHeaders, mergeHeaders, stripUndefined } from './utils.js';
+export { stripUndefined } from './utils.js';
 
 // Event emitter
 export { EventEmitter } from './event-emitter.js';

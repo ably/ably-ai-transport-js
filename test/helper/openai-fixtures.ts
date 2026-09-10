@@ -8,9 +8,9 @@
 import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 
-import { HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
-import type { ChannelWriter } from '../../../src/core/codec/index.js';
-import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
+import { HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../src/constants.js';
+import type { ChannelWriter } from '../../src/core/codec/index.js';
+import type { OpenAIOutput } from '../../src/openai/codec/index.js';
 
 // --- minimal domain objects --------------------------------------------------
 

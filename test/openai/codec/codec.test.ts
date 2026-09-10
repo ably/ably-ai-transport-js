@@ -51,7 +51,7 @@ import {
   textDone,
   textRun,
   toolApprovalRequestEvent,
-} from './fixtures.js';
+} from '../../helper/openai-fixtures.js';
 
 // The codec under test, at its untyped default input instantiation.
 const responsesCodec = createResponsesCodec();

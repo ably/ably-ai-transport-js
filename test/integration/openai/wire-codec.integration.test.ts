@@ -17,7 +17,7 @@ import { createResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { eventsOfType, functionCallArgsRun, stampHeaders, textRun } from './fixtures.js';
+import { eventsOfType, functionCallArgsRun, stampHeaders, textRun } from '../../helper/openai-fixtures.js';
 
 // The codec under test, at its untyped default input instantiation.
 const responsesCodec = createResponsesCodec();

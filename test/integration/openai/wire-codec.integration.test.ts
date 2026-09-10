@@ -16,8 +16,29 @@ import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { createResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
+import {
+  contentPartAdded,
+  eventsOfType,
+  functionCallArgsRun,
+  itemAdded,
+  itemDone,
+  messageItem,
+  reasoningItem,
+  reasoningSummaryPartAdded,
+  reasoningSummaryTextDelta,
+  reasoningSummaryTextDone,
+  reasoningTextDelta,
+  reasoningTextDone,
+  reasoningTextPartAdded,
+  refusalDelta,
+  refusalDone,
+  refusalPartAdded,
+  stampHeaders,
+  textDelta,
+  textDone,
+  textRun,
+} from '../../helper/openai-fixtures.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { eventsOfType, functionCallArgsRun, stampHeaders, textRun } from '../../helper/openai-fixtures.js';
 
 // The codec under test, at its untyped default input instantiation.
 const responsesCodec = createResponsesCodec();
@@ -183,5 +204,135 @@ describe('OpenAI wire-codec integration', () => {
     expect(inputs[0]).toEqual(turn);
     expect(inputs[1]).toEqual(resolution);
     expect(inputs[2]).toEqual(decision);
+  }, 30000);
+  it('keeps two content parts on one item apart by their slot stream ids', async () => {
+    const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-slots'));
+    const encoder = responsesCodec.createEncoder(pubChannel, {
+      onAblyMessage: stampHeaders('run-1', 'asst-1'),
+    });
+    // One message item carrying an output_text at slot 0 and a refusal at
+    // slot 1, their deltas interleaved. Both groups stream under the same
+    // item id, so only the content_index in the stream key separates them.
+    await encoder.publishOutput(itemAdded(messageItem('msg_1')));
+    await encoder.publishOutput(contentPartAdded('msg_1', 0));
+    await encoder.publishOutput(refusalPartAdded('msg_1', 1));
+    await encoder.publishOutput(textDelta('msg_1', 'Here is ', 0));
+    await encoder.publishOutput(refusalDelta('msg_1', 'I cannot ', 1));
+    await encoder.publishOutput(textDelta('msg_1', 'the safe part.', 0));
+    await encoder.publishOutput(refusalDelta('msg_1', 'do the rest.', 1));
+    await encoder.publishOutput(textDone('msg_1', 'Here is the safe part.', 0));
+    await encoder.publishOutput(refusalDone('msg_1', 'I cannot do the rest.', 1));
+    await encoder.close();
+
+    await waitFor(() => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.refusal.done').length === 1);
+
+    const outputs = buckets.get('asst-1')?.outputs ?? [];
+    expect(eventsOfType(outputs, 'response.output_text.done')[0]).toMatchObject({
+      item_id: 'msg_1',
+      content_index: 0,
+      text: 'Here is the safe part.',
+    });
+    expect(eventsOfType(outputs, 'response.refusal.done')[0]).toMatchObject({
+      item_id: 'msg_1',
+      content_index: 1,
+      refusal: 'I cannot do the rest.',
+    });
+    // Neither group swallowed the other's deltas.
+    expect(
+      eventsOfType(outputs, 'response.output_text.delta')
+        .map((d) => d.delta)
+        .join(''),
+    ).toBe('Here is the safe part.');
+    expect(
+      eventsOfType(outputs, 'response.refusal.delta')
+        .map((d) => d.delta)
+        .join(''),
+    ).toBe('I cannot do the rest.');
+  }, 30000);
+
+  it('keeps the summary and reasoning-text groups of one reasoning item apart at the same index', async () => {
+    const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-reasoning'));
+    const encoder = responsesCodec.createEncoder(pubChannel, {
+      onAblyMessage: stampHeaders('run-1', 'asst-1'),
+    });
+    // A reasoning item streams a summary part at summary_index 0 and
+    // reasoning text at content_index 0. Both are index 0 on one item, so the
+    // stream key has to namespace the two axes or the groups collide.
+    await encoder.publishOutput(itemAdded(reasoningItem('rs_1')));
+    await encoder.publishOutput(reasoningSummaryPartAdded('rs_1', 0));
+    await encoder.publishOutput(reasoningTextPartAdded('rs_1', 0));
+    await encoder.publishOutput(reasoningSummaryTextDelta('rs_1', 'Weighing ', 0));
+    await encoder.publishOutput(reasoningTextDelta('rs_1', 'Step one ', 0));
+    await encoder.publishOutput(reasoningSummaryTextDelta('rs_1', 'the options.', 0));
+    await encoder.publishOutput(reasoningTextDelta('rs_1', 'then step two.', 0));
+    await encoder.publishOutput(reasoningSummaryTextDone('rs_1', 'Weighing the options.', 0));
+    await encoder.publishOutput(reasoningTextDone('rs_1', 'Step one then step two.', 0));
+    await encoder.close();
+
+    await waitFor(() => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.reasoning_text.done').length === 1);
+
+    const outputs = buckets.get('asst-1')?.outputs ?? [];
+    expect(eventsOfType(outputs, 'response.reasoning_summary_text.done')[0]).toMatchObject({
+      item_id: 'rs_1',
+      summary_index: 0,
+      text: 'Weighing the options.',
+    });
+    expect(eventsOfType(outputs, 'response.reasoning_text.done')[0]).toMatchObject({
+      item_id: 'rs_1',
+      content_index: 0,
+      text: 'Step one then step two.',
+    });
+  }, 30000);
+
+  it('carries encrypted_content on the item close, where the deltas cannot', async () => {
+    const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-encrypted'));
+    const encoder = responsesCodec.createEncoder(pubChannel, {
+      onAblyMessage: stampHeaders('run-1', 'asst-1'),
+    });
+    // encrypted_content is what a store:false caller must send back on the
+    // next request, and it appears only on the item close — no delta carries
+    // it, so the reduced close is the only thing that can.
+    await encoder.publishOutput(itemAdded(reasoningItem('rs_1')));
+    await encoder.publishOutput(reasoningSummaryPartAdded('rs_1', 0));
+    await encoder.publishOutput(reasoningSummaryTextDelta('rs_1', 'Thinking.', 0));
+    await encoder.publishOutput(reasoningSummaryTextDone('rs_1', 'Thinking.', 0));
+    await encoder.publishOutput(
+      itemDone(reasoningItem('rs_1', [{ type: 'summary_text', text: 'Thinking.' }], 'gAAAAAB-opaque')),
+    );
+    await encoder.close();
+
+    await waitFor(() => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done').length === 1);
+
+    const done = eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done')[0];
+    expect(done?.item).toMatchObject({ id: 'rs_1', type: 'reasoning', encrypted_content: 'gAAAAAB-opaque' });
+    // The summary already streamed, so the close does not re-send it.
+    expect(done?.item && 'summary' in done.item ? done.item.summary : undefined).toBeUndefined();
+  }, 30000);
+
+  it('separates two transport-message-ids published under one run', async () => {
+    const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-demux'));
+
+    // One run, two logical messages. The codec keys nothing on the run: the
+    // transport-message-id is the only thing separating them, which is the
+    // demultiplexing an application does before it merges.
+    const first = responsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'asst-1') });
+    for (const event of textRun('msg_1', 'Hello, world!')) await first.publishOutput(event);
+    await first.close();
+
+    const second = responsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'asst-2') });
+    await second.publishOutput(itemAdded(messageItem('msg_2')));
+    await second.publishOutput(contentPartAdded('msg_2'));
+    await second.publishOutput(textDelta('msg_2', 'Second message.'));
+    await second.publishOutput(textDone('msg_2', 'Second message.'));
+    await second.close();
+
+    await waitFor(() => eventsOfType(buckets.get('asst-2')?.outputs ?? [], 'response.output_text.done').length === 1);
+
+    expect(eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_text.done')).toEqual([
+      expect.objectContaining({ item_id: 'msg_1', text: 'Hello, world!' }),
+    ]);
+    expect(eventsOfType(buckets.get('asst-2')?.outputs ?? [], 'response.output_text.done')).toEqual([
+      expect.objectContaining({ item_id: 'msg_2', text: 'Second message.' }),
+    ]);
   }, 30000);
 });

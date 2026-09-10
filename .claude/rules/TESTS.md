@@ -100,7 +100,10 @@ show.
 **Codec level**, one suite per codec (`test/integration/vercel/` and
 `test/integration/openai/`, both named `wire-codec.integration.test.ts`): a
 text and tool-call roundtrip over a real channel, proving the wire format and
-Ably's message serialization.
+Ably's message serialization. The OpenAI suite also covers what its two-layer
+bracket structure adds — two content parts sharing an item, a reasoning item
+whose summary and reasoning-text groups both sit at index 0, `encrypted_content`
+riding the reduced item close, and two transport-message-ids under one run.
 
 **Transport level**, in `test/integration/core/transport.integration.test.ts`:
 a whole turn from send to reply, a cancel that aborts a streaming run, steering
@@ -108,7 +111,21 @@ with both its promises settling, a client observing a run another participant
 started, a tool call resolving through the transport, steering settling for a
 client running with `echoMessages: false`, sequential and concurrent runs,
 backwards history paging, the attach boundary, error propagation, and durable
-cross-process re-entry through `adoptRun`.
+cross-process re-entry through `adoptRun`. That file runs the Vercel codec on
+the wire, because the behaviours it covers are codec-agnostic.
+
+`test/integration/openai/transport.integration.test.ts` pairs the Responses
+codec with the same two transports, and covers only what the codec's own shape
+adds over that: a streamed Responses turn end to end, a mid-stream joiner whose
+first delivery is the platform's full-contents update (the one place the
+decoder's synthesised opening bracket meets a real one), a function call whose
+client resolution wakes a fresh run, and history replaying a streamed group.
+Its assertions read the decoded event sequence rather than a folded message —
+OpenAI's own `accumulateResponse` cannot consume this stream (it needs a
+`response.created` the codec drops, pushes blindly on the `output_item.added`
+the decoder synthesises, and replaces wholesale on the reduced
+`output_item.done`), and a hand-rolled fold in `test/helper/` would be the
+message assembly this package exists not to do.
 
 **Adapter level**, in `test/integration/vercel/chat-transport.integration.test.ts`:
 a send streaming its reply, a foreign run reaching an idle client and a busy

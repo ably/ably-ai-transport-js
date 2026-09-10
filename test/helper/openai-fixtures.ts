@@ -258,7 +258,7 @@ export const reasoningItem = (
   ...(encryptedContent === undefined ? {} : { encrypted_content: encryptedContent }),
 });
 
-const reasoningSummaryPartAdded = (
+export const reasoningSummaryPartAdded = (
   itemId: string,
   summaryIndex = 0,
   text = '',
@@ -284,7 +284,7 @@ export const reasoningSummaryPartDone = (
   part: { type: 'summary_text', text },
   sequence_number: 0,
 });
-const reasoningSummaryTextDelta = (
+export const reasoningSummaryTextDelta = (
   itemId: string,
   delta: string,
   summaryIndex = 0,
@@ -297,7 +297,7 @@ const reasoningSummaryTextDelta = (
   delta,
   sequence_number: 0,
 });
-const reasoningSummaryTextDone = (
+export const reasoningSummaryTextDone = (
   itemId: string,
   text: string,
   summaryIndex = 0,

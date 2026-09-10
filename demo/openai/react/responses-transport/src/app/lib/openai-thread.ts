@@ -23,17 +23,16 @@ import { createResponsesCodec, type ModelledOutputItem } from '@ably/ai-transpor
  * {@link OpenAIMessage.toolCallStates}. OpenAI's item model can express
  * neither a plain-function approval decision nor a "failed" result, so both
  * are held here rather than in a message's `items` — keeping every stored
- * {@link OpenAIItem} a valid `ResponseInputItem`.
+ * {@link OpenAIItem} a valid `ResponseInputItem`. Nothing on the wire carries
+ * this state: the merge derives a gated call's `'pending'` from the
+ * `function_call` item and records the decision from the client's
+ * `kind: 'approval'` input.
  */
 export interface OpenAIToolCallState {
-  /** The gated call's approval status, set once the agent requests approval and updated by the client's response. */
+  /** The gated call's approval status: `'pending'` while it awaits a decision, then the user's answer. */
   approval?: 'pending' | 'approved' | 'denied';
   /** The client-side execution result status, recorded by the merge since a `function_call_output` item cannot carry a failure status. */
   result?: 'ok' | 'failed';
-  /** The tool name, carried on the approval request so a client can render the prompt without the streamed `function_call`. */
-  name?: string;
-  /** The tool arguments as JSON text, carried on the approval request. */
-  arguments?: string;
   /** Optional human-readable reason accompanying an approval decision (typically a denial). */
   reason?: string;
 }
@@ -68,11 +67,10 @@ export interface OpenAIMessage {
 // ---------------------------------------------------------------------------
 
 /**
- * The approval decision for a tool the agent gated behind a
- * `tool-approval-request` output event. The Responses API has no item for a
- * client-side approval decision, so the demo defines the body; a denial is
- * typically followed by a `function_call_output` recording it, so the
- * `/responses` round-trip has no dangling `function_call`.
+ * A user's decision on an approval-gated tool call. The Responses API has no
+ * item for a client-side approval decision, so the demo defines the body; a
+ * denial is typically followed by a `function_call_output` recording it, so
+ * the `/responses` round-trip has no dangling `function_call`.
  */
 export interface OpenAIApprovalDecision {
   /** The `call_id` of the gated `function_call`. */

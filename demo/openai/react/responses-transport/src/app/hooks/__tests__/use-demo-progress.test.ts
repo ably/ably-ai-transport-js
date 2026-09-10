@@ -166,8 +166,8 @@ describe('useDemoProgress', () => {
   });
 
   it('does not drop approval-forecast while the approval is only pending', () => {
-    // The merge marks a call 'pending' the moment its approval request lands,
-    // so a truthiness test would retire the chip before the user decides.
+    // The merge derives 'pending' from the gated call itself, so a truthiness
+    // test would retire the chip before the user decides.
     const pending = asThread({
       role: 'assistant',
       items: [

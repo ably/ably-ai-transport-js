@@ -47,16 +47,6 @@ export const fItem = jsonField<Responses.ResponseOutputItem, 'item'>('item');
 // --- client-driven tool bindings (used by the output descriptors) ---
 
 /**
- * A tool call's `call_id` — the pairing key between a `function_call`, its
- * `function_call_output`, an approval request, and a client's response.
- * Defaulted to total: an absent header reads as `''`. snake_case to match the
- * Responses items it keys.
- */
-export const fCallId = strField('call_id', '');
-/** The tool name, carried on an approval request — defaulted to total. */
-export const fName = strField('name', '');
-
-/**
  * Per-slot stream id for the content-part groups: item_id + content_index.
  * Purely the transport uniqueness handle — a consumer's merge never parses it
  * (it routes on the re-stamped item_id / content_index fields).

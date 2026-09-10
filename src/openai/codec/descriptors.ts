@@ -54,19 +54,14 @@ import type { DoneItem, ModelledOutputItem, OpenAIOutput, WireDoneContentPart, W
 import { isModelledOutputItem } from './events.js';
 import {
   contentSlotStreamId,
-  fCallId,
   fContentIndex,
   fItem,
   fItemId,
-  fName,
   fOutputIndex,
   fPart,
   fSummaryIndex,
   fSummaryPart,
 } from './fields.js';
-
-// Coerce arbitrary wire data to a string, defaulting to empty.
-const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
 
 // The shared encode-boundary rejection for an output item type the codec
 // doesn't model, thrown identically by `assertModelledOutputItem` and
@@ -447,18 +442,6 @@ export const outputs = ({
       // CAST: the FunctionCallOutput item is carried under the envelope's `item` key as JSON wire data (trust boundary).
       decode: (d) => ({ item: (d as { item: Responses.ResponseInputItem.FunctionCallOutput }).item }),
     },
-  }),
-
-  // --- tool-approval request (codec's own output event) --------------------
-  // Not a Responses stream event: OpenAI has no approval concept for plain
-  // function calls, so the agent authors this to gate a tool on a human
-  // decision (mirroring the Agents SDK's RunToolApprovalItem). call_id and name
-  // ride the headers; the tool's arguments ride the JSON wire data, so a client
-  // can render the approval prompt from the request alone. A consumer's merge
-  // marks the call `pending` in the message's per-call_id tool-call state.
-  event('tool-approval-request', {
-    fields: [fCallId, fName],
-    data: { encode: (c) => c.arguments, decode: (d) => ({ arguments: asString(d) }) },
   }),
 
   // --- not described → throw (opt-in hosted tools / modalities) -------------

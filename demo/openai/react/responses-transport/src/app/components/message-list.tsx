@@ -60,9 +60,9 @@ export function MessageList({ messages, runs, loading, scrollToEndRef, onApprove
     message.runId ?? runIdByTrigger.get(message.transportMessageId);
 
   // Hide messages that render nothing — a message holding only
-  // function_call_output items, or only a tool-approval-request's state,
-  // produces no parts (its content shows on the call's message), so it would
-  // otherwise draw an empty bubble.
+  // function_call_output items, or only tool-call state, produces no parts
+  // (its content shows on the call's message), so it would otherwise draw an
+  // empty bubble.
   const visibleMessages = messages.filter((message) => toDisplayParts(message, toolOutputs, toolStates).length > 0);
 
   // Runs whose output is visible carry their terminal error on their own

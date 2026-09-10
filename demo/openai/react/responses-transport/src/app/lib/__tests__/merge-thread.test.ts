@@ -376,23 +376,10 @@ describe('createThreadMerge', () => {
     expect(item.content).toHaveLength(2);
   });
 
-  it('merges a tool-approval-request into pending state and an approval input into a decision', () => {
-    const request: OpenAIOutput = {
-      type: 'tool-approval-request',
-      call_id: 'call-1',
-      name: 'getWeatherForecast',
-      arguments: '{"location":"Paris"}',
-    };
-    const events = [
-      outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeatherForecast', '{}'))]),
-      outputEvent('m1', [request]),
-    ];
+  it('derives pending from a gated function_call and merges an approval input into a decision', () => {
+    const events = [outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeatherForecast', '{}'))])];
     const pending = mergeAll(events).messages()[0];
-    expect(pending.toolCallStates?.['call-1']).toEqual({
-      approval: 'pending',
-      name: 'getWeatherForecast',
-      arguments: '{"location":"Paris"}',
-    });
+    expect(pending.toolCallStates?.['call-1']).toEqual({ approval: 'pending' });
 
     const denied = mergeAll([
       ...events,
@@ -400,6 +387,22 @@ describe('createThreadMerge', () => {
     ]).messages()[0];
     expect(denied.toolCallStates?.['call-1']?.approval).toBe('denied');
     expect(denied.toolCallStates?.['call-1']?.reason).toBe('User denied');
+  });
+
+  it('keeps a call that needs no approval out of toolCallStates', () => {
+    const merged = mergeAll([outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeather', '{}'))])]);
+    expect(merged.messages()[0].toolCallStates).toBeUndefined();
+  });
+
+  it('keeps a decision that reached the merge before the call it decides', () => {
+    // The decision is the stronger fact, so the call arriving afterwards — a
+    // redelivery, or history paged in behind a live input — must not reset it
+    // to pending.
+    const merged = mergeAll([
+      inputEvent('m1', [{ kind: 'approval', payload: { call_id: 'call-1', approved: true } }]),
+      outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeatherForecast', '{}'))]),
+    ]);
+    expect(merged.messages()[0].toolCallStates?.['call-1']?.approval).toBe('approved');
   });
 
   it('appends function_call_output events and item inputs, deduping by call_id', () => {

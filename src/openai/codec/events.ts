@@ -33,32 +33,6 @@ export interface FunctionCallOutputEvent {
 }
 
 /**
- * A codec-authored request that a client approve a tool before it runs.
- *
- * The Responses API has no approval concept for plain function calls (only
- * hosted MCP tools carry `mcp_approval_request` items), so this is a codec
- * output event with no OpenAI-stream equivalent, mirroring the OpenAI Agents
- * SDK's `RunToolApprovalItem`. That item exposes `name` / `arguments` getters
- * over the raw `function_call`, so this event carries the same fields — a
- * client can render the approval prompt from the request alone, without having
- * received the streamed `function_call`. A consumer merges it into the
- * per-`call_id` tool-call state of the message its transport-message-id names,
- * marking the call `pending`. The client answers with its own
- * approval-decision input body — inputs are application-defined and the codec
- * carries them opaquely.
- */
-export interface ToolApprovalRequestEvent {
-  /** Discriminator. Distinct from every `Responses.ResponseStreamEvent` `type` and from `function_call_output`. */
-  type: 'tool-approval-request';
-  /** The `call_id` of the `function_call` this approval gates. */
-  call_id: string;
-  /** The tool's name, so a client can render the prompt without the streamed `function_call`. */
-  name: string;
-  /** The tool's arguments as JSON text, mirroring the `function_call`'s `arguments`. */
-  arguments: string;
-}
-
-/**
  * The `type` literals of events the *decoder* itself reconstructs rather than
  * ever receiving genuinely from the wire with a real `sequence_number`:
  * - the five streamed groups' `*.done`/`.delta` closes ({@link
@@ -204,10 +178,9 @@ type WireResponseEvent = WithoutTextDoneLogprobs<
  * needs, dropping the redundant framing events, and throwing at the encoder on
  * anything undescribed (see the descriptor table's inventory).
  * {@link AssertRealEventIsOpenAIOutput} checks the real-event-assignable claim
- * at compile time. The codec-authored {@link ToolApprovalRequestEvent} is the
- * second such addition, for gating a tool on a human decision.
+ * at compile time.
  */
-export type OpenAIOutput = WireResponseEvent | FunctionCallOutputEvent | ToolApprovalRequestEvent;
+export type OpenAIOutput = WireResponseEvent | FunctionCallOutputEvent;
 
 /** A type-level assertion: `T` must be exactly `true`, or this fails to typecheck. */
 type Assert<T extends true> = T;

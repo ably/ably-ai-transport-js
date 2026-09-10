@@ -113,9 +113,8 @@ export async function POST(req: Request) {
     try {
       // The agentic loop (model turn → run tools → continue) publishes each unit
       // of work under its own pipe, so a run produces several messages. It emits
-      // both the model's events and the codec's function_call_output /
-      // tool-approval-request events, reports each batch through `record`, and
-      // returns the aggregate outcome.
+      // both the model's events and the codec's function_call_output events,
+      // reports each batch through `record`, and returns the aggregate outcome.
       const outcome = await runAgentLoop({ run, input, priorMessages, record: conversation.record });
       // Every run ends here. A cancel takes precedence over whatever the loop
       // reported; otherwise the loop's own outcome is the terminal, including

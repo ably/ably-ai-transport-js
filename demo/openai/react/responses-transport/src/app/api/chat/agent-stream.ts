@@ -29,15 +29,16 @@
  * reasoning that preceded a function_call to travel with it on the next request.
  *
  * A client-executed tool (getLocation) or an approval-gated tool
- * (getWeatherForecast) cannot be resolved here, so the run ends: for a gated
- * call it emits a `tool-approval-request` on the call's own message (the tail
- * of the model turn's pipe) first. The client resolves the call — running the
- * browser tool and publishing its `function_call_output`, or answering the
- * approval — and that input wakes a NEW run, which answers. On that run the
- * conversation already carries the resolution: a client `function_call_output`
- * (or a denial's rejection output) is in the model input, and an
- * approved-but-unexecuted gated call is run server-side before the first model
- * turn.
+ * (getWeatherForecast) cannot be resolved here, so the run ends. A gated call
+ * puts nothing extra on the wire: the codec models the Responses API, which
+ * has no approval concept for a plain function call, so the `function_call`
+ * item is the whole record of it and the client derives the prompt from the
+ * tool name. The client resolves the call — running the browser tool and
+ * publishing its `function_call_output`, or answering the approval — and that
+ * input wakes a NEW run, which answers. On that run the conversation already
+ * carries the resolution: a client `function_call_output` (or a denial's
+ * rejection output) is in the model input, and an approved-but-unexecuted
+ * gated call is run server-side before the first model turn.
  *
  * Each unit of work is published under its own `run.pipe`, so each gets a fresh
  * `transport-message-id` and a consumer's merge keys it as a distinct
@@ -142,15 +143,14 @@ function asStream(events: OpenAIOutput[]): ReadableStream<OpenAIOutput> {
  * generating. The turn's completed output items are collected on the way past,
  * because the loop can only decide what to do next once the turn has finished.
  *
- * A gated call's `tool-approval-request` is emitted as the tail of this same
- * pipe, which puts it on the SAME `transport-message-id` as the
- * `function_call` it gates — so the request's `approval: 'pending'` state, the
- * client's decision (addressed to that message), and the `function_call`
- * itself all merge onto one message. Published as a separate message it would
- * strand the pending state on a message the decision never amends: the
- * approval card would never resolve, and {@link approvedUnexecutedCalls}
- * (which pairs a call with its approval on one message) would never see an
- * approved call.
+ * A gated call needs nothing beyond the turn: its `function_call` is a native
+ * streamed item, and which tools are gated is application policy the client
+ * holds too (`needsApproval`), so the client marks the call pending from the
+ * tool name. That keeps the pending state, the client's decision (addressed to
+ * this message), and the `function_call` itself on ONE
+ * `transport-message-id` — which is what lets the approval card resolve, and
+ * what lets {@link approvedUnexecutedCalls} (which pairs a call with its
+ * approval on one message) see an approved call.
  * @param run - The run to publish the turn under.
  * @param input - The conversation so far, as `/responses` input.
  * @param signal - The run's abort signal.
@@ -181,17 +181,6 @@ async function pipeModelTurn(
       // clean end (the run-end is published by the route's cancel path).
       if (!signal.aborted) throw error;
     }
-    for (const call of turn.calls) {
-      if (!needsApproval(call.name)) continue;
-      const request: OpenAIOutput = {
-        type: 'tool-approval-request',
-        call_id: call.call_id,
-        name: call.name,
-        arguments: call.arguments,
-      };
-      published.push(request);
-      yield request;
-    }
   }
 
   const result = await run.pipe(stream());
@@ -217,8 +206,7 @@ function runToolCalls(calls: Responses.ResponseFunctionToolCall[]): {
 /**
  * Run the agentic loop, publishing each unit of work under its own `run.pipe`.
  * Runs any server tool inline and continues; ends the run when a
- * client-executed or approval-gated tool needs the client, emitting a
- * `tool-approval-request` on a gated call's own message first. On the run the
+ * client-executed or approval-gated tool needs the client. On the run the
  * client's answer wakes, it completes an approved gated call server-side
  * before the first model turn.
  * @param req - The run handle, initial conversation input, and hydrated messages.
@@ -252,8 +240,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
   for (let step = 0; step < MAX_STEPS; step++) {
     if (run.abortSignal.aborted) break;
 
-    // One model /responses turn = one assistant message. A gated call's
-    // approval request rides this same message (see pipeModelTurn).
+    // One model /responses turn = one assistant message.
     const { result, turn } = await pipeModelTurn(run, input, run.abortSignal, req.record);
     fail(result);
 
@@ -283,9 +270,8 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
 
     // A gated call needs a human decision; a client call runs in the browser.
     // Either way this run is done: it ends here, and the resolution the client
-    // publishes wakes a new run that answers. The gated calls' approval
-    // requests already rode the model turn's message, so nothing is left to
-    // say on the wire.
+    // publishes wakes a new run that answers. Both kinds of call are already
+    // on the wire as `function_call` items, so nothing is left to say.
     if (gatedCalls.length > 0 || clientCalls.length > 0) {
       return terminalError ? { reason: 'error', error: terminalError } : { reason: 'complete' };
     }

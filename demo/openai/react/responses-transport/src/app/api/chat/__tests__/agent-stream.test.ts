@@ -134,7 +134,7 @@ describe('runAgentLoop', () => {
     expect(types.filter((t) => t === 'function_call')).toHaveLength(1);
   });
 
-  it('emits a gated call and its approval request on ONE message, then ends the run', async () => {
+  it('publishes a gated call as the model streamed it, on one message, then ends the run', async () => {
     const { run, messages, record } = makeRun(new AbortController().signal);
     const result = await runAgentLoop({
       run,
@@ -149,26 +149,25 @@ describe('runAgentLoop', () => {
     expect(messages).toHaveLength(1);
     const events = messages[0] ?? [];
 
-    // The function_call and its approval request ride the SAME message. Their
-    // shared transport-message-id is why the client's later approval-response — and
-    // its pending/decided state — merge onto one message rather than stranding.
-    // The full call — its name and call_id — rides the output_item.added
-    // envelope (the function_call_arguments stream's opener); output_item.done
-    // reduces to id/type/status, so read the correlation off `added`.
+    // The function_call is the whole record of the gated call: the client
+    // reads the same needsApproval policy off its name, and addresses its
+    // decision to this message's transport-message-id, which is what merges
+    // the decision onto the call. The full call — its name and call_id — rides
+    // the output_item.added envelope (the function_call_arguments stream's
+    // opener); output_item.done reduces to id/type/status, so read the
+    // correlation off `added`.
     const call = events.find((e) => e.type === 'response.output_item.added' && e.item.type === 'function_call');
-    const request = events.find((e) => e.type === 'tool-approval-request');
     expect(
       call?.type === 'response.output_item.added' && call.item.type === 'function_call' ? call.item.name : '',
     ).toBe('getWeatherForecast');
-    expect(request).toBeDefined();
-    if (
-      request?.type === 'tool-approval-request' &&
-      call?.type === 'response.output_item.added' &&
-      call.item.type === 'function_call'
-    ) {
-      expect(request.name).toBe('getWeatherForecast');
-      expect(request.call_id).toBe(call.item.call_id);
-    }
+    expect(
+      call?.type === 'response.output_item.added' && call.item.type === 'function_call' ? call.item.call_id : '',
+    ).toBeTruthy();
+
+    // Every event on the turn is one the model itself streamed. The only event
+    // the agent adds is the codec's function_call_output, and a gated call has
+    // no output to publish — so a gated turn is pure /responses.
+    expect(events.map((e) => e.type).filter((type) => !type.startsWith('response.'))).toEqual([]);
   });
 
   it('emits one gated call per place when a turn asks about two, on one message', async () => {
@@ -186,13 +185,14 @@ describe('runAgentLoop', () => {
     expect(result.reason).toBe('complete');
     expect(messages).toHaveLength(1);
     const events = messages[0] ?? [];
-    const calls = events.filter((e) => e.type === 'response.output_item.added' && e.item.type === 'function_call');
-    const requests = events.filter((e) => e.type === 'tool-approval-request');
-    expect(calls).toHaveLength(2);
-    expect(requests).toHaveLength(2);
+    const calls = events.flatMap((e) =>
+      e.type === 'response.output_item.added' && e.item.type === 'function_call' ? [e.item] : [],
+    );
+    expect(calls.map((call) => call.name)).toEqual(['getWeatherForecast', 'getWeatherForecast']);
     // Distinct call_ids, so each decision addresses exactly one call.
-    const callIds = requests.flatMap((e) => (e.type === 'tool-approval-request' ? [e.call_id] : []));
-    expect(new Set(callIds).size).toBe(2);
+    expect(new Set(calls.map((call) => call.call_id)).size).toBe(2);
+    // Two gated calls still add nothing of the agent's own to the turn.
+    expect(events.map((e) => e.type).filter((type) => !type.startsWith('response.'))).toEqual([]);
   });
 
   it('runs every approved gated call server-side on resume, then replies', async () => {

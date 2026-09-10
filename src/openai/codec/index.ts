@@ -163,4 +163,4 @@ export const createResponsesCodec = <TInput = unknown>(): WireCodec<TInput, Open
   },
 });
 
-export type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput, ToolApprovalRequestEvent } from './events.js';
+export type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput } from './events.js';

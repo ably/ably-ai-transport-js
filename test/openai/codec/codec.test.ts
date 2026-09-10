@@ -50,7 +50,6 @@ import {
   textDelta,
   textDone,
   textRun,
-  toolApprovalRequestEvent,
 } from '../../helper/openai-fixtures.js';
 
 // The codec under test, at its untyped default input instantiation.
@@ -622,36 +621,6 @@ describe('OpenAI codec foreign messages (offline)', () => {
     const decoder = responsesCodec.createDecoder();
 
     expect(decoder.decode(foreignMessage('foreign-1'))).toEqual({ inputs: [], outputs: [] });
-  });
-});
-
-// The codec-authored approval request carries no Responses stream event of
-// its own; this proves its wire framing round-trips: the codec headers the
-// descriptor declares (call_id / name) and its data envelope survive
-// encode → wire → decode. Client answers are application-defined passthrough
-// inputs, covered by the passthrough tests above.
-describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
-  it('roundtrips a tool-approval-request: call_id/name on headers, arguments in data', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
-    await encoder.publishOutput(toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{"location":"Paris"}'));
-    await encoder.close();
-
-    const messages = inbound();
-    const wire = messages.find((m) => getCodecHeaders(m).kind === 'tool-approval-request');
-    expect(wire).toBeDefined();
-    expect(wire && getCodecHeaders(wire).call_id).toBe('call_1');
-    expect(wire && getCodecHeaders(wire).name).toBe('getWeatherForecast');
-    expect(wire?.data).toBe('{"location":"Paris"}');
-
-    expect(decodeOutputs(messages)).toEqual([
-      {
-        type: 'tool-approval-request',
-        call_id: 'call_1',
-        name: 'getWeatherForecast',
-        arguments: '{"location":"Paris"}',
-      },
-    ]);
   });
 });
 

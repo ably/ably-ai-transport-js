@@ -75,14 +75,6 @@ export const functionCallOutputEvent = (callId: string, output: string): OpenAIO
   item: functionCallOutput(callId, output),
 });
 
-// The codec's own output event gating a function call on a human decision.
-export const toolApprovalRequestEvent = (callId: string, name: string, args: string): OpenAIOutput => ({
-  type: 'tool-approval-request',
-  call_id: callId,
-  name,
-  arguments: args,
-});
-
 // --- Responses stream-event builders -----------------------------------------
 
 export const created = (): Responses.ResponseStreamEvent => ({

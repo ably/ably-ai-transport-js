@@ -8,11 +8,12 @@
  *   after the call, the client runs browser geolocation and publishes the
  *   result as a `function_call_output` item (a `kind: 'item'` input), and that
  *   input wakes a new run.
- * - `getWeatherForecast` — server-executed but gated on user approval. The run
- *   ends after the call, with the agent's approval request on the call's own
- *   message; the client answers with a `kind: 'approval'` input. On approval
- *   the next run executes the tool server-side; on denial the client authors
- *   the rejection output and the next run replies without running it.
+ * - `getWeatherForecast` — server-executed but gated on user approval. There is
+ *   nothing on the wire to say so: the run ends after the call, and the client
+ *   reads {@link needsApproval} to know the call needs a decision. It answers
+ *   with a `kind: 'approval'` input. On approval the next run executes the tool
+ *   server-side; on denial the client authors the rejection output and the next
+ *   run replies without running it.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';

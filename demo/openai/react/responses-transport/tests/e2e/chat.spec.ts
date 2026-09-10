@@ -133,8 +133,8 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
   test('approval-gated tool: approving runs the tool server-side and the reply lands', async ({ page }, testInfo) => {
     await page.goto(channelUrl(freshChannel(testInfo.title)));
 
-    // A forecast prompt calls the gated getWeatherForecast, so the agent publishes
-    // an approval request on the call's own message and ends the run.
+    // A forecast prompt calls the gated getWeatherForecast, so the run ends on
+    // the call and the client renders the approval prompt from the call itself.
     await sendPrompt(page, "what's the weather forecast for Paris?");
     const approve = page.getByRole('button', { name: 'Approve' });
     await expect(approve).toHaveCount(1);

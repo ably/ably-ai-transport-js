@@ -54,7 +54,7 @@ function ranTool(turns: OpenAIMessage[], name: string): boolean {
  * Whether a getWeatherForecast call reached an approval decision — its per-call
  * state records the user's decision, or its output is present (an approved
  * run's forecast, or a denial's rejection). `'pending'` does not count — the
- * merge sets it the moment the request lands, so treating it as decided would
+ * merge derives it from the gated call itself, so treating it as decided would
  * retire the chip before the user has clicked anything. Collected across all
  * turns, since a call and its output or state can be split across messages.
  */

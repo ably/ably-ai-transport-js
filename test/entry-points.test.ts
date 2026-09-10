@@ -34,12 +34,7 @@ import {
   OBJECT_MODES,
   resolveChannelModes,
 } from '../src/index.js';
-import type {
-  FunctionCallOutputEvent,
-  ModelledOutputItem,
-  OpenAIOutput,
-  ToolApprovalRequestEvent,
-} from '../src/openai/index.js';
+import type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput } from '../src/openai/index.js';
 import { createResponsesCodec } from '../src/openai/index.js';
 import type {
   ClientTransportHandle,
@@ -213,29 +208,26 @@ describe('@ably/ai-transport/vercel/react', () => {
 
 describe('@ably/ai-transport/openai', () => {
   it('publishes the output union and the item type a caller names', () => {
-    const output: OpenAIOutput = { type: 'tool-approval-request', call_id: 'c1', name: 'getWeather', arguments: '{}' };
+    const output: OpenAIOutput = {
+      type: 'function_call_output',
+      item: { type: 'function_call_output', call_id: 'c1', output: '{"tempC":4}' },
+    };
     const items: ModelledOutputItem[] = [];
 
-    expect(output.type).toBe('tool-approval-request');
+    expect(output.type).toBe('function_call_output');
     expect(items).toEqual([]);
   });
 
-  it('publishes both authored members of the output union by name', () => {
-    // Named on locals so a consumer narrowing OpenAIOutput can spell either
-    // arm; dropping one of these exports fails the typecheck here rather than
-    // in a consumer's build.
-    const approval: ToolApprovalRequestEvent = {
-      type: 'tool-approval-request',
-      call_id: 'c1',
-      name: 'getWeather',
-      arguments: '{}',
-    };
+  it('publishes the authored member of the output union by name', () => {
+    // Named on a local so a consumer narrowing OpenAIOutput can spell the arm
+    // the Responses stream has no event for; dropping the export fails the
+    // typecheck here rather than in a consumer's build.
     const result: FunctionCallOutputEvent = {
       type: 'function_call_output',
       item: { type: 'function_call_output', call_id: 'c1', output: '{"tempC":4}' },
     };
 
-    expect(approval.call_id).toBe(result.item.call_id);
+    expect(result.item.call_id).toBe('c1');
   });
 
   it("types its input direction by the application's own union", () => {

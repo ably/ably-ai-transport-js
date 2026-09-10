@@ -33,13 +33,19 @@
  *    would erase the streamed content. The merge applies those fields onto the
  *    accumulated item instead of handing the event to the accumulator.
  *
- * The codec's two non-OpenAI output events (`function_call_output`,
- * `tool-approval-request`) and the client input bodies (`message`, `item`,
- * `approval`) apply as small steps onto the per-message items and
- * `toolCallStates`. A `message` input arrives whole — the passthrough codec
- * publishes the body as one discrete `ai-input` — so the merge exists for
- * redelivery, merging a repeated body into the message it already
- * contributed to rather than duplicating its parts.
+ * The codec's one non-OpenAI output event (`function_call_output`) and the
+ * client input bodies (`message`, `item`, `approval`) apply as small steps
+ * onto the per-message items and `toolCallStates`. A `message` input arrives
+ * whole — the passthrough codec publishes the body as one discrete
+ * `ai-input` — so the merge exists for redelivery, merging a repeated body
+ * into the message it already contributed to rather than duplicating its
+ * parts.
+ *
+ * One piece of `toolCallStates` has no carrier on the wire at all: a gated
+ * call's `'pending'`. The Responses API has no approval concept for a plain
+ * function call, so the merge derives it from the `function_call` item itself,
+ * through the same `needsApproval` policy the agent gates on — see
+ * `markGatedCallPending`.
  */
 
 import type { RunStatus, TransportEvent, WireMeta } from '@ably/ai-transport';
@@ -47,6 +53,7 @@ import type { OpenAIOutput } from '@ably/ai-transport/openai';
 import { accumulateResponse } from 'openai/lib/responses/ResponseAccumulator';
 import type { Responses } from 'openai/resources/responses/responses';
 
+import { needsApproval } from '../api/chat/tools';
 import {
   asOpenAIInput,
   type OpenAIInput,
@@ -327,6 +334,23 @@ const partSlotExists = (target: Responses.ResponseOutputItem | undefined, event:
   return false;
 };
 
+/**
+ * Mark an approval-gated `function_call` as awaiting a decision. Nothing on
+ * the wire says so: the Responses API has no approval concept for a plain
+ * function call, and which tools are gated is application policy the agent and
+ * the client both hold, so the merge reads the pending state off the call
+ * itself. A decision that already merged — a hydrated approval, or one
+ * addressed to this message before the call reached it — wins over the derived
+ * marker.
+ * @param merge - The per-message accumulator the call belongs to.
+ * @param item - The output item the message just opened.
+ */
+const markGatedCallPending = (merge: MessageMerge, item: Responses.ResponseOutputItem): void => {
+  if (item.type !== 'function_call' || !needsApproval(item.name)) return;
+  const state = merge.toolCallStates[item.call_id];
+  merge.toolCallStates[item.call_id] = { ...state, approval: state?.approval ?? 'pending' };
+};
+
 /** Apply one decoded agent output event. */
 const applyOutput = (merge: MessageMerge, event: OpenAIOutput): void => {
   if (event.type === 'function_call_output') {
@@ -334,20 +358,8 @@ const applyOutput = (merge: MessageMerge, event: OpenAIOutput): void => {
     return;
   }
 
-  if (event.type === 'tool-approval-request') {
-    const state = merge.toolCallStates[event.call_id];
-    merge.toolCallStates[event.call_id] = {
-      ...state,
-      // A decision that already merged (a hydrated approval) wins over the
-      // request's pending marker.
-      approval: state?.approval ?? 'pending',
-      name: event.name,
-      arguments: event.arguments,
-    };
-    return;
-  }
-
   if (event.type === 'response.output_item.added') {
+    markGatedCallPending(merge, event.item);
     // Find-or-create on the item id: the decoder synthesises this opener on
     // mid-stream joins, so a merge combining history and live sees it twice.
     const itemId = event.item.id;

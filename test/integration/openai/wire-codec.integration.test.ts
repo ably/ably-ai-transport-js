@@ -21,7 +21,6 @@ import {
   eventsOfType,
   functionCallArgsRun,
   itemAdded,
-  itemDone,
   messageItem,
   reasoningItem,
   reasoningSummaryPartAdded,
@@ -130,7 +129,13 @@ describe('OpenAI wire-codec integration', () => {
     const outputs = buckets.get('asst-1')?.outputs ?? [];
     const types = outputs.map((e) => e.type);
     // The consumer-facing bracket holds across real serialization: item
-    // envelope, content-part opener, streamed deltas, then the closes.
+    // envelope, content-part opener, streamed deltas, then the closes. The
+    // envelope is asserted present first, because indexOf yields -1 for an
+    // absent event and that satisfies every `toBeLessThan` below.
+    expect(eventsOfType(outputs, 'response.output_item.added')[0]?.item).toMatchObject({
+      type: 'message',
+      id: 'msg_1',
+    });
     expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));
     expect(types.indexOf('response.content_part.added')).toBeLessThan(types.indexOf('response.output_text.delta'));
     expect(types.indexOf('response.output_text.delta')).toBeLessThan(types.indexOf('response.output_text.done'));
@@ -269,7 +274,9 @@ describe('OpenAI wire-codec integration', () => {
     await encoder.publishOutput(reasoningTextDone('rs_1', 'Step one then step two.', 0));
     await encoder.close();
 
-    await waitFor(() => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.reasoning_text.done').length === 1);
+    await waitFor(
+      () => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.reasoning_text.done').length === 1,
+    );
 
     const outputs = buckets.get('asst-1')?.outputs ?? [];
     expect(eventsOfType(outputs, 'response.reasoning_summary_text.done')[0]).toMatchObject({
@@ -284,46 +291,22 @@ describe('OpenAI wire-codec integration', () => {
     });
   }, 30000);
 
-  it('carries encrypted_content on the item close, where the deltas cannot', async () => {
-    const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-encrypted'));
-    const encoder = responsesCodec.createEncoder(pubChannel, {
-      onAblyMessage: stampHeaders('run-1', 'asst-1'),
-    });
-    // encrypted_content is what a store:false caller must send back on the
-    // next request, and it appears only on the item close — no delta carries
-    // it, so the reduced close is the only thing that can.
-    await encoder.publishOutput(itemAdded(reasoningItem('rs_1')));
-    await encoder.publishOutput(reasoningSummaryPartAdded('rs_1', 0));
-    await encoder.publishOutput(reasoningSummaryTextDelta('rs_1', 'Thinking.', 0));
-    await encoder.publishOutput(reasoningSummaryTextDone('rs_1', 'Thinking.', 0));
-    await encoder.publishOutput(
-      itemDone(reasoningItem('rs_1', [{ type: 'summary_text', text: 'Thinking.' }], 'gAAAAAB-opaque')),
-    );
-    await encoder.close();
-
-    await waitFor(() => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done').length === 1);
-
-    const done = eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done')[0];
-    expect(done?.item).toMatchObject({ id: 'rs_1', type: 'reasoning', encrypted_content: 'gAAAAAB-opaque' });
-    // The summary already streamed, so the close does not re-send it.
-    expect(done?.item && 'summary' in done.item ? done.item.summary : undefined).toBeUndefined();
-  }, 30000);
-
   it('separates two transport-message-ids published under one run', async () => {
     const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-demux'));
 
-    // One run, two logical messages. The codec keys nothing on the run: the
-    // transport-message-id is the only thing separating them, which is the
-    // demultiplexing an application does before it merges.
+    // One run, two logical messages, and deliberately the same item id in
+    // both. Different ids would be held apart by the stream key alone, which
+    // would prove nothing: the transport-message-id has to be what separates
+    // them, because that is the demultiplexing an application does.
     const first = responsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'asst-1') });
     for (const event of textRun('msg_1', 'Hello, world!')) await first.publishOutput(event);
     await first.close();
 
     const second = responsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'asst-2') });
-    await second.publishOutput(itemAdded(messageItem('msg_2')));
-    await second.publishOutput(contentPartAdded('msg_2'));
-    await second.publishOutput(textDelta('msg_2', 'Second message.'));
-    await second.publishOutput(textDone('msg_2', 'Second message.'));
+    await second.publishOutput(itemAdded(messageItem('msg_1')));
+    await second.publishOutput(contentPartAdded('msg_1'));
+    await second.publishOutput(textDelta('msg_1', 'Second message.'));
+    await second.publishOutput(textDone('msg_1', 'Second message.'));
     await second.close();
 
     await waitFor(() => eventsOfType(buckets.get('asst-2')?.outputs ?? [], 'response.output_text.done').length === 1);
@@ -332,7 +315,7 @@ describe('OpenAI wire-codec integration', () => {
       expect.objectContaining({ item_id: 'msg_1', text: 'Hello, world!' }),
     ]);
     expect(eventsOfType(buckets.get('asst-2')?.outputs ?? [], 'response.output_text.done')).toEqual([
-      expect.objectContaining({ item_id: 'msg_2', text: 'Second message.' }),
+      expect.objectContaining({ item_id: 'msg_1', text: 'Second message.' }),
     ]);
   }, 30000);
 });

@@ -209,12 +209,17 @@ describe('@ably/ai-transport/vercel/react', () => {
 describe('@ably/ai-transport/openai', () => {
   it('publishes the output union and the item type a caller names', () => {
     const output: OpenAIOutput = {
-      type: 'function_call_output',
-      item: { type: 'function_call_output', call_id: 'c1', output: '{"tempC":4}' },
+      type: 'response.output_text.delta',
+      item_id: 'msg_1',
+      output_index: 0,
+      content_index: 0,
+      delta: 'hi',
+      logprobs: [],
+      sequence_number: 0,
     };
     const items: ModelledOutputItem[] = [];
 
-    expect(output.type).toBe('function_call_output');
+    expect(output.type).toBe('response.output_text.delta');
     expect(items).toEqual([]);
   });
 

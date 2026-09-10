@@ -157,12 +157,13 @@ describe('runAgentLoop', () => {
     // opener); output_item.done reduces to id/type/status, so read the
     // correlation off `added`.
     const call = events.find((e) => e.type === 'response.output_item.added' && e.item.type === 'function_call');
-    expect(
-      call?.type === 'response.output_item.added' && call.item.type === 'function_call' ? call.item.name : '',
-    ).toBe('getWeatherForecast');
-    expect(
-      call?.type === 'response.output_item.added' && call.item.type === 'function_call' ? call.item.call_id : '',
-    ).toBeTruthy();
+    const item =
+      call?.type === 'response.output_item.added' && call.item.type === 'function_call' ? call.item : undefined;
+    expect(item).toBeDefined();
+    expect(item?.name).toBe('getWeatherForecast');
+    // The mock mints the call id off the item id, so this is a real
+    // correlation rather than a presence check.
+    expect(item?.call_id).toBe(`call-${String(item?.id)}`);
 
     // Every event on the turn is one the model itself streamed. The only event
     // the agent adds is the codec's function_call_output, and a gated call has

@@ -230,7 +230,8 @@ jobs:
       matrix:
         # responses-transport has a Playwright suite but no row here yet: four
         # of its tool-resolution tests fail, and they fail for reasons that
-        # predate the demo landing. The row goes in with the fix.
+        # predate the demo landing. TODO(AIT-1324): the row goes in with the
+        # fix.
         include:
           - demo: demo/vercel/react/use-chat
             name: use-chat

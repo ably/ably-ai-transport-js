@@ -2,7 +2,8 @@
  * Shared test fixtures for the OpenAI Responses codec: minimal Response/item
  * builders, Responses stream-event builders, the encoder header-stamp hook, a
  * decoded-event filter, and an offline encode→wire→decode bridge. Imported by
- * the codec tests so the event shapes live in one place.
+ * the codec's unit suites and its integration tier alike, so the event shapes
+ * live in one place.
  */
 
 import type * as Ably from 'ably';

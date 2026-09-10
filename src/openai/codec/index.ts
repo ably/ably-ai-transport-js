@@ -4,8 +4,8 @@
  * The output direction is assembled by `defineCodec` from the declarative
  * output descriptor table and the decode lifecycle policy: it streams
  * assistant text, refusals, reasoning (summary and raw text) and function-call
- * arguments, handles server-side function calls (results and human-approval
- * requests), and repairs mid-stream joins via `decoderSynthesiseLifecycle`.
+ * arguments, carries the result of a server-executed function call, and
+ * repairs mid-stream joins via `decoderSynthesiseLifecycle`.
  * Hosted tools (web / file search, code interpreter, image gen, MCP, custom
  * tools) are not yet supported (AIT-1121).
  *
@@ -64,9 +64,9 @@ const outputCodec = defineCodec<never, OpenAIOutput>()({
 
 /**
  * Build an OpenAI Responses codec implementing `WireCodec<TInput, OpenAIOutput>`.
- * Outputs are OpenAI's own stream events plus the codec's two authored
- * events; inputs pass through as JSON typed by the application's `TInput`
- * (see the module header).
+ * Outputs are OpenAI's own stream events plus the codec's own
+ * `function_call_output` event; inputs pass through as JSON typed by the
+ * application's `TInput` (see the module header).
  * @template TInput - The application's input-event type. Asserted at decode, never validated — on a channel you share, validate the decoded body yourself.
  * @returns The codec.
  */

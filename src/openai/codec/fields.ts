@@ -44,8 +44,6 @@ export const fPartDiscriminant = jsonField<{ type: string }, 'part'>('part');
  */
 export const fItem = jsonField<Responses.ResponseOutputItem, 'item'>('item');
 
-// --- client-driven tool bindings (used by the output descriptors) ---
-
 /**
  * Per-slot stream id for the content-part groups: item_id + content_index.
  * Purely the transport uniqueness handle — a consumer's merge never parses it

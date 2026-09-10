@@ -27,6 +27,7 @@
  * are codec-agnostic and already proven in `../core/transport.integration.test.ts`.
  */
 
+import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -43,6 +44,11 @@ import {
   itemAdded,
   itemDone,
   messageItem,
+  reasoningItem,
+  reasoningSummaryPartAdded,
+  reasoningTextDelta,
+  reasoningTextPartAdded,
+  refusalPartAdded,
   textDelta,
   textDone,
 } from '../../helper/openai-fixtures.js';
@@ -74,7 +80,7 @@ type Event = TransportEvent<AppInput, OpenAIOutput>;
  * @param channelName - The conversation's channel name.
  * @returns The resolved channel, on its own connection.
  */
-const channelFor = (channelName: string): ReturnType<ReturnType<typeof ablyRealtimeClient>['channels']['get']> =>
+const channelFor = (channelName: string): Ably.RealtimeChannel =>
   ablyRealtimeClient().channels.get(channelName, { params: { agent: channelAgent(codec) } });
 
 /**
@@ -185,6 +191,11 @@ describe('OpenAI codec over the core transports', () => {
     // then the two closes rebuilt from the accumulated text.
     const outputs = outputsOf(received.events);
     const types = outputs.map((o) => o.type);
+    // Assert the envelope arrived before ordering against it: indexOf yields
+    // -1 for an absent event, which would satisfy every `toBeLessThan` below.
+    expect(outputs.find((o) => o.type === 'response.output_item.added')).toMatchObject({
+      item: { type: 'message', id: 'msg_1' },
+    });
     expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));
     expect(types.indexOf('response.content_part.added')).toBeLessThan(types.indexOf('response.output_text.delta'));
     expect(types.indexOf('response.output_text.delta')).toBeLessThan(types.indexOf('response.output_text.done'));
@@ -228,20 +239,21 @@ describe('OpenAI codec over the core transports', () => {
       },
     });
 
-    // Wait for the first half to be on the channel, not for a fixed delay: a
-    // raw listener on a throwaway client tells us the append landed, so the
-    // client below is guaranteed to join mid-stream. A sleep here would let a
-    // slow run finish first and pass without exercising the join at all.
-    const watcherChannel = ablyRealtimeClient().channels.get(channelName);
-    const firstHalfLanded = new Promise<void>((resolve) => {
-      void watcherChannel.subscribe((message) => {
-        if (typeof message.data === 'string' && message.data.includes('first half')) resolve();
-      });
-    });
-    await watcherChannel.attach();
+    // A client that attached before the run, so its delivery of the first
+    // append is what proves the append landed and the joiner below is
+    // guaranteed to arrive mid-stream. A sleep here would let a slow run
+    // finish first and pass without exercising the join at all. It waits for a
+    // delta rather than any output because a streamed message opens on its
+    // first delivery and its text arrives on a later append.
+    const watching = createClientTransport<AppInput, OpenAIOutput>({ channel: channelFor(channelName), codec });
+    await watching.connect();
+    const watched = createEventRecorder<AppInput, OpenAIOutput>();
+    watching.subscribe(watched.record);
 
     const pipePromise = run.pipe(source);
-    await firstHalfLanded;
+    await watched.waitFor((all) =>
+      outputsOf(all).some((o) => o.type === 'response.output_text.delta' && o.delta.includes('first half')),
+    );
 
     const joiner = createClientTransport<AppInput, OpenAIOutput>({ channel: channelFor(channelName), codec });
     await joiner.connect();
@@ -278,6 +290,7 @@ describe('OpenAI codec over the core transports', () => {
     expect(done).toMatchObject({ item_id: 'msg_1', text: 'first half second half' });
 
     joiner.close();
+    watching.close();
     agent.close();
   });
 
@@ -372,6 +385,66 @@ describe('OpenAI codec over the core transports', () => {
     answering.close();
   });
 
+  it('a cancel closes every streamed group a run left open', async () => {
+    const channelName = uniqueChannelName('oai-cancel');
+    const client = createClientTransport<AppInput, OpenAIOutput>({ channel: channelFor(channelName), codec });
+    await client.connect();
+    const received = createEventRecorder<AppInput, OpenAIOutput>();
+    client.subscribe(received.record);
+
+    const agent = createAgentTransport<AppInput, OpenAIOutput>({
+      channel: channelFor(channelName),
+      codec,
+      clientId: 'agent',
+    });
+
+    const sent = await client.publishInput({ kind: 'prompt', text: 'think out loud, at length' });
+    await agent.connect();
+    const located = await agent.locateInput(sent.eventId);
+    if (!located) throw new Error(`trigger ${sent.eventId} not found in history`);
+    const run = agent.openRun({ input: located });
+
+    // Four streamed groups open at once across two items — text and a refusal
+    // sharing a message, a summary and reasoning text sharing a reasoning
+    // item. A denser topology than a flat chunk stream produces, and the one
+    // the cancel has to unwind. The source never closes on its own, so only
+    // the cancel ends it.
+    const streamed = run.pipe(
+      new ReadableStream<OpenAIOutput>({
+        start: (controller) => {
+          controller.enqueue(itemAdded(messageItem('msg_1')));
+          controller.enqueue(contentPartAdded('msg_1', 0));
+          controller.enqueue(refusalPartAdded('msg_1', 1));
+          controller.enqueue(itemAdded(reasoningItem('rs_1')));
+          controller.enqueue(reasoningSummaryPartAdded('rs_1', 0));
+          controller.enqueue(reasoningTextPartAdded('rs_1', 0));
+          controller.enqueue(textDelta('msg_1', 'starting', 0));
+          controller.enqueue(reasoningTextDelta('rs_1', 'weighing', 0));
+        },
+      }),
+    );
+
+    await received.waitFor((all) => outputsOf(all).some((o) => o.type === 'response.output_text.delta'));
+    await client.cancel(await sent.runId);
+
+    const result = await streamed;
+    expect(result.reason).toBe('cancelled');
+    expect(run.abortSignal.aborted).toBe(true);
+
+    await run.end({ reason: 'cancelled' });
+    await received.waitFor((all) => lifecycleOf(all).some((e) => e.type === 'end'));
+    expect(lifecycleOf(received.events).at(-1)).toMatchObject({ type: 'end', reason: 'cancelled' });
+
+    // Everything published before the cancel is still on the wire and still
+    // decodes: unwinding the open groups does not retract what they carried.
+    const outputs = outputsOf(received.events);
+    expect(deltaTextOf(outputs)).toBe('starting');
+    expect(outputs.some((o) => o.type === 'response.reasoning_text.delta')).toBe(true);
+
+    client.close();
+    agent.close();
+  });
+
   it('history paging replays a finished Responses turn with its streamed group intact', async () => {
     const channelName = uniqueChannelName('oai-history');
     const client = createClientTransport<AppInput, OpenAIOutput>({ channel: channelFor(channelName), codec });
@@ -419,13 +492,19 @@ describe('OpenAI codec over the core transports', () => {
 
     const outputs = outputsOf(history);
     const types = outputs.map((o) => o.type);
+    expect(outputs.find((o) => o.type === 'response.output_item.added')).toMatchObject({
+      item: { type: 'message', id: 'msg_1' },
+    });
     expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));
     expect(deltaTextOf(outputs)).toBe('remembered');
     const doneItem = outputs.find((o) => o.type === 'response.output_item.done');
+    expect(doneItem).toBeDefined();
     expect(doneItem).toMatchObject({ item: { id: 'msg_1', type: 'message' } });
     // The terminal rides the wire reduced: the deltas already carried the
     // text, so re-sending it on the close would duplicate the whole message.
-    expect(doneItem?.type === 'response.output_item.done' && 'content' in doneItem.item).toBe(false);
+    const doneWireItem = doneItem?.type === 'response.output_item.done' ? doneItem.item : undefined;
+    expect(doneWireItem).toBeDefined();
+    expect(doneWireItem && 'content' in doneWireItem).toBe(false);
 
     late.close();
     agent.close();

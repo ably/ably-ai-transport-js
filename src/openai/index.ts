@@ -1,20 +1,3 @@
 // OpenAI Responses wire codec — encode and decode, nothing else
-export type {
-  OpenAIApprovalDecision,
-  OpenAIApprovalInput,
-  OpenAIInput,
-  OpenAIItem,
-  OpenAIItemInput,
-  OpenAIMessage,
-  OpenAIMessageInput,
-  OpenAIOutput,
-  OpenAIToolCallState,
-  ToolApprovalRequestEvent,
-} from './codec/index.js';
-export { ResponsesCodec } from './codec/index.js';
-
-// Model-input conversion
-export { toResponsesInput } from './to-responses-input.js';
-
-// Loop correlation readers
-export { approvedUnexecutedCalls, resolvedCallIds, unansweredCalls } from './correlation.js';
+export type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput } from './codec/index.js';
+export { createResponsesCodec } from './codec/index.js';

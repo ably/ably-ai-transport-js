@@ -15,6 +15,7 @@ export type {
   RunEndReason,
   RunEndResult,
   RunLifecycleEvent,
+  RunStatus,
   RunStepTransport,
   SteerOutcome,
   SteerResult,

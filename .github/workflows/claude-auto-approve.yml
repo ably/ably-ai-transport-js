@@ -91,7 +91,8 @@ jobs:
 
             **low-risk** — safe to approve without human review. Use your judgement. Examples of things that typically qualify:
             - Test-only changes (new tests, fixed flakes, refactored test helpers)
-            - Documentation, comments, log message tweaks
+            - Comments, log messages, and documentation that is not published — CONTRIBUTING, repo tooling docs, notes that only a contributor reads
+            - Editorial fixes to published documentation — typos, grammar, formatting, dead links — where the stated meaning is unchanged
             - Trivial dependency bumps (patch versions, dev-only deps, type-definition packages, where the diff doesn't suggest behaviour changes)
             - Pure formatting / lint fixes
             - CI changes to an existing workflow that leave its permissions, triggers, and secret usage as they are — bumping a pinned action, adjusting a test matrix, correcting a step's command, changing a timeout
@@ -101,6 +102,8 @@ jobs:
             **needs-human** — should be reviewed by a human. Everything not classified as low-risk.
 
             Treat any change to published API surface as needs-human, including changes to an entry point's `index.ts` re-exports, even when the diff looks small.
+
+            This repo's published API reference is generated from the JSDoc on exported members (see `typedoc.json`) and published to sdk.ably.com, so that JSDoc is public documentation rather than an internal comment. Treat a change to what it says the contract *is* — behaviour, defaults, guarantees, parameter or return semantics, errors thrown, whether something is safe to call — as needs-human, even when no signature changes. The same applies to usage examples in the README, which consumers copy verbatim. A purely editorial fix that leaves the stated contract identical stays low-risk.
 
             Treat a change to what CI is *allowed to do* as needs-human, however small the diff: a new workflow file, or an edit to a `permissions:` block, a trigger list, the secrets a job reads, or the scopes of a token it mints. The same goes for anything that changes who or what can approve, merge, or publish — including this auto-approve workflow and the scripts it calls. For this category the test is not whether the change is small, sound, or easy to revert; it is whether it widens what automation can do with no human in the loop.
 

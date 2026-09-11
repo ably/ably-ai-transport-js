@@ -338,18 +338,28 @@ export const outputs = ({
     },
   }),
 
-  // --- response lifecycle (all dropped) -------------------------------------
-  // No lifecycle event carries state a wire consumer reads. Run outcome —
-  // including failure — is observed out-of-band via the transport run-end event,
-  // never merged; the terminal events' Response snapshot would only re-echo the
-  // whole reply and the request envelope (instructions, tools, usage, …). The
-  // lifecycle openers are that same request envelope, and the stream-level
-  // `error` is agent-side signalling, not conversation content. All are dropped:
-  // encoded to nothing, never on the wire. (A future agent-side run-outcome
-  // mapper — AIT-1113 — would read the terminal events and `error` from the raw
-  // stream before encode, so keeping them off the wire costs nothing even once
-  // it lands.)
-  drop('response.completed'),
+  // --- response lifecycle ---------------------------------------------------
+  // The finished Response rides the wire whole. Its `usage` is the reason:
+  // nothing else the codec publishes reports what the turn cost, and a
+  // subscriber that reads it from this message needs no signal layered above
+  // the codec to do so. The snapshot is large — it re-echoes the reply and the
+  // request envelope (instructions, tools) — so it is the agent's to withhold:
+  // an agent that does not want it on the channel filters the event out of the
+  // stream it pipes.
+  event('response.completed', {
+    data: {
+      encode: (c) => c.response,
+      // CAST: the Response rides as JSON wire data (trust boundary).
+      decode: (d) => ({ response: d as Responses.Response }),
+    },
+  }),
+
+  // The openers carry that same request envelope and nothing a consumer reads;
+  // the failure terminals report an outcome observed out-of-band; and the
+  // stream-level `error` is agent-side signalling rather than conversation
+  // content. All are dropped: encoded to nothing, never on the wire.
+  // TODO(AIT-1113): an agent-side run-outcome mapper would read the failure
+  // terminals and `error` from the raw stream before encode.
   drop('response.incomplete'),
   drop('response.failed'),
   drop('response.created'),

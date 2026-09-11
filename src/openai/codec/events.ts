@@ -47,6 +47,8 @@ export interface FunctionCallOutputEvent {
  *   discrete `decode` in `descriptors.ts` only ever produces `{ item }` (no
  *   `fields` is declared for either), so neither ever carried this on decode
  *   in the first place.
+ * - `response.completed`: the finished `Response` rides the wire as the whole
+ *   data payload, and the event envelope around it is rebuilt on decode.
  *
  * `Responses.ResponseStreamEvent` declares `sequence_number` as a required
  * `number` on every member, so without this these reconstructions would have
@@ -63,7 +65,8 @@ type ReconstructedEventType =
   | 'response.function_call_arguments.delta'
   | 'response.function_call_arguments.done'
   | 'response.output_item.added'
-  | 'response.output_item.done';
+  | 'response.output_item.done'
+  | 'response.completed';
 
 /** Distributes over the union, omitting `sequence_number` from just the {@link ReconstructedEventType} members. */
 type WithoutSequenceNumber<T> = T extends { type: ReconstructedEventType } ? Omit<T, 'sequence_number'> : T;

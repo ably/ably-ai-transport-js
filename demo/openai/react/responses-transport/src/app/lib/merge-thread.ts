@@ -376,6 +376,11 @@ const applyOutput = (merge: MessageMerge, event: OpenAIOutput): void => {
     return;
   }
 
+  // The finished Response addresses no item — it reports the turn as a whole,
+  // and this demo renders items. Its usage is what a consumer that wanted it
+  // would read here.
+  if (event.type === 'response.completed') return;
+
   // Every remaining decoded output is a stream event addressing its item by
   // the re-stamped `item_id`; re-derive `output_index` from this merge's own
   // map so the accumulator addresses the slot the item occupies here.

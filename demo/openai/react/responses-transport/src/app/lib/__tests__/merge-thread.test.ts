@@ -389,6 +389,24 @@ describe('createThreadMerge', () => {
     expect(denied.toolCallStates?.['call-1']?.reason).toBe('User denied');
   });
 
+  it('tolerates a response-level event that addresses no item', () => {
+    // The finished Response reports the turn, not an item, so the merge has no
+    // slot to put it in and must not treat it as a decode-sequence bug.
+    const merged = mergeAll([
+      outputEvent('m1', [
+        itemAdded(fnCallItem('fc1', 'call-1', 'getWeather', '{}')),
+        // CAST: only the fields this demo would read are populated.
+        {
+          type: 'response.completed',
+          response: { id: 'resp_1', status: 'completed' } as unknown as Responses.Response,
+        },
+      ]),
+    ]);
+
+    expect(merged.messages()).toHaveLength(1);
+    expect(merged.messages()[0].items[0]?.type).toBe('function_call');
+  });
+
   it('keeps a call that needs no approval out of toolCallStates', () => {
     const merged = mergeAll([outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeather', '{}'))])]);
     expect(merged.messages()[0].toolCallStates).toBeUndefined();

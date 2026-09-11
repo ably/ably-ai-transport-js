@@ -265,6 +265,28 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(done).toMatchObject({ item_id: 'fc_1', name: 'getWeather', arguments: '{"location":"London"}' });
   });
 
+  it('carries the finished Response whole, so a consumer reads the turn usage off the wire', async () => {
+    // CAST: a Response is large and mostly irrelevant here; the fields the
+    // assertion reads are real, and the codec treats the payload as opaque.
+    const response = {
+      id: 'resp_1',
+      status: 'completed',
+      model: 'gpt-5',
+      usage: { input_tokens: 12, output_tokens: 34, total_tokens: 46 },
+    } as unknown as Responses.Response;
+
+    const { inbound, outputs } = await roundtrip([{ type: 'response.completed', response }]);
+
+    // One discrete wire message, its data the Response itself.
+    expect(inbound).toHaveLength(1);
+    expect(wireData(inbound, 'response.completed')).toMatchObject({ id: 'resp_1', usage: { total_tokens: 46 } });
+
+    const completedEvent = outputs.find((e) => e.type === 'response.completed');
+    expect(completedEvent).toMatchObject({
+      response: { id: 'resp_1', model: 'gpt-5', usage: { input_tokens: 12, output_tokens: 34, total_tokens: 46 } },
+    });
+  });
+
   it('declines to stream a non-function-call output_item.added (discrete envelope)', async () => {
     const { inbound } = await roundtrip([created(), itemAdded(messageItem('msg_1')), completed()]);
 
@@ -352,18 +374,21 @@ describe('OpenAI codec roundtrip (offline)', () => {
       'error',
       'response.content_part.done',
       'response.reasoning_summary_part.done',
-      // The terminal events carry no state a wire consumer reads (run outcome is
-      // observed out-of-band via the transport run-end event), so they are
-      // dropped at encode alongside the openers — never on the wire, never decoded.
-      'response.completed',
+      // The failure terminals report an outcome observed out-of-band, so they
+      // are dropped alongside the openers — never on the wire, never decoded.
       'response.incomplete',
       'response.failed',
     ]) {
       expect(wireKinds).not.toContain(dropped);
     }
-    for (const terminal of ['response.completed', 'response.incomplete', 'response.failed']) {
+    for (const terminal of ['response.incomplete', 'response.failed']) {
       expect(types).not.toContain(terminal);
     }
+
+    // The finished Response is carried, so a subscriber reads the turn's usage
+    // off the wire rather than from a signal layered above the codec.
+    expect(wireKinds).toContain('response.completed');
+    expect(types).toContain('response.completed');
 
     // The kept item envelope survives with its id.
     const added = outputs.find((e) => e.type === 'response.output_item.added');
@@ -427,10 +452,9 @@ describe('OpenAI codec roundtrip (offline)', () => {
     await encoder.publishOutput(streamError('boom'));
     await encoder.publishOutput(contentPartDone('msg_1'));
     await encoder.publishOutput(reasoningSummaryPartDone('rs_1'));
-    // The terminal events are dropped too: run outcome travels out-of-band.
+    // The failure terminals are dropped too: run outcome travels out-of-band.
     await encoder.publishOutput(incomplete());
     await encoder.publishOutput(failed('nope'));
-    await encoder.publishOutput(completed());
     await encoder.close();
     expect(inbound()).toHaveLength(0);
   });

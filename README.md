@@ -4,9 +4,9 @@
 
 # Ably AI Transport JavaScript SDK
 
-Ably AI Transport is a durable transport for AI applications. Your agent streams tokens onto an Ably channel rather than into an HTTP response, so a client that reconnects picks up where it left off, the same conversation is open on any device the user picks up, and any participant can cancel, interrupt, or steer a response that is still in flight.
+Ably AI Transport carries an AI agent's output over an Ably channel. Your agent pipes the stream its model SDK gives it onto the channel, and every client on the channel receives each event as it is produced. A client that reconnects picks up where it left off, and a conversation is open on every device the user picks up.
 
-AI Transport is not an agent framework, and it holds no conversation state. It carries runs, steps and codec events over one channel; your application merges that event stream into its own messages and owns the store. It works alongside the stack you already have: the Vercel AI SDK, the OpenAI Responses API, or your own framework through a custom codec. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
+The SDK is a transport and a set of codecs. A codec turns each event of a model SDK into one Ably message operation and back; the transport publishes, subscribes and pages history. It holds no conversation state: your application merges the event stream into its own messages, with the model SDK's own reducer where it has one. Codecs ship for the Vercel AI SDK and the OpenAI Responses API, and `defineCodec` builds one for any other framework. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
 > This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release.
@@ -60,8 +60,7 @@ For a Vercel AI SDK project, add `ai` as well:
 npm install ably @ably/ai-transport ai
 ```
 
-For a React project, add `react`. The React entry point builds on ably-js's own
-React hooks, which ship inside the `ably` package:
+For a React project, add `react`. The React entry point builds on ably-js's own React hooks, which ship inside the `ably` package:
 
 ```sh
 npm install ably @ably/ai-transport react
@@ -73,204 +72,199 @@ AI Transport streams a response by appending tokens to a single Ably message, wh
 
 ## Usage
 
-The following code streams a model response from a Next.js route handler onto an
-Ably channel, then reads it back on a client. The SDK carries the events; your
-application decides what to do with them and owns the conversation store.
-[Get started with Vercel AI SDK](https://ably.com/docs/ai-transport/getting-started/vercel-ai-sdk)
-builds the same app in full, including the authentication endpoint.
+The following code streams a model response from a Next.js route handler onto an Ably channel, then reads it back on a client. The SDK carries the events; your application decides what to do with them and owns the conversation. `demo/minimal` in this repository is the same app in full, with the authentication endpoint.
 
 ### Agent
 
 ```typescript
-import { after } from 'next/server';
-import { streamText, convertToModelMessages } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
+import { streamText, convertToModelMessages, toUIMessageStream, type UIMessage } from 'ai';
+import { openai } from '@ai-sdk/openai';
 import * as Ably from 'ably';
-import { channelAgent, createAgentTransport, resolveChannelModes } from '@ably/ai-transport';
-import { createUIMessageCodec, vercelRunOutcome } from '@ably/ai-transport/vercel';
+import { channelAgent, createTransport, ErrorCode } from '@ably/ai-transport';
+import { vercel } from '@ably/ai-transport/vercel';
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 
 export async function POST(req: Request) {
-  // The POST only wakes the agent. Tokens reach every subscribed client over
-  // the channel, so the response body carries nothing the client reads.
-  const { channelName, eventId } = (await req.json()) as { channelName: string; eventId: string };
+  // The client has already published its message on the channel; the POST
+  // wakes the agent with the conversation so far. Tokens reach every client
+  // over the channel, so the response body carries nothing the client reads.
+  const { channelName, messages } = (await req.json()) as { channelName: string; messages: UIMessage[] };
 
-  // The caller resolves the channel, so the caller stamps the SDK's identity
-  // on it and funnels its modes through resolveChannelModes() — which yields
-  // undefined for the server's default mode set, and takes OBJECT_MODES for a
-  // channel that also needs LiveObjects. Every resolver of the same channel
-  // must request the same modes in the same order, or they reattach it.
-  const codec = createUIMessageCodec();
-  // Attach per request: history pages backwards from the attach point, so a
-  // transport attached before the client published could never locate it.
-  const transport = createAgentTransport({
-    channel: ably.channels.get(channelName, {
-      params: { agent: channelAgent(codec) },
-      modes: resolveChannelModes(),
-    }),
-    codec,
-  });
-  await transport.connect();
+  // You resolve the channel, so you stamp the SDK's identity on it with
+  // channelAgent(codec). Every resolver of the same channel must request the
+  // same options, or ably-js reattaches it.
+  const channel = ably.channels.get(channelName, { params: { agent: channelAgent(vercel) } });
+  const transport = createTransport({ channel, codec: vercel });
 
-  const located = await transport.locateInput(eventId);
-  if (!located) return new Response('input not found', { status: 404 });
-
-  // Opening from the located input is what anchors the run to its trigger, so
-  // the client can resolve the run id off the channel.
-  const run = transport.openRun({ input: located }, { signal: req.signal });
-
-  after(async () => {
-    // Your own store owns the conversation; the transport holds no state.
-    const conversation = await getStoredMessages(channelName);
-
-    const result = streamText({
-      model: anthropic('claude-sonnet-4-6'),
-      system: 'You are a helpful assistant.',
-      messages: await convertToModelMessages(conversation),
-      abortSignal: run.abortSignal, // Fires when any client cancels this run
-    });
-
-    const pipeResult = await run.pipe(result.toUIMessageStream());
-    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    // A turn that produced tool calls is still terminal: end the run and let
-    // the client's next input wake a new one.
-    await run.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
-    transport.close();
+  const result = streamText({
+    model: openai('gpt-4o-mini'),
+    messages: await convertToModelMessages(messages),
+    abortSignal: req.signal,
   });
 
-  return new Response('', { status: 202 });
+  // One Ably operation per chunk: a text or tool-input stream's deltas share
+  // one message that grows by appends, and every other chunk, the stream's
+  // start and end included, is a publish. The pipe resolves with the serial of
+  // its last publish, and rejects with an ErrorInfo whose code says whether
+  // the signal cancelled it (OperationCancelled) or it failed (PipeFailed).
+  try {
+    await transport.pipe(toUIMessageStream({ stream: result.fullStream }), { signal: req.signal });
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    const cancelled = error instanceof Ably.ErrorInfo && error.code === ErrorCode.OperationCancelled;
+    return new Response(null, { status: cancelled ? 204 : 500 });
+  } finally {
+    await transport.close();
+  }
 }
 ```
 
 ### Client
 
-Publishing an input and waking the agent is two calls. Reading the reply is a
-subscription: each inbound wire message arrives as one classified event, and the
-application merges the events it cares about into whatever state it renders from.
+Publishing a message is one call, and reading the reply is a subscription. Each inbound Ably message arrives as one delivery holding the decoded event, and the application folds the events into whatever it renders from.
 
 ```typescript
+import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
 import * as Ably from 'ably';
-import { channelAgent, createClientTransport, resolveChannelModes } from '@ably/ai-transport';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
+import { channelAgent, createTransport, type Delivery } from '@ably/ai-transport';
+import { vercel, type VercelEvent } from '@ably/ai-transport/vercel';
 
-const ably = new Ably.Realtime({ authUrl: '/api/auth/token', clientId: 'user-abc' });
+const ably = new Ably.Realtime({ authUrl: '/api/auth/token' });
 const channelName = 'conversations:abc';
-const codec = createUIMessageCodec();
 
-// Resolving the channel yourself means stamping the SDK's identity on it and
-// funnelling its modes through resolveChannelModes() — see the agent example.
-const transport = createClientTransport({
-  channel: ably.channels.get(channelName, {
-    params: { agent: channelAgent(codec) },
-    modes: resolveChannelModes(),
-  }),
-  codec,
-  clientId: 'user-abc',
-});
-await transport.connect();
+const channel = ably.channels.get(channelName, { params: { agent: channelAgent(vercel) } });
+const transport = createTransport({ channel, codec: vercel });
 
-// One event per inbound wire message: a decoded message, or a run/step
-// lifecycle bracket. Nothing here assembles a message list — that is yours.
-transport.subscribe((event) => {
-  if (event.kind === 'message') {
-    // `event.outputs` are the provider's own chunks, in wire order. Hand them
-    // to the provider's reducer, keyed by `event.meta.transportMessageId`.
-    merge(event.meta.transportMessageId, event.outputs);
-    return;
+// One delivery per inbound Ably message. The first subscribe attaches the
+// channel; nothing here assembles a message list, that is yours. Here the AI
+// SDK's own reducer folds one reply: `start` opens a stream, and every chunk
+// until `finish` goes into it.
+let reply: ReadableStreamDefaultController<UIMessageChunk> | undefined;
+const unsubscribe = transport.subscribe(({ event }) => {
+  if (event === undefined || event.type === 'user-message') return;
+  if (event.type === 'start') {
+    const stream = new ReadableStream<UIMessageChunk>({ start: (c) => (reply = c) });
+    void fold(stream);
   }
-  if (event.kind === 'run-lifecycle' && event.event.type === 'end') {
-    // A run that has ended publishes nothing more.
-    markRunFinished(event.event.runId);
-  }
+  reply?.enqueue(event);
+  if (event.type === 'finish') reply?.close();
 });
+// The channel is the caller's, so its state is read from it directly.
+await channel.whenState('attached');
 
-// Publish the turn, then wake the agent. The channel carries the reply; the
-// POST body does not.
-const sent = await transport.publishInput({
-  kind: 'message',
-  payload: { id: 'm1', role: 'user', parts: [{ type: 'text', text: "what's the weather?" }] },
-});
+async function fold(stream: ReadableStream<UIMessageChunk>) {
+  for await (const message of readUIMessageStream({ stream })) render(message);
+}
+
+// Publish the turn on the channel, then wake the agent. Your own message comes
+// back as an ordinary delivery under the serial send returns.
+const message: UIMessage = { id: 'm1', role: 'user', parts: [{ type: 'text', text: "what's the weather?" }] };
+const { serial } = await transport.send({ type: 'user-message', message });
 await fetch('/api/chat', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ channelName, eventId: sent.eventId }),
+  body: JSON.stringify({ channelName, messages: [message] }),
 });
-
-// The run id resolves off the channel, from the `ai-run-start` the agent
-// published for this input — never out of the POST response. `publishInput`
-// hands back a promise for it, so a cancel awaits that first.
-const runId = await sent.runId;
-const stopButton = document.querySelector('button');
-stopButton?.addEventListener('click', () => void transport.cancel(runId));
 ```
 
-To rebuild a conversation on load, page backwards from the attach point with
-`transport.history()` and merge the batches oldest-first.
+To recover from a discontinuity, a channel state change after which messages may have been missed, page history back from the new attach point until you reach the last serial you applied, and apply what is newer. Serials sort as strings, so the comparison is a string comparison. Live delivery carries on during the walk, so the snippet parks what arrives in a buffer and releases it once the gap has been applied, which keeps everything in order. `demo/minimal/src/app/chat.tsx` does the same inside a component.
+
+```typescript
+let lastSeen: string | undefined;
+let held: Delivery<VercelEvent>[] | undefined; // the fuse: set while a recovery walk runs
+
+const apply = (delivery: Delivery<VercelEvent>) => {
+  handle(delivery);
+  lastSeen = delivery.message.serial; // after applying, so it never points past what the UI shows
+};
+
+transport.subscribe((delivery) => {
+  if (held) {
+    held.push(delivery); // parked until the walk has caught up
+    return;
+  }
+  apply(delivery);
+});
+
+transport.on('discontinuity', async () => {
+  held = [];
+  const missed: Delivery<VercelEvent>[] = [];
+  let page = await transport.history({ limit: 100 });
+  for (;;) {
+    const newer = page.items.filter((d) => lastSeen === undefined || (d.message.serial ?? '') > lastSeen);
+    missed.unshift(...newer); // pages arrive newest first; keep the gap oldest first
+    if (newer.length < page.items.length || !page.hasNext) break; // reached what was already applied
+    page = await page.next();
+  }
+  for (const delivery of missed) apply(delivery);
+  const parked = held;
+  held = undefined; // close the fuse, then drain in arrival order
+  for (const delivery of parked) apply(delivery);
+});
+```
+
+To read a finished conversation, `transport.history({ limit })` opens a walk backwards from the attach point and returns its newest page; `page.next()` reads the older ones while `page.hasNext` is true. A streamed reply reads back as the chunks the agent produced, with one difference: its deltas share one message, so they come back as one delta carrying the whole text, between the same start and end chunks a live subscriber saw. The AI SDK's reducer folds that sequence as it folds the live one. Every delivery, live or from history, carries the raw Ably message, and `event` is `undefined` for a message the codec has nothing for, such as another application's publish on the same channel.
 
 ### React client
 
-`@ably/ai-transport/react` is the same client transport behind a provider and
-two hooks. The provider resolves the channel from the surrounding
-`<AblyProvider>`, so the channel wiring the example above does by hand is
-handled for you.
+`@ably/ai-transport/react` is the same transport behind a provider and four hooks. The provider resolves the channel from the surrounding `<AblyProvider>`, so the channel wiring the example above does by hand is handled for you.
 
 ```tsx
 import * as Ably from 'ably';
 import { AblyProvider } from 'ably/react';
-import { ClientTransportProvider, useClientTransport, useTransportEvents } from '@ably/ai-transport/react';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
+import { TransportProvider, useDeliveries, useTransport } from '@ably/ai-transport/react';
+import { vercel, type VercelEvent } from '@ably/ai-transport/vercel';
 
-const ably = new Ably.Realtime({ authUrl: '/api/auth/token', clientId: 'user-abc' });
-const codec = createUIMessageCodec();
+const ably = new Ably.Realtime({ authUrl: '/api/auth/token' });
 
 function App() {
   return (
     <AblyProvider client={ably}>
-      <ClientTransportProvider
+      <TransportProvider
         channelName="conversations:abc"
-        codec={codec}
-        clientId="user-abc"
+        codec={vercel}
       >
         <Chat />
-      </ClientTransportProvider>
+      </TransportProvider>
     </AblyProvider>
   );
 }
 
 function Chat() {
-  const { transport, error } = useClientTransport();
+  const { transport, error } = useTransport<VercelEvent>();
 
-  // One event per inbound wire message, the same classification the plain
-  // client sees. The handler is latched in an effect, so an inline closure is
-  // fine and does not resubscribe.
-  useTransportEvents((event) => {
-    if (event.kind === 'message') merge(event.meta.transportMessageId, event.outputs);
+  // One delivery per inbound Ably message, as the plain client sees. The
+  // latest handler is read on each delivery, so an inline closure is fine
+  // and resubscribes nothing. The first subscribe attaches the channel.
+  useDeliveries<VercelEvent>(({ event }) => {
+    if (event !== undefined) fold(event);
   });
 
   if (error) return <p>Transport unavailable: {error.message}</p>;
 
   const send = async (text: string) => {
-    // `transport` is undefined until the provider has built and connected it,
-    // so guard before publishing.
+    // `transport` is undefined until the provider has built it, so guard.
     if (!transport) return;
-    const sent = await transport.publishInput({
-      kind: 'message',
-      payload: { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }] },
-    });
+    const message = { id: crypto.randomUUID(), role: 'user' as const, parts: [{ type: 'text' as const, text }] };
+    await transport.send({ type: 'user-message', message });
     await fetch('/api/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channelName: 'conversations:abc', eventId: sent.eventId }),
+      body: JSON.stringify({ channelName: 'conversations:abc', messages: [message] }),
     });
   };
 
-  return <Composer onSend={send} />;
+  return (
+    <Composer
+      onSend={send}
+      disabled={!transport}
+    />
+  );
 }
 ```
 
-Nest providers with distinct channel names to hold more than one conversation
-at once, and pass `channelName` to either hook to pick which one it reads.
+`useHistory({ limit })` reads the channel's history one page at a time, `useTransportStatus()` reports a discontinuity and the transport's errors, and the channel's own state is ably-js's `useChannelStateListener` under the provider. Nesting providers with distinct channel names holds more than one conversation at once; pass `channelName` to any hook to pick which one it reads.
 
 ---
 

@@ -2,6 +2,34 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.9.0](https://github.com/ably/ably-ai-transport-js/tree/0.9.0) (2026-09-09)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.8.0...0.9.0)
+
+This release rebuilds the SDK around one transport and one codec contract. A codec is `encode` and `decode`, and every event is one Ably message operation: a publish, an append or an update. The transport pipes an agent's stream onto a channel, delivers every decoded event to subscribers, catches up from a serial and pages history. Runs, steps, steering, cancel and the run lifecycle events are gone from the wire, and with them the agent and client transports, the Vercel chat-transport adapter and the Temporal integration.
+
+### Breaking Changes
+
+- **One transport.** `createTransport({ channel, codec })` replaces `createAgentTransport` and `createClientTransport`. It has `send`, `pipe`, `subscribe`, `history`, `on('discontinuity' | 'error')` and `close`. There are no runs, steps, steering messages or cancel envelopes; an agent that wants to be stopped listens for an application event and aborts its pipe through `pipe`'s `signal`.
+- **One codec contract.** `Codec<E>` is `encode(event)` returning `{ message, publish?, append?, update?, ends? }` or `undefined`, and `decode(message)` returning an event or `undefined`. `defineCodec({ name, adapterTag, typeOf, events })` builds one from a table with one `{ encode, decode }` row per event type; both directions speak one body, `{ name?, data?, headers? }`, with `encode` adding where the message goes. A missing row is a compile error and an event with no row throws at encode. The descriptor tables, `WireCodec`, `createEncoder` and `createDecoder` are gone.
+- **The wire carries no SDK envelope.** A row's `headers` travel under `extras.headers`, with a nested value as JSON text, and the event's `type` under `extras.ai` beside the list of header keys that were encoded; a row's `decode` receives that type as `type` on the body, and its headers exactly as sent. There is no transport tier, no run or step headers, and no `transportMessageId`. Every message on the channel is delivered: one without `extras.ai.type` is foreign and arrives with `event: undefined`.
+- **`subscribe(handler, { from })` replaces `connect`.** The first subscription attaches the channel and, given a serial, catches up from it before live delivery; it returns `{ unsubscribe, live }`. Deliveries are `{ event, message }`, and `event` is `undefined` for a message the codec has nothing for: a foreign publish, a replay, a `message.delete`, or a decode that threw. `from` is accepted whenever no handler is subscribed, which is how an application recovers from a discontinuity.
+- **`pipe` never rejects.** It resolves `{ serials, reason: 'complete' | 'cancelled' | 'error', error? }`; on an error the message names the operation and the failing event.
+- **`history({ limit })`** opens a walk backwards from the attach point and returns its newest page, `{ items, hasNext, next() }`; each call starts a new walk.
+- **`on('discontinuity', handler)`** calls the handler with nothing; the serial to recover from is the last one the application applied.
+- **The Vercel codec is `vercel` and `createVercelCodec()`**, over `VercelEvent`: the AI SDK's `UIMessageChunk` plus `user-message`, a whole `UIMessage` a client publishes. `createUIMessageCodec`, the input kinds, `vercelRunOutcome`, the tool registry and the `@ably/ai-transport/vercel/react` entry point are removed.
+- **The OpenAI codec is `openai` and `createOpenAICodec()`**, over `OpenAIEvent`: the Responses stream events plus `input`, the input items a client publishes. `ResponsesCodec`, `OpenAIMessage`, `toResponsesInput` and the correlation readers are removed. Nothing on the wire carries `sequence_number`.
+- **The React entry point is `TransportProvider` with `useTransport`, `useDeliveries`, `useHistory` and `useTransportStatus`.** `ClientTransportProvider`, `useClientTransport`, `useTransportEvents` and `useAblyMessages` are removed.
+- **The Temporal entry points are removed.** `@ably/ai-transport/temporal` and `@ably/ai-transport/temporal/workflow` are not part of this version.
+- Error codes `RunHandlerFailed`, `RunNotFound`, `RunAlreadyEnded` and `SessionContinuityNotGuaranteed` are removed; `RunResponseStreamFailed` (104008) is renamed `PipeFailed`, and `NotFound` (40400) is added for a catch-up serial history does not hold.
+
+### New Features
+
+- **`defineCodec`** builds a codec from a row table. Rows are typed by the event union's `type` field where it has one, a wildcard key such as `data-*` covers a template member, a row may return `undefined` to keep an event off the wire, and `ephemeral: true` publishes a message the platform keeps out of history. Each built codec carries its own decoder table, which reduces a late joiner's full-content update to the unseen tail and drops replays.
+- **Streaming at connection speed.** A stream's appends are sent as they arrive and their acks are awaited when the stream ends and when the pipe ends; only the message that ends a stream waits for that stream's pending acks, so Ably's append rollup never joins it with the delta before it. A stream whose append failed is repaired with one full-content update at that point.
+- **Catch-up from a serial.** `subscribe(handler, { from })` pages history backwards from the attach point until the serial appears, delivers that slice oldest first, holds live messages meanwhile, then settles `live`. A serial history does not hold delivers what exists and rejects `live` with `NotFound`.
+- **`demo/minimal`**, one Next.js page that streams a reply over Ably with the Vercel codec and folds it with the AI SDK's own `readUIMessageStream`.
+
 ## [0.8.0](https://github.com/ably/ably-ai-transport-js/tree/0.8.0) (2026-08-14)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.7.0...0.8.0)

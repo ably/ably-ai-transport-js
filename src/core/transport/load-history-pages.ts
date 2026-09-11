@@ -1,10 +1,8 @@
 /**
  * loadHistoryPages — shared low-level history pagination primitive.
  *
- * The cursor underneath every history route the transports expose:
- * `ClientTransport.history`, and the agent transport's `locateInput`
- * input-event scan and its `history` paging. Returns raw Ably messages; does
- * NOT decode.
+ * The cursor underneath the transport's `history()`, through `openHistoryWalk`.
+ * Returns raw Ably messages; does NOT decode.
  *
  * Behaviour:
  *  - Attaches the channel (idempotent) then pages via `channel.history()`,

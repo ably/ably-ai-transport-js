@@ -2,122 +2,152 @@
 
 ## Layout
 
-The generic layer lives in `src/core/` and `src/react/`; each codec lives in its own directory
-(`src/vercel/`, `src/openai/`, …) under a `codec/` subdirectory. A codec entry
-point may also ship provider-shaped helpers outside `codec/` — modules that
-map a provider result onto transport types or derive loop state from provider
-items rather than defining wire format. Such a helper may depend on the
-generic layer and on its own provider SDK, never on another codec. Shared
-header/event/message-name constants, Ably message helpers, and the SDK's own
-identity sit at the top of `src/`. Tests mirror `src/` under `test/`.
+The generic layer lives in `src/core/` and `src/react/`. Each codec lives in
+its own directory (`src/vercel/`, `src/openai/`, …) with its row table under a
+`codec/` subdirectory. A codec directory may depend on the generic layer and on
+its own provider SDK, never on another codec. The SDK's own identity, the
+channel option helpers, the errors, the logger and the event emitter sit at the
+top of `src/` and `src/core/`. Tests mirror `src/` under `test/`.
 
 The package ships four entry points, each with its own `index.ts` (see the
-table). That `index.ts` is the authoritative list of what is public — only
+table). That `index.ts` is the authoritative list of what is public: only
 types and functions it re-exports are public API. A new codec adds a new entry
-point rather than changing an existing one.
+point rather than changing an existing one. Anthropic and AG-UI codecs are
+planned as further entry points.
 
-| Entry point                 | Purpose                                            | Peer deps        |
-| --------------------------- | -------------------------------------------------- | ---------------- |
-| `@ably/ai-transport`        | Core, codec-agnostic transport and codec contracts | `ably`           |
-| `@ably/ai-transport/react`  | Generic React hooks and providers for any codec    | `ably`, `react`  |
-| `@ably/ai-transport/vercel` | Vercel AI SDK wire codec                           | `ably`, `ai`     |
-| `@ably/ai-transport/openai` | OpenAI Responses wire codec                        | `ably`, `openai` |
+| Entry point                 | Purpose                                                         | Peer deps        |
+| --------------------------- | --------------------------------------------------------------- | ---------------- |
+| `@ably/ai-transport`        | The transport, the codec contract and the `defineCodec` builder | `ably`           |
+| `@ably/ai-transport/react`  | A provider and hooks over the transport, for any codec          | `ably`, `react`  |
+| `@ably/ai-transport/vercel` | The Vercel AI SDK codec: one row per `UIMessageChunk` type      | `ably`, `ai`     |
+| `@ably/ai-transport/openai` | The OpenAI Responses codec: one row per stream event type       | `ably`, `openai` |
 
-Each row's Purpose is a summary, not a symbol list — the entry point's own
-`index.ts` is the authoritative surface.
+Each row's Purpose is a summary, not a symbol list. The entry point's own
+`index.ts` is the authoritative list.
 
 ## Two-layer architecture
 
-The codebase splits into two layers: a **generic layer** and a **codec layer**.
-The codec layer is implemented once per provider — each such implementation a
-_codec_ (Vercel, OpenAI, …). This separation is the most important invariant to
-preserve:
+The codebase splits into a **generic layer** and a **codec layer**. The codec
+layer is implemented once per provider, and each implementation is a _codec_
+(Vercel, OpenAI, …). This separation is the most important invariant to
+preserve.
 
-- **Generic layer** (`src/core/`, `src/react/`) — defines the codec contract
-  (see `src/core/codec/types.ts` for its current signature) and the
-  codec-parameterized transports in `src/core/transport/`. Both halves must
-  know nothing about any specific codec's wire types (e.g. Vercel's
-  `UIMessageChunk` / `UIMessage`, OpenAI's `ResponseStreamEvent`), and must
-  read or write only transport-tier metadata — never codec-specific domain
-  metadata (see header discipline below).
+- **Generic layer** (`src/core/`, `src/react/`) defines the codec contract
+  (`src/core/codec/codec.ts`), the `defineCodec` builder with its decoder core
+  (`src/core/codec/`), and the transport (`src/core/transport/`). It knows
+  nothing about any provider's wire types (Vercel's `UIMessageChunk`, OpenAI's
+  `ResponseStreamEvent`) and reads nothing a codec writes: the builder's own
+  `type` field is the one thing it looks at, and only to pick a row. The
+  transport writes two fields of its own under `extras.ai`, which the decoder
+  core reads and no codec does.
 
   The two halves differ in what else they may depend on. `src/core/` is
-  framework-agnostic. `src/react/` is codec-agnostic but React-only: it may
-  reach for `react`, `ably` and `ably/react`, and it carries the transport's
-  event types erased, re-applying the caller's type arguments at the hook
-  boundary — which is what keeps it free of any codec.
+  framework-agnostic. `src/react/` is codec-agnostic and React-only: it may
+  reach for `react`, `ably` and `ably/react`, and it stores the transport with
+  its event type erased, re-applying the caller's type argument at the hook
+  boundary, which is what keeps it free of any codec.
 
-- **Codec layer** (`src/vercel/`, `src/openai/`, …) — one _codec_ per provider,
-  each implementing the codec contract for that provider's wire format against
-  its types.
+- **Codec layer** (`src/vercel/`, `src/openai/`, …) is one codec per provider,
+  a row table built with `defineCodec` against that provider's own types.
 
-Codec and transport are themselves distinct: the **codec** owns the wire format
-(encode/decode of events and messages); the **transport** owns runs, steps,
-channel I/O and history paging. **The transport holds no conversation state.**
-Merging an event stream into messages is the application's job — or the
-provider reducer's — and no reducer or projection contract lives in
+Codec and transport are themselves distinct. The **codec** owns the wire
+format: which Ably message an event becomes, whether that message is a
+publish, an append or an update, which stream key it belongs to, and which keys
+it ends. The **transport** owns channel I/O: the per-pipe key table, sending
+appends and repairing a failed one, subscribing, history paging and
+continuity. One rule of the key table shapes every codec's
+streams: **an append to a key that is not live publishes the message and opens
+the key**, so a stream's deltas share a message that its first delta creates,
+and the event that opens the stream and the one that ends it are plain
+publishes of their own. Ably's append replaces the stored `name` and `extras`
+with the append's, so a message opened by a start event and grown by deltas
+would read back from history under the last delta's type, with the text on a
+message the start event's row cannot decode. With the deltas alone sharing a
+message, history and a late joiner decode the sequence the agent produced, the
+one permitted collapse being consecutive deltas arriving as fewer, larger ones.
+No codec row puts `publish:` on an opener or `append:` on a closer; `publish:`
+under a key is for a message a later `update` replaces. **The transport holds
+no conversation state.**
+Merging an event stream into messages is the application's job, through the
+provider's own reducer, and no reducer or projection contract lives in
 `src/core/`. That boundary is the most important one in the codebase: a
 projection put back inside the transport is the mistake this design exists to
-prevent. The transport is parameterized by the codec and never hardcodes a wire
-format.
+prevent.
 
-**Wire curation belongs to the codec, at encode.** Every event a codec
-supports is transmitted (as a discrete event or a stream, possibly with a
-slimmed payload) or deliberately kept off the wire (a `drop` descriptor);
-anything else throws at the encoder, so a genuinely unexpected provider event
-fails loudly rather than leaking onto the channel. Agents pipe their output
-stream to the transport as-is for everything the codec supports — an agent
-that opts into a provider surface the codec doesn't model must filter those
-events out before publishing, and the throw makes forgetting that loud. (A
-provider SDK may still supply its own conversion first — Vercel's
-`toUIMessageStream()` turns a `streamText` result into the chunk stream that
-the codec's union models — but that is the provider's shape conversion, not
-our curation point.)
+**The builder is one-to-one; the contract admits more.** A row's `encode`
+maps an event to exactly one publish, append or update, or to nothing
+(`undefined`), and its `decode` maps one delivery to exactly one event, and
+the built codec wraps each into the zero- or one-element array the `Codec`
+contract speaks. The contract itself is `encode(event): EncodedMessage[]` and
+`decode(message): E[]`, so a hand-written codec can split a payload that is
+too large for one message or fold one message into several events; the
+transport writes an event's messages in order and delivers one delivery per
+decoded event, with one `event: undefined` delivery for a message that decodes
+to nothing. Neither shipped codec uses that room.
+The places the wire departs from one-to-one are the platform's. A late joiner's
+first delivery of a stream is a full-content update, which the decoder core
+reduces to the tail the joiner has not seen; a repair after a failed append
+rewrites the whole message, which a live subscriber reads the same way; and
+the append rollup, where Ably delivers the appends a connection publishes
+within a window (40ms by default) as one message with the data joined and the
+last append's extras, so a subscriber can receive fewer deltas than the agent
+wrote, each carrying more text. The window is the publishing client's
+`appendRollupWindow` transport param, and 0 gives one delivery per append.
+The pipe writer sends appends as they arrive and waits only before the
+message that ends a stream, so a closer is never rolled up with, or delivered
+ahead of, the delta before it (`src/core/transport/pipe-writer.ts`).
 
-## Transport surface
+**Wire curation belongs to the codec, at encode.** Every type in the codec's
+event union has a row. A row that returns `undefined` keeps its event off the
+wire on purpose; an event whose type has no row throws `InvalidArgument` at
+encode, so a provider event nobody thought about fails loudly rather than
+leaking onto the channel or vanishing. The row table's type makes a missing
+row a compile error, so the throw is for a type the provider adds after the
+codec was written.
 
-The receive side has one classifier and the send sides are split by role:
+## The transport surface
 
-- **ReceiveTransport** — the single place an inbound Ably message becomes a
-  typed `TransportEvent`: a run-lifecycle event, a step-lifecycle event, or a
-  codec-decoded message carrying the decoded inputs and outputs. It classifies
-  by the `extras.ai` envelope, never by the wire `name`. A message with no
-  envelope is foreign: it decodes to no events and drives no run, while still
-  surfacing raw on `ably-message`.
-- **ClientTransport** — publish input, cancel, steer, subscribe to the
-  classified event stream, and page history backwards from the attach point.
-  Publishing emits nothing locally: the sender's own input comes back as the
-  ordinary channel delivery, keyed by the returned `transportMessageId`, so a
-  consumer that wants optimistic UI renders its own and reconciles on that id.
-  A steer's `published` resolves from the publish acknowledgement's serial, not
-  from the steer's own echo, so steering works with `echoMessages: false`.
-- **AgentTransport** — open runs, locate the input that woke an invocation,
-  publish output through a run's pipe or steps, and route inbound cancel and
-  steer onto the matching run handle.
+`createTransport({ channel, codec, logger? })` returns one object with six
+operations. `send` encodes one event and publishes it as a one-off message,
+resolving with the ack serial. `pipe` reads a stream or async iterable, writes
+each event as its row directs, and resolves with the serial of its last publish
+once the source has ended; it rejects with `OperationCancelled` when its signal
+fires and `PipeFailed` when it could not finish, having flushed and repaired
+what it wrote either way. `subscribe` delivers every message on the channel to
+a handler, attaching the channel on the first call, and returns the
+unsubscribe. `history` opens a walk backwards from the attach point through
+the same codec and returns its newest page, whose `next()` leads to the older
+ones; after a discontinuity an application pages it back to the last serial it
+applied. `on` reports a discontinuity (with no payload) or an error with no
+caller to reject, and `close` aborts the pipes in flight and releases the
+channel listener. See the module doc comment on
+`src/core/transport/transport.ts` for the current contract.
 
-None of the three holds conversation state. A consumer that wants a message
-list merges the event stream itself, or hands it to the provider's own reducer.
-See `src/core/transport/index.ts` and the module doc comments on
-`client-transport.ts`, `agent-transport.ts` and `receive-transport.ts` for the
-current surface.
+A delivery is `{ event, message }`, and every message is delivered. `event` is
+`undefined` when the codec has nothing for the message: a foreign publish on
+the shared channel, a replay the codec's version guard dropped, a
+`message.delete`, or a decode that threw. The application always sees the raw
+message and decides for itself. Publishing emits nothing locally: the sender's
+own message comes back as the ordinary channel delivery, so a consumer that
+wants optimistic UI renders its own and reconciles on the serial `send`
+returned.
 
 ## Composition, not inheritance
 
-Transports are assembled from composable parts, not class hierarchies.
-`createAgentTransport` is the worked example. It composes the run-manager
-lifecycle publisher, a codec decoder wrapped in a receive transport, the shared
-channel plumbing (the connect guard and the continuity watcher), and a run
-handle per open run; that handle in turn composes the step and pipe writer and
-the run's steer tracker. There is no base class anywhere in the chain — each
-part is constructed and injected, and each layer wires the layer below it.
+The transport is assembled from parts, not class hierarchies. `createTransport`
+composes a pipe writer per pipe (the key table, the append chain and the
+repair), the pipe driver that reads a source through the codec into that
+writer, the history pager over `loadHistoryPages`, the continuity watcher, and
+one event emitter for deliveries, discontinuities and errors. There is no base class anywhere in the chain. Each part is constructed
+and injected, and each layer wires the layer below it.
 
-The split follows what a part's state is scoped to. Anything that outlives a
-single run — identity resolution, the cancel-routing registries, the receive
-path — belongs to the transport; anything scoped to one run belongs to the run
-handle. Where two parts have to read the same mutable state (a run's publish
-gate is read by both the handle and its writer), that state becomes its own
-small object both are given, rather than the two being constructed in terms of
-each other.
+The split follows what a part's state is scoped to. State scoped to one pipe
+(the live keys, the pending appends) lives in that pipe's writer. State scoped
+to the transport (the subscriptions, the pipes in flight, whether the channel
+listener is registered) lives in the transport. State scoped to the codec (the
+decoder core's table of the streams in flight, opened by the writer's `stream`
+marker and freed by its `ends` marker) lives inside the built codec, which is
+why a codec instance is shared only when its transports may share a table.
 
 ## Dependency injection
 
@@ -133,7 +163,7 @@ The shape a component takes is a choice with a reason, not a single mandate:
   **`Default*` class** (`DefaultFoo`). The interface is public API; the class
   is internal.
 - **Plain internal class or factory-composed object literal** where the
-  component is only ever composed by a factory in the same layer — nothing
+  component is only ever composed by a factory in the same layer. Nothing
   outside names the type, so an interface would be ceremony.
 
 ### Private state
@@ -165,50 +195,65 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 
 ### Classes vs plain functions
 
-- **Class** — when a component holds state, manages subscriptions, or has a
+- **Class** when a component holds state, manages subscriptions, or has a
   lifecycle (construct/dispose). Most transport sub-components.
-- **Plain function** — stateless transformations, one-shot utilities, codec
-  encode/decode. Input in, output out, no retained state.
+- **Plain function** for stateless transformations, one-shot utilities, and a
+  codec row's encode and decode. Input in, output out, no retained state.
 
 ## Summary of principles
 
-1. **Generic-vs-codec split** — the generic transport/codec knows nothing about
-   any specific codec; each codec (Vercel, OpenAI, …) implements the codec
-   contract for its provider's wire format.
-2. **Codec/transport separation** — codec owns the wire format; transport owns
-   runs, steps, channel I/O and history paging, parameterized by the codec. It
-   holds no conversation state.
-3. **Codec-parameterized** — generic components are parameterized by the
-   codec's input and output unions; see `src/core/codec/types.ts` for the
-   current signature.
-4. **Constructor/option injection** — no singletons, no globals.
-5. **Composition, not inheritance** — compose features; no class hierarchies.
-6. **Interface-first** — public contracts are interfaces; implementations are
+1. **Generic-vs-codec split.** The transport and the builder know nothing about
+   any specific codec; each codec (Vercel, OpenAI, …) is a row table over its
+   provider's own types.
+2. **Codec/transport separation.** The codec owns the wire format; the
+   transport owns channel I/O, the per-pipe key table, history paging and
+   continuity, parameterized by the codec. It holds no conversation state.
+3. **The builder is one-to-one.** A row's encode and decode each map one to
+   one, or to nothing; the codec contract speaks arrays so a hand-written
+   codec can split or fold. The decoder core absorbs the platform's two
+   departures from one-to-one.
+4. **Constructor/option injection.** No singletons, no globals.
+5. **Composition, not inheritance.** Compose features; no class hierarchies.
+6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
-7. **Header discipline** — SDK metadata travels on the wire under an
-   `extras.ai` envelope split into a transport tier (`extras.ai.transport`,
-   always present) and an optional codec tier (`extras.ai.codec`). The generic
-   layer reads and writes only the transport tier; codec-specific metadata
-   belongs in the codec tier, owned by the codec layer. The envelope is also
-   what marks a wire as ours: a transport shares its channel with the
-   application, so a message without `extras.ai` is **foreign** — it decodes
-   to no events and drives no run, while still surfacing raw on
-   `ably-message`. Classify foreign traffic by the envelope, never by the wire
-   `name`, which the platform does not echo on appends.
-8. **Explicit exports** — only what an `index.ts` re-exports is public API.
-9. **Self-contained features** — each manages its own subscriptions, state, and
+7. **The SDK owns two wire fields, and the builder two more, all under
+   `extras.ai`.** A row speaks in `headers`, and where they sit on the wire is
+   the builder's choice: it writes them under `extras.headers`, the extras key
+   Ably provides for a publisher's own fields, and its own `type` and `json`
+   under `extras.ai`, the key the platform reserves for this SDK, and reads
+   `extras.ai.type` back to pick the row. The transport's pipe writer stamps
+   `extras.ai.stream` on every write under a live key, so a stream's message
+   carries it however it is read back, and `extras.ai.ends`, the serial it
+   ends, on the message that ends one; the decoder core reads both to know
+   which messages to remember and when to forget them (`src/core/wire.ts`
+   holds the names). Ably admits
+   only a flat map of string, number, boolean and null values under
+   `extras.headers` (error 40032 otherwise), and a provider's events carry
+   nested objects and arrays, so the builder writes a nested value as JSON
+   text and lists its key under `extras.ai.json` to parse it back on decode.
+   `extras.headers` is the row's in both directions and the builder never
+   reads or writes a key in it: a `type` header travels like any other, and
+   the type the builder matched reaches a row's `decode` as `type` on the
+   body. A row never touches `extras`. A message
+   without `extras.ai.type` is **foreign**: the transport shares its channel
+   with the application, so `decode` returns `undefined` and the transport
+   delivers it raw. Classify by that field, never by the wire `name`, which is
+   the codec author's to choose and a foreign publisher's to collide with.
+8. **Explicit exports.** Only what an `index.ts` re-exports is public API.
+9. **Self-contained features.** Each manages its own subscriptions, state, and
    cleanup.
-10. **Single shared channel, caller-owned** — one Ably channel per transport,
+10. **Single shared channel, caller-owned.** One Ably channel per transport,
     shared by all features. The caller resolves and owns the channel; the
     transport subscribes its own listener and never detaches it. Two
     obligations come with that: the caller stamps `channelAgent(codec)` as the
     channel's `params.agent`, because the SDK cannot set it once the caller
     owns resolution, and every resolver of the same channel funnels its modes
     through `resolveChannelModes()` so they all request the same modes in the
-    same order — ably-js compares them order-sensitively, so two resolvers that
+    same order. ably-js compares them order-sensitively, so two resolvers that
     disagree reattach the channel or silently revert its mode set. See
     `src/core/channel-options.ts`.
-11. **No message assembly in the SDK** — no reducer, no merge driver, no
-    projection type. The application demultiplexes a batch's `message` events
-    by their transport-message-id and merges each bucket with the provider's own
-    machinery.
+11. **No message assembly anywhere in the package.** No reducer, no merge
+    driver, no projection type, and no grouping: a delivery carries one
+    event, and the application groups deliveries by `message.serial` or
+    by the ids the provider's own events carry, then folds them with the
+    provider's reducer. `demo/minimal/src/app/chat.tsx` is the worked example.

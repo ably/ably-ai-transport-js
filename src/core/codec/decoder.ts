@@ -1,499 +1,243 @@
 /**
- * Decoder core — action dispatch and serial tracking machinery.
+ * Decoder core — the per-serial state a built codec keeps so that one codec
+ * instance can decode live delivery and history together.
  *
- * Handles the Ably message action patterns (create, append, update, delete)
- * and delegates to domain-specific hooks for event building and discrete
- * event decoding. Stream trackers are version-guarded: a delivery whose
- * `Message.version.serial` the tracker has already incorporated decodes to
- * nothing, so the same decoder instance can serve both the live
- * subscription and history hydration without double-decoding.
+ * Ably delivers a streamed message three ways. A live append carries only its
+ * fragment. The first delivery after an attach carries the full content so far
+ * as a `message.update`. A history read returns the whole message at whatever
+ * version it has reached. The core reduces all three to one shape before a
+ * codec row's decode runs: `data` is what this delivery adds.
  *
- * Domain decoders call `createDecoderCore(hooks)` and provide hooks
- * for stream classification, event building, and discrete decoding. Hooks
- * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
- * concerns (`transport-message-id`) are surfaced by the transport via `WireMeta`, not
- * here.
+ * To do that it keeps, per serial, the text it has handed on and the highest
+ * `version.serial` it has incorporated. The version guard drops a delivery the
+ * decoder has already seen, which is what lets history overlap live delivery
+ * without duplicates. The table holds only the messages that are streams: a
+ * create the pipe writer marked with `extras.ai.stream`, which is on every
+ * write under a live key and so on the message however it is read back, and
+ * any serial first met through an append or an update. The message that ends
+ * a key carries the serial it ends under `extras.ai.ends`, and the core
+ * forgets that serial when it sees it; a delete forgets its serial too. A
+ * plain publish is handed on and never remembered.
  */
 
 import type * as Ably from 'ably';
 
-import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
 import type { Logger } from '../../logger.js';
-import { getCodecHeaders, getTransportHeaders, hasAiEnvelope } from '../../utils.js';
-import type { MessagePayload, StreamSequenceState } from './types.js';
+import { ENDS_FIELD, readOwnExtras, STREAM_FIELD } from '../wire.js';
 
-// ---------------------------------------------------------------------------
-// Domain hooks
-// ---------------------------------------------------------------------------
-
-/** Hooks that a domain codec provides to the decoder core for stream classification and event building. */
-export interface DecoderCoreHooks<TEvent> {
-  /**
-   * Build domain events emitted when a new stream starts. May return multiple
-   * events (e.g. a start event and a start-step event).
-   */
-  buildStartEvents(tracker: StreamSequenceState): TEvent[];
-
-  /** Build domain events for a text delta received on a stream. */
-  buildDeltaEvents(tracker: StreamSequenceState, delta: string): TEvent[];
-
-  /**
-   * Build domain events emitted when a stream completes (status:complete).
-   * Not called for cancelled streams. The closing codec headers may differ
-   * from tracker.codecHeaders if the closing append carried updated headers.
-   */
-  buildEndEvents(tracker: StreamSequenceState, closingCodecHeaders: Record<string, string>): TEvent[];
-
-  /**
-   * Decode a discrete message (a `message.create` whose stream header is not
-   * "true", or a non-streamable first-contact update). Handles user messages,
-   * tool lifecycle, data-*, etc.
-   */
-  decodeDiscrete(input: MessagePayload): TEvent[];
+/** Options for {@link createDecoderCore}. */
+export interface DecoderCoreOptions {
+  /** Logger for diagnostics. */
+  logger?: Logger;
 }
-
-// ---------------------------------------------------------------------------
-// Interface
-// ---------------------------------------------------------------------------
 
 /** The decoder core returned by {@link createDecoderCore}. */
-export interface DecoderCore<TEvent> {
-  /** Decode a single Ably message into zero or more domain TEvents. */
-  decode(message: Ably.InboundMessage): TEvent[];
+export interface DecoderCore {
+  /**
+   * Reduce one inbound message to what it adds. Returns the message to decode,
+   * with `data` replaced by the unseen tail where the delivery carried content
+   * the core had already handed on, or `undefined` when nothing should be
+   * decoded: a replay the core has already incorporated, an update that adds
+   * nothing, or a `message.delete`.
+   * @param message - The inbound message, as the channel delivered it.
+   * @returns The message to decode, or `undefined`.
+   */
+  prepare(message: Ably.InboundMessage): Ably.InboundMessage | undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Default implementation
-// ---------------------------------------------------------------------------
-
-// Spec: AIT-CD7
-class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
-  private readonly _hooks: DecoderCoreHooks<TEvent>;
-  private readonly _logger: Logger | undefined;
-  private readonly _serialState = new Map<string, StreamSequenceState>();
-
-  constructor(hooks: DecoderCoreHooks<TEvent>, logger?: Logger) {
-    this._hooks = hooks;
-    this._logger = logger?.withContext({ component: 'DecoderCore' });
-  }
-
-  decode(message: Ably.InboundMessage): TEvent[] {
-    const action = message.action;
-
-    this._logger?.trace('DefaultDecoderCore.decode();', { action, serial: message.serial, name: message.name });
-
-    switch (action) {
-      // Spec: AIT-CD7a
-      case 'message.create': {
-        const payload = this._toPayload(message);
-        return payload.transportHeaders?.[HEADER_STREAM] === 'true'
-          ? this._decodeStreamedCreate(payload, message.serial, message.version.serial)
-          : this._hooks.decodeDiscrete(payload);
-      }
-
-      case 'message.append': {
-        return this._decodeAppend(message);
-      }
-
-      case 'message.update': {
-        return this._decodeUpdate(message);
-      }
-
-      case 'message.delete': {
-        return this._decodeDelete(message);
-      }
-
-      default: {
-        return [];
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: extract MessagePayload
-  // -------------------------------------------------------------------------
-
-  private _toPayload(message: Ably.InboundMessage): MessagePayload {
-    return {
-      name: message.name ?? '',
-      // CAST: Ably SDK types `data` as `any`; cast to unknown is the safe boundary type.
-      data: message.data as unknown,
-      transportHeaders: getTransportHeaders(message),
-      codecHeaders: getCodecHeaders(message),
-    };
-  }
-
-  /**
-   * Extract string data from an Ably message, for stream accumulation paths.
-   * @param message - The Ably message to extract string data from.
-   * @returns The string data, or empty string if data is not a string.
-   */
-  private _stringData(message: Ably.InboundMessage): string {
-    return typeof message.data === 'string' ? message.data : '';
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: version guard
-  // -------------------------------------------------------------------------
-
-  /**
-   * Whether a delivery is already incorporated into (or out of contract for)
-   * an existing tracker, and so must decode to nothing. Covers two cases:
-   *
-   * - The delivery carries a `version.serial` at or below the tracker's —
-   *   the mutation it describes is already incorporated (a history aggregate
-   *   covered by live deltas, a resume retransmission, a whole-wire replay).
-   * - The tracker is closed — the stream has ended and its accumulated text
-   *   has been dropped, so nothing further can merge into it. In-contract
-   *   replays are already covered by the version check; this catches
-   *   out-of-contract version-less deliveries for an ended stream.
-   *
-   * A version-bearing delivery that passes advances the tracker's version.
-   * @param method - Calling method name, for log messages.
-   * @param serial - The message serial (the tracker's key).
-   * @param tracker - The existing tracker for the serial.
-   * @param version - The delivery's `Message.version.serial`, if present.
-   * @returns True when the delivery must decode to nothing.
-   */
-  private _alreadyIncorporated(
-    method: string,
-    serial: string,
-    tracker: StreamSequenceState,
-    version: string | undefined,
-  ): boolean {
-    if (version !== undefined && version <= tracker.version) {
-      this._logger?.debug(`DefaultDecoderCore.${method}(); delivery already incorporated`, {
-        serial,
-        version,
-        trackerVersion: tracker.version,
-      });
-      return true;
-    }
-    if (tracker.closed) {
-      this._logger?.debug(`DefaultDecoderCore.${method}(); stream closed, dropping delivery`, { serial, version });
-      return true;
-    }
-    if (version !== undefined) tracker.version = version;
-    return false;
-  }
-
-  /**
-   * Close a tracker, dropping its accumulated text. What remains is a
-   * `{version, closed}` tombstone: enough to recognise covered replays and
-   * out-of-contract post-close deliveries, without retaining the stream's
-   * full content for the decoder's lifetime.
-   * @param tracker - The tracker to close.
-   */
-  private _closeTracker(tracker: StreamSequenceState): void {
-    tracker.closed = true;
-    tracker.accumulated = '';
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: terminal-status transition
-  // -------------------------------------------------------------------------
-
-  /**
-   * Apply a stream's terminal status (complete / cancelled) to a tracker. On
-   * `complete` it emits end events (read before the tracker is closed) and
-   * then closes the tracker; on `cancelled` it closes silently. Both the
-   * append and prefix-match update paths funnel through here so they can't
-   * diverge. Covered replays and post-close deliveries are filtered upstream
-   * by `_alreadyIncorporated`, so no closed-once guard is needed here.
-   * Returns whether a terminal transition fired (so callers can log it).
-   * @param tracker - The stream tracker to close.
-   * @param status - The status header value from the message (may be undefined).
-   * @param closingCodecHeaders - Codec headers from the closing message, passed to buildEndEvents.
-   * @param outputs - The output array end events are pushed into.
-   * @returns True when this call closed the tracker; false otherwise.
-   */
-  private _applyTerminalStatus(
-    tracker: StreamSequenceState,
-    status: string | undefined,
-    closingCodecHeaders: Record<string, string>,
-    outputs: TEvent[],
-  ): boolean {
-    if (status === 'complete') {
-      outputs.push(...this._hooks.buildEndEvents(tracker, closingCodecHeaders));
-      this._closeTracker(tracker);
-      return true;
-    }
-    if (status === 'cancelled') {
-      this._closeTracker(tracker);
-      return true;
-    }
-    return false;
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: streamed message create
-  // -------------------------------------------------------------------------
-
-  private _decodeStreamedCreate(
-    payload: MessagePayload,
-    serial: string | undefined,
-    version: string | undefined,
-  ): TEvent[] {
-    if (!serial) return [];
-
-    const existing = this._serialState.get(serial);
-    if (existing) {
-      // A create is the message's first version, so a tracker for this serial
-      // has already incorporated it (resume retransmission, whole-wire replay).
-      this._logger?.debug('DefaultDecoderCore._decodeStreamedCreate(); duplicate create for tracked stream', {
-        serial,
-      });
-      return [];
-    }
-
-    const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
-
-    const tracker: StreamSequenceState = {
-      name: payload.name,
-      streamId,
-      accumulated: '',
-      codecHeaders: { ...payload.codecHeaders },
-      transportHeaders: { ...payload.transportHeaders },
-      version: version ?? serial,
-      closed: false,
-    };
-    this._serialState.set(serial, tracker);
-
-    this._logger?.debug('DefaultDecoderCore._decodeStreamedCreate(); new stream', {
-      name: payload.name,
-      streamId,
-      serial,
-    });
-
-    return this._hooks.buildStartEvents(tracker);
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: append handling
-  // -------------------------------------------------------------------------
-
-  // Spec: AIT-CD8
-  private _decodeAppend(message: Ably.InboundMessage): TEvent[] {
-    const serial = message.serial;
-    if (!serial) return [];
-
-    const tracker = this._serialState.get(serial);
-    if (!tracker) {
-      // An append is the one action whose `name` the platform does not echo, so
-      // a foreign append — an application streaming its own message on a
-      // channel it shares with a transport — is identified by the absence of the
-      // SDK's `extras.ai` envelope. It decodes to nothing, and says so at
-      // debug: it is expected traffic, not the out-of-contract case below.
-      if (!hasAiEnvelope(message)) {
-        this._logger?.debug('DefaultDecoderCore._decodeAppend(); foreign append, ignoring', { serial });
-        return [];
-      }
-      // Out of contract: the platform converts the first post-attach append
-      // of an in-flight message into a full-contents update, so an append
-      // should never be a stream's first contact. Keep the first-contact
-      // heuristic as a defensive fallback.
-      this._logger?.warn('DefaultDecoderCore._decodeAppend(); append with no tracker, treating as first contact', {
-        serial,
-      });
-      return this._decodeUpdate(message);
-    }
-
-    if (this._alreadyIncorporated('_decodeAppend', serial, tracker, message.version.serial)) return [];
-
-    const transport = getTransportHeaders(message);
-    const closingCodec = getCodecHeaders(message);
-    const delta = typeof message.data === 'string' ? message.data : '';
-    const status = transport[HEADER_STATUS];
-    const outputs: TEvent[] = [];
-
-    if (delta.length > 0) {
-      tracker.accumulated += delta;
-      outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
-    }
-
-    if (this._applyTerminalStatus(tracker, status, closingCodec, outputs)) {
-      this._logger?.debug(
-        `DefaultDecoderCore._decodeAppend(); stream ${status === 'complete' ? 'complete' : 'cancelled'}`,
-        {
-          streamId: tracker.streamId,
-        },
-      );
-    }
-
-    return outputs;
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: update handling (first-contact, prefix-match, replacement)
-  // -------------------------------------------------------------------------
-
-  // Spec: AIT-CD9
-  private _decodeUpdate(message: Ably.InboundMessage): TEvent[] {
-    const serial = message.serial;
-    if (!serial) return [];
-
-    const payload = this._toPayload(message);
-    const transport = payload.transportHeaders ?? {};
-    const codec = payload.codecHeaders ?? {};
-    const isStreamed = transport[HEADER_STREAM] === 'true';
-    const status = transport[HEADER_STATUS];
-
-    const tracker = this._serialState.get(serial);
-
-    if (!tracker) {
-      return this._decodeFirstContact(payload, isStreamed, status, serial, message.version.serial);
-    }
-
-    if (this._alreadyIncorporated('_decodeUpdate', serial, tracker, message.version.serial)) return [];
-
-    // Updates to tracked streams use string data for prefix-match accumulation
-    const data = this._stringData(message);
-
-    // --- Tracker exists: prefix-match or replacement ---
-    if (data.startsWith(tracker.accumulated)) {
-      const delta = data.slice(tracker.accumulated.length);
-      const outputs: TEvent[] = [];
-
-      if (delta.length > 0) {
-        tracker.accumulated = data;
-        outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
-      }
-
-      this._applyTerminalStatus(tracker, status, codec, outputs);
-
-      return outputs;
-    }
-
-    // --- Replacement (NOT a prefix match) ---
-    // The payload diverged from what this decoder accumulated, so no delta
-    // describes the change. No delta is emitted, and that is deliberate.
-    //
-    // A provider reducer can only append to an open part, so there are three
-    // things this could do and two of them corrupt the consumer's view:
-    //
-    //   - Close the open group, then re-open it carrying the new content. The
-    //     close is built from what the tracker holds, and a content-bearing
-    //     end (Vercel's `tool-input-available`, OpenAI's `arguments`) would
-    //     claim the stale partial as complete. A truncated tool-call argument
-    //     presented as final is worse than no update at all.
-    //   - Re-open without closing. The consumer's existing part never ends, so
-    //     it streams forever.
-    //   - Emit no delta, and keep the live view on the content it already has.
-    //
-    // So: swap the baseline so later appends extend the update's content, and
-    // let a terminal status still close the group rather than leaving the part
-    // open. The wire itself is whole, because an update replaces the message
-    // data, so a fresh decode — history, or a re-merge with a new decoder —
-    // yields the full content.
-    const priorLength = tracker.accumulated.length;
-    tracker.accumulated = data;
-    // Merge rather than replace: the identity keys (the group kind, the stream
-    // id) are what the build hooks dispatch on, so an update that omits a tier
-    // must not erase them.
-    tracker.codecHeaders = { ...tracker.codecHeaders, ...codec };
-    tracker.transportHeaders = { ...tracker.transportHeaders, ...transport };
-
-    this._logger?.warn(
-      'DefaultDecoderCore._decodeUpdate(); non-prefix replacement, baseline swapped, no delta emitted',
-      {
-        serial,
-        streamId: tracker.streamId,
-        priorLength,
-        replacementLength: data.length,
-      },
-    );
-
-    const outputs: TEvent[] = [];
-    this._applyTerminalStatus(tracker, status, tracker.codecHeaders, outputs);
-
-    return outputs;
-  }
-
-  private _decodeFirstContact(
-    payload: MessagePayload,
-    isStreamed: boolean,
-    status: string | undefined,
-    serial: string,
-    version: string | undefined,
-  ): TEvent[] {
-    // Non-streamed messages are discrete
-    if (!isStreamed) {
-      return this._hooks.decodeDiscrete(payload);
-    }
-
-    const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
-    const codec = payload.codecHeaders ?? {};
-    const data = typeof payload.data === 'string' ? payload.data : '';
-
-    this._logger?.debug('DefaultDecoderCore._decodeFirstContact(); first-contact stream', {
-      name: payload.name,
-      streamId,
-      serial,
-    });
-
-    // Create tracker
-    const newTracker: StreamSequenceState = {
-      name: payload.name,
-      streamId,
-      accumulated: data,
-      codecHeaders: { ...codec },
-      transportHeaders: { ...payload.transportHeaders },
-      version: version ?? serial,
-      closed: false,
-    };
-    this._serialState.set(serial, newTracker);
-
-    // Emit start + delta (if any) + end (if complete)
-    const outputs = this._hooks.buildStartEvents(newTracker);
-
-    if (data.length > 0) {
-      outputs.push(...this._hooks.buildDeltaEvents(newTracker, data));
-    }
-
-    if (status === 'complete') {
-      outputs.push(...this._hooks.buildEndEvents(newTracker, codec));
-    }
-
-    if (status === 'complete' || status === 'cancelled') {
-      this._closeTracker(newTracker);
-    }
-
-    return outputs;
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: delete handling
-  // -------------------------------------------------------------------------
-
-  // Spec: AIT-CD10
-  private _decodeDelete(message: Ably.InboundMessage): TEvent[] {
-    const serial = message.serial;
-    if (!serial) return [];
-
-    const tracker = this._serialState.get(serial);
-
-    if (tracker) {
-      // No need to advance the tracker's version here: `_closeTracker` leaves a
-      // closed tombstone, and `_alreadyIncorporated`'s closed check drops every
-      // later delivery regardless of version.
-      this._closeTracker(tracker);
-    }
-
-    this._logger?.debug('DefaultDecoderCore._decodeDelete();', { serial });
-
-    return [];
-  }
+interface SerialState {
+  /** The text handed on for this serial so far. */
+  accumulated: string;
+  /** The highest `version.serial` incorporated. A never-mutated message's version is its own serial. */
+  version: string;
 }
 
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
+const stringData = (message: Ably.InboundMessage): string => (typeof message.data === 'string' ? message.data : '');
 
 /**
- * Create a decoder core with the given domain hooks.
- * @param hooks - Domain-specific hooks for stream classification, event building, and discrete decoding.
- * @param logger - Logger for diagnostic output.
- * @returns A new {@link DecoderCore} instance.
+ * Whether the pipe writer marked a message as a stream's.
+ * @param message - The delivery.
+ * @returns True when `extras.ai.stream` is set.
  */
-export const createDecoderCore = <TEvent>(hooks: DecoderCoreHooks<TEvent>, logger?: Logger): DecoderCore<TEvent> =>
-  new DefaultDecoderCore(hooks, logger);
+const isStream = (message: Ably.InboundMessage): boolean => readOwnExtras(message.extras)?.[STREAM_FIELD] === true;
+
+/**
+ * The serial a closer ends, when the message carries one.
+ * @param message - The delivery.
+ * @returns The serial under `extras.ai.ends`, or `undefined`.
+ */
+const endedSerial = (message: Ably.InboundMessage): string | undefined => {
+  const ended = readOwnExtras(message.extras)?.[ENDS_FIELD];
+  return typeof ended === 'string' ? ended : undefined;
+};
+
+class DefaultDecoderCore implements DecoderCore {
+  private readonly _state = new Map<string, SerialState>();
+  private readonly _logger: Logger | undefined;
+
+  constructor(options: DecoderCoreOptions) {
+    this._logger = options.logger?.withContext({ component: 'DecoderCore' });
+  }
+
+  prepare(message: Ably.InboundMessage): Ably.InboundMessage | undefined {
+    const serial = message.serial;
+    // A message with no serial cannot be tracked; hand it on as it is.
+    if (serial === undefined || serial === '') return message;
+    const prepared = this._reduce(message, serial);
+    // After the reduction, so a closer is itself reduced and handed on before
+    // the serial it names is forgotten.
+    this._end(message);
+    return prepared;
+  }
+
+  private _reduce(message: Ably.InboundMessage, serial: string): Ably.InboundMessage | undefined {
+    switch (message.action) {
+      case 'message.create': {
+        return this._create(message, serial);
+      }
+      case 'message.append': {
+        return this._append(message, serial);
+      }
+      case 'message.update': {
+        return this._update(message, serial);
+      }
+      case 'message.delete': {
+        this._delete(serial);
+        return undefined;
+      }
+      default: {
+        return message;
+      }
+    }
+  }
+
+  private _create(message: Ably.InboundMessage, serial: string): Ably.InboundMessage | undefined {
+    if (this._state.has(serial)) {
+      // A create is the message's first version, so a tracked serial has
+      // already incorporated it (a resume retransmission, a history replay).
+      this._logger?.debug('DefaultDecoderCore.prepare(); duplicate create, dropping', { serial });
+      return undefined;
+    }
+    // Only a stream's message is remembered: appends may follow it, and a
+    // late joiner's full-content update for it must reduce to the tail.
+    if (isStream(message)) {
+      this._state.set(serial, { accumulated: stringData(message), version: versionOf(message, serial) });
+    }
+    return message;
+  }
+
+  private _append(message: Ably.InboundMessage, serial: string): Ably.InboundMessage | undefined {
+    const state = this._state.get(serial);
+    if (state === undefined) {
+      // First contact through an append: the platform normally converts the
+      // first post-attach append into a full-content update, so this is a
+      // delivery the core cannot reduce further. Hand it on as it is.
+      this._logger?.debug('DefaultDecoderCore.prepare(); append for an untracked serial', { serial });
+      this._state.set(serial, { accumulated: stringData(message), version: versionOf(message, serial) });
+      return message;
+    }
+    if (this._alreadyIncorporated(state, message, serial)) return undefined;
+    state.accumulated += stringData(message);
+    return message;
+  }
+
+  private _update(message: Ably.InboundMessage, serial: string): Ably.InboundMessage | undefined {
+    const state = this._state.get(serial);
+    const data = stringData(message);
+    if (state === undefined) {
+      // First contact: a late joiner's first delivery of an in-flight stream,
+      // or a history read of a message that was updated. The whole content is
+      // what this delivery adds.
+      this._state.set(serial, { accumulated: data, version: versionOf(message, serial) });
+      return message;
+    }
+    if (this._alreadyIncorporated(state, message, serial)) return undefined;
+
+    if (data.startsWith(state.accumulated)) {
+      const tail = data.slice(state.accumulated.length);
+      state.accumulated = data;
+      if (tail.length === 0) {
+        this._logger?.debug('DefaultDecoderCore.prepare(); update adds nothing, dropping', { serial });
+        return undefined;
+      }
+      // A shallow copy with `data` replaced by the unseen tail. The row's
+      // decode reads fields only, so the prototype is not needed.
+      return { ...message, data: tail };
+    }
+
+    // The content does not extend what was handed on: a deliberate replacement
+    // through the codec's `update` verb, or an update by another writer. The
+    // whole content is what this delivery adds, and the baseline moves to it.
+    this._logger?.debug('DefaultDecoderCore.prepare(); update replaces content', {
+      serial,
+      priorLength: state.accumulated.length,
+      length: data.length,
+    });
+    state.accumulated = data;
+    return message;
+  }
+
+  private _delete(serial: string): void {
+    // Nothing follows a delete: the platform rejects an append or update to a
+    // deleted message, and history returns it as a delete.
+    this._state.delete(serial);
+    this._logger?.debug('DefaultDecoderCore.prepare(); message deleted, forgetting serial', { serial });
+  }
+
+  /**
+   * Forget the serial a closer names. A closer for a serial the core does not
+   * hold is a no-op: history decoded it before the message it ends (the two
+   * sit on different pages), or this decoder never saw the stream.
+   * @param message - The delivery.
+   */
+  private _end(message: Ably.InboundMessage): void {
+    const ended = endedSerial(message);
+    if (ended === undefined) return;
+    if (this._state.delete(ended)) {
+      this._logger?.debug('DefaultDecoderCore.prepare(); stream ended, forgetting serial', { serial: ended });
+    } else {
+      this._logger?.debug('DefaultDecoderCore.prepare(); closer for an untracked serial', { serial: ended });
+    }
+  }
+
+  /**
+   * Whether a delivery for a tracked serial has already been incorporated.
+   * Versions of one message sort lexicographically, so a version at or below
+   * the one remembered adds nothing. A version-bearing delivery that passes
+   * advances the remembered version.
+   * @param state - The serial's state.
+   * @param message - The delivery.
+   * @param serial - The message serial, for logging.
+   * @returns True when the delivery must be dropped.
+   */
+  private _alreadyIncorporated(state: SerialState, message: Ably.InboundMessage, serial: string): boolean {
+    const version = message.version.serial;
+    if (version === undefined) return false;
+    if (version <= state.version) {
+      this._logger?.debug('DefaultDecoderCore.prepare(); delivery already incorporated, dropping', {
+        serial,
+        version,
+        incorporated: state.version,
+      });
+      return true;
+    }
+    state.version = version;
+    return false;
+  }
+}
+
+/**
+ * The version a delivery carries, falling back to the message serial: a
+ * never-mutated message's only version is itself.
+ * @param message - The delivery.
+ * @param serial - The message serial.
+ * @returns The version serial to remember.
+ */
+const versionOf = (message: Ably.InboundMessage, serial: string): string => message.version.serial ?? serial;
+
+/**
+ * Create a decoder core.
+ * @param options - See {@link DecoderCoreOptions}.
+ * @returns A new {@link DecoderCore}.
+ */
+export const createDecoderCore = (options: DecoderCoreOptions = {}): DecoderCore => new DefaultDecoderCore(options);

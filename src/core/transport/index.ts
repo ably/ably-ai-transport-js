@@ -1,14 +1,5 @@
-// Shared types
-export type {
-  PipeSource,
-  StreamResult,
-  TransportEvent,
-  TransportHistoryOptions,
-  TransportHistoryResult,
-  TransportReceiver,
-  WireMeta,
-} from './types.js';
-
-// Receive side
-export type { DeliverEventResult, ReceiveTransport } from './receive-transport.js';
-export { createReceiveTransport } from './receive-transport.js';
+export type { HistoryOptions, HistoryPage } from './history-pager.js';
+export type { PipeResult, PipeSource } from './pipe-stream.js';
+export type { ChannelWriter } from './pipe-writer.js';
+export type { PipeOptions, SendResult, Transport, TransportOptions } from './transport.js';
+export { createTransport } from './transport.js';

@@ -11,6 +11,10 @@ const baseOptions = (options?: Ably.ClientOptions): Ably.ClientOptions => {
   merged.endpoint = merged.endpoint ?? testEndpoint();
   merged.key = merged.key ?? ablyApiKey();
   merged.useBinaryProtocol = merged.useBinaryProtocol ?? false;
+  // Ably rolls appends published within a window (40ms by default) into one
+  // delivery. The suites assert one delivery per append, so publishers here
+  // turn the rollup off.
+  merged.transportParams = merged.transportParams ?? { appendRollupWindow: 0 };
   merged.logHandler =
     merged.logHandler ??
     ((msg) => {

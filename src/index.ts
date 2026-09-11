@@ -1,16 +1,16 @@
-// Core transport
+// The transport
 export type {
-  DeliverEventResult,
+  ChannelWriter,
+  HistoryOptions,
+  HistoryPage,
+  PipeOptions,
+  PipeResult,
   PipeSource,
-  ReceiveTransport,
-  StreamResult,
-  TransportEvent,
-  TransportHistoryOptions,
-  TransportHistoryResult,
-  TransportReceiver,
-  WireMeta,
+  SendResult,
+  Transport,
+  TransportOptions,
 } from './core/transport/index.js';
-export { createReceiveTransport } from './core/transport/index.js';
+export { createTransport } from './core/transport/index.js';
 
 // Channel resolution for a caller-owned channel: the SDK's channel agent
 // param and the mode-set union, for an application that resolves its own
@@ -18,25 +18,23 @@ export { createReceiveTransport } from './core/transport/index.js';
 export { channelAgent } from './core/agent.js';
 export { OBJECT_MODES, resolveChannelModes } from './core/channel-options.js';
 
-// Core codec
+// Codec contract and builder
 export type {
-  ChannelWriter,
-  DecodedMessage,
-  Decoder,
+  Codec,
+  DecodedRow,
   DecoderCore,
-  DecoderCoreHooks,
-  Encoder,
-  EncoderCore,
-  EncoderCoreOptions,
-  EncoderOptions,
-  Extras,
-  MessagePayload,
-  StreamPayload,
-  StreamSequenceState,
-  WireCodec,
-  WriteOptions,
+  DecoderCoreOptions,
+  DefineCodecConfig,
+  Delivery,
+  EncodedMessage,
+  EncodedRow,
+  EventRow,
+  EventRows,
+  RowEvent,
+  RowEventType,
+  RowMessage,
 } from './core/codec/index.js';
-export { createDecoderCore, createEncoderCore } from './core/codec/index.js';
+export { createDecoderCore, defineCodec } from './core/codec/index.js';
 
 // Utilities
 export type { Stripped } from './utils.js';

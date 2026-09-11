@@ -1,39 +1,78 @@
 /**
- * Pure stream piping function.
+ * The pipe driver: read a source of events, encode each one, and write it
+ * through a {@link PipeWriter}.
  *
- * Reads outputs from a ReadableStream, writes them to an encoder via
- * `publishOutput`, and handles cancel/error. No dependencies on run
- * state or transport internals.
+ * A pipe resolves when its source ends, with the serial of its last publish,
+ * and rejects otherwise: `OperationCancelled` when the signal fires, and
+ * `PipeFailed` when the source throws, the codec cannot encode an event, a
+ * publish or update fails, or a repair fails. A failed append does not end the
+ * pipe: the writer repairs it when the stream ends, and a failed repair is what
+ * rejects. On every exit, cancel included, the writer is flushed and the source
+ * released before the pipe settles, so a provider's generator can clean up.
  */
 
-import type { Logger } from '../../logger.js';
-import type { Encoder } from '../codec/types.js';
-import type { PipeSource, StreamResult } from './types.js';
+import * as Ably from 'ably';
 
-/** One pull from a normalized source: an output, or the terminal marker. */
-type PullResult<T> = { done: false; value: T } | { done: true; value?: T };
+import { ErrorCode } from '../../errors.js';
+import type { Logger } from '../../logger.js';
+import { errorCause, errorMessage } from '../../utils.js';
+import type { Codec } from '../codec/codec.js';
+import type { PipeWriter } from './pipe-writer.js';
 
 /**
- * A minimal pull-reader over either source shape {@link PipeSource} accepts.
- * `read` yields one output or the terminal marker; `release` tears down the
- * underlying source when the pipe ends, is cancelled, or errors.
+ * What `pipe` reads: a `ReadableStream` or any `AsyncIterable` of events. A
+ * provider SDK stream that is async-iterable pipes in directly. The pipe pulls
+ * one event at a time and releases the source when it ends, is cancelled or
+ * errors: it releases a stream reader's lock, or calls an iterator's
+ * `return()`.
+ * @template E - The codec's event union.
  */
-interface OutputPuller<T> {
-  /** Pull the next output, or the terminal marker once the source is exhausted. */
-  read(): Promise<PullResult<T>>;
-  /** Best-effort teardown: release a reader's lock or return the iterator. */
+export type PipeSource<E> = ReadableStream<E> | AsyncIterable<E>;
+
+/** What a pipe resolves with once its source has ended and everything it wrote is on the channel. */
+export interface PipeResult {
+  /**
+   * The ack serial of the last publish the pipe made, including the publish
+   * that opens an append key, or `undefined` when it published nothing.
+   */
+  serial: string | undefined;
+}
+
+/** How much of a failing event the error message quotes. */
+const EVENT_EXCERPT_LENGTH = 200;
+
+/**
+ * A short JSON rendering of an event for an error message.
+ * @param event - The event.
+ * @returns The excerpt.
+ */
+const excerpt = (event: unknown): string => {
+  let text: string;
+  try {
+    text = JSON.stringify(event);
+  } catch {
+    text = String(event);
+  }
+  return text.length > EVENT_EXCERPT_LENGTH ? `${text.slice(0, EVENT_EXCERPT_LENGTH)}…` : text;
+};
+
+/** One pull from a normalized source: an event, or the terminal marker. */
+type PullResult<E> = { done: false; value: E } | { done: true; value?: E };
+
+/** A minimal pull-reader over either source shape. */
+interface Puller<E> {
+  read(): Promise<PullResult<E>>;
   release(): void;
 }
 
 /**
- * Normalize a {@link PipeSource} to a pull-reader. A `ReadableStream` is read
- * through its reader (preferred where present, since the reader API is the
- * portable one); any other source is driven through its async iterator, whose
+ * Normalize a source to a pull-reader. A `ReadableStream` is read through its
+ * reader; any other source is driven through its async iterator, whose
  * `return()` is called on release for best-effort upstream teardown.
  * @param source - The stream or async-iterable to consume.
- * @returns A pull-reader that yields outputs and tears the source down on release.
+ * @returns A pull-reader that yields events and tears the source down on release.
  */
-const toPuller = <T>(source: PipeSource<T>): OutputPuller<T> => {
+const toPuller = <E>(source: PipeSource<E>): Puller<E> => {
   if ('getReader' in source) {
     const reader = source.getReader();
     return {
@@ -60,8 +99,7 @@ const toPuller = <T>(source: PipeSource<T>): OutputPuller<T> => {
 /**
  * Adapt an AbortSignal into a promise that resolves once the signal aborts,
  * paired with a cleanup that detaches the listener. With no signal the promise
- * never resolves (there is no cancellation path); an already-aborted signal
- * resolves immediately. `cleanup` is a no-op unless a listener was attached.
+ * never resolves; an already-aborted signal resolves immediately.
  * @param signal - The AbortSignal to watch, or undefined for no cancellation.
  * @returns The abort promise and a cleanup to call when racing is done.
  */
@@ -85,100 +123,117 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
   return { promise, cleanup };
 };
 
-/**
- * Pipe an output stream through an encoder to the channel.
- *
- * Returns when the stream completes, is cancelled (via signal), or errors.
- * The `reason` field of the result indicates which case occurred.
- * @param source - The output source to read from: a `ReadableStream` or any `AsyncIterable` of outputs.
- * @param encoder - The encoder to publish outputs through.
- * @param signal - AbortSignal to monitor for cancellation.
- * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
- * @param logger - Optional logger for diagnostic output.
- * @param beforeFirstWrite - Optional hook awaited exactly once, immediately before the FIRST output event is handed to the encoder. Never fires for a stream that completes empty, errors, or is cancelled before producing any event. Note the event that triggers the hook may itself publish nothing (a codec `drop` type), so the resource the hook opens (e.g. `run.pipe`'s implicit step) can bracket zero wire writes.
- * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
- */
-export const pipeStream = async <TInput, TOutput>(
-  source: PipeSource<TOutput>,
-  encoder: Encoder<TInput, TOutput>,
-  signal: AbortSignal | undefined,
-  onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>,
-  logger?: Logger,
-  beforeFirstWrite?: () => Promise<void>,
-): Promise<StreamResult> => {
-  logger?.trace('pipeStream();');
+const pipeFailed = (what: string, error: unknown, event?: unknown): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(
+    event === undefined
+      ? `unable to pipe; ${what}: ${errorMessage(error)}`
+      : `unable to pipe; ${what} for event ${excerpt(event)}: ${errorMessage(error)}`,
+    ErrorCode.PipeFailed,
+    500,
+    errorCause(error),
+  );
 
+const cancelledError = (): Ably.ErrorInfo =>
+  new Ably.ErrorInfo('unable to pipe; cancelled by signal', ErrorCode.OperationCancelled, 400);
+
+/**
+ * Pipe a source of events through a codec to a writer.
+ * @param source - The events to pipe.
+ * @param codec - The codec that turns each event into an Ably message.
+ * @param writer - This pipe's writer, holding its key table.
+ * @param signal - Fires to cancel the pipe.
+ * @param logger - Logger for diagnostics.
+ * @returns The serial of the last publish, once the source has ended.
+ * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fired; `PipeFailed` when the source, an encode, a write or a repair failed, with the failure as `cause`.
+ */
+export const pipeStream = async <E>(
+  source: PipeSource<E>,
+  codec: Codec<E>,
+  writer: PipeWriter,
+  signal?: AbortSignal,
+  logger?: Logger,
+): Promise<PipeResult> => {
+  logger?.trace('pipeStream();');
   const puller = toPuller(source);
   const abort = abortSignalToPromise(signal);
+  let serial: string | undefined;
+  let failure: Ably.ErrorInfo | undefined;
+  let cancelled = false;
 
-  let reason: StreamResult['reason'] = 'complete';
-  let caughtError: Error | undefined;
-  // Tracks whether the first-output hook has fired so it runs at most once.
-  let firstWriteDone = false;
+  const fail = (what: string, error: unknown, event?: E): void => {
+    failure = pipeFailed(what, error, event);
+    logger?.debug('pipeStream(); pipe failed', { what, error: errorMessage(error) });
+  };
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by return/break
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by break
     while (true) {
-      // .then() is intentional: transforms the AbortSignal into a discriminant
-      // for Promise.race — no async/await equivalent for this pattern.
-      const result = await Promise.race([puller.read(), abort.promise.then(() => 'cancelled' as const)]);
+      // A signal that has already fired wins before the next read, so a
+      // cancelled pipe writes nothing more even when the source has an event
+      // ready. The race below covers a signal that fires mid-read.
+      // .then() is intentional: it turns the AbortSignal into a discriminant
+      // for Promise.race, which has no async/await equivalent.
+      const pulled =
+        signal?.aborted === true
+          ? 'cancelled'
+          : await Promise.race([puller.read(), abort.promise.then(() => 'cancelled' as const)]);
 
-      if (result === 'cancelled') {
-        reason = 'cancelled';
-        logger?.debug('pipeStream(); stream cancelled by AbortSignal');
-        if (onCancelled) {
-          await onCancelled(async (output: TOutput) => encoder.publishOutput(output));
+      if (pulled === 'cancelled') {
+        cancelled = true;
+        logger?.debug('pipeStream(); cancelled by signal');
+        break;
+      }
+      if (pulled.done) {
+        logger?.debug('pipeStream(); source ended');
+        break;
+      }
+
+      const event = pulled.value;
+      let encoded;
+      try {
+        encoded = codec.encode(event);
+      } catch (error) {
+        fail('encode failed', error, event);
+        break;
+      }
+
+      try {
+        // An event's messages are written as a unit; the signal is read again
+        // before the next event, not between them.
+        for (const message of encoded) {
+          const acked = await writer.write(message);
+          if (acked !== undefined) serial = acked;
         }
-        // Transport mechanics only — close in-flight streamed messages as
-        // cancelled. Run termination is the transport ai-run-end event,
-        // guaranteed by AgentRunTransport.pipe on a cancelled result.
-        await encoder.cancelStreams();
+      } catch (error) {
+        fail('write failed', error, event);
         break;
       }
-
-      const { done, value } = result;
-      if (done) {
-        // An agent-side self-abort (e.g. the AI SDK's abort signal firing)
-        // completes the stream without end chunks for in-flight streamed
-        // messages. Terminate any still-open wire streams with a cancelled
-        // status so decoders and history see a terminal; streams that closed
-        // normally are skipped (no-op on a clean completion).
-        await encoder.cancelStreams();
-        await encoder.close();
-        logger?.debug('pipeStream(); stream completed');
-        break;
-      }
-
-      // Fire the lazy first-output hook before the first event reaches the
-      // encoder so a caller can open a resource (e.g. the implicit step) that
-      // must bracket the output. An empty / errored / pre-output-cancelled
-      // stream never reaches here, so the hook (and any resource it opens)
-      // never fires. The triggering event may itself be a codec `drop` type
-      // that publishes nothing — the opened resource may bracket zero writes.
-      if (!firstWriteDone) {
-        firstWriteDone = true;
-        if (beforeFirstWrite) await beforeFirstWrite();
-      }
-
-      await encoder.publishOutput(value);
     }
   } catch (error) {
-    reason = 'error';
-    caughtError = error instanceof Error ? error : new Error(String(error));
-    // The step writer logs this failure at error with the run it belongs to.
-    // Kept at debug so one stream failure does not produce two error lines.
-    logger?.debug('pipeStream(); stream error', { error: caughtError.message });
-    try {
-      await encoder.close();
-    } catch {
-      // Best-effort: encoder close in the error path may also fail
-      // (e.g. channel disconnected). The original error is preserved in
-      // the StreamResult reason ("error").
-    }
+    // The source threw on read.
+    fail('source failed', error);
   } finally {
     abort.cleanup();
     puller.release();
   }
 
-  return { reason, error: caughtError };
+  try {
+    await writer.flush();
+  } catch (error) {
+    // A repair failed: appends that were never acknowledged could not be
+    // replaced, so the wire is missing content. An earlier failure stays the
+    // pipe's error and this one is logged. Otherwise the repair failure is the
+    // rejection, cancelled or not: the caller that cancelled knows it did, and
+    // what it does not know is that the channel is missing text.
+    if (failure === undefined) {
+      fail('repair failed', error);
+    } else {
+      logger?.error('pipeStream(); repair after failure also failed', { error: errorMessage(error) });
+    }
+  }
+
+  if (failure !== undefined) throw failure;
+  if (cancelled) throw cancelledError();
+  logger?.debug('pipeStream(); finished', { serial });
+  return { serial };
 };

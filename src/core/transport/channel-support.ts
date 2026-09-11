@@ -1,16 +1,7 @@
 /**
- * Shared channel lifecycle plumbing.
- *
- * Both transports gate their writes on `connect()` having run and being open,
- * and both watch the channel for continuity loss with the same detection rule
- * and error shape. These helpers own that common machinery so the two cannot
- * drift on the connection guard, the closed-state error, or — most importantly
- * — the continuity-loss predicate, which encodes channel protocol semantics
- * (Spec AIT-CT19 / AIT-ST12).
- *
- * Only the reaction to a loss differs, so {@link ContinuityWatcher} takes it as
- * a callback: the agent aborts its registered runs, the client drains its
- * in-flight waiters.
+ * Channel lifecycle plumbing the transport is built from: the subscribe-then-
+ * attach step, the closed-state error, and the continuity watcher that turns a
+ * channel state change into a discontinuity report.
  */
 
 import * as Ably from 'ably';
@@ -20,35 +11,27 @@ import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 
 /**
- * Subscribe a transport's listener to its channel and attach the channel. Both
- * transports cache the returned promise as their connect guard, so this is the
- * single place the subscribe-and-attach step — and its failure shape — is
- * defined.
+ * Subscribe a listener to a channel and attach it.
  *
  * `subscribe()` is followed by an explicit `attach()`: `subscribe()` initiates
- * the implicit attach-on-subscribe (RTL7g — subscribe before attach), but its
+ * the implicit attach-on-subscribe (RTL7g, subscribe before attach), but its
  * promise does not reliably resolve only once the channel reaches ATTACHED
- * (e.g. when the implicit attach is interrupted by a rapid mount/unmount/remount
- * cycle, it can resolve with the channel still INITIALIZED). The transport's write
- * guard requires the channel to be ATTACHED/ATTACHING by the time `connect()`
- * resolves, so `attach()` (idempotent — a no-op when already attaching/attached)
- * makes that guarantee hold. On success logs at debug; on failure builds a
- * `SessionSubscriptionFailed`, logs at error, hands it to `onError`, and rejects
- * with it.
+ * (when the implicit attach is interrupted by a rapid mount/unmount/remount
+ * cycle it can resolve with the channel still INITIALIZED). `attach()` is
+ * idempotent, a no-op when already attaching or attached, so it makes the
+ * guarantee hold.
  *
  * Retry-safe: `subscribe()` registers the listener synchronously, before the
  * implicit attach it triggers can fail, so a failed attempt leaves the listener
  * registered. This unsubscribes the listener first (a no-op on the first
- * attempt) so a `connect()` retry after a failure registers it exactly once
- * rather than accumulating duplicate deliveries.
+ * attempt) so a retry registers it exactly once.
  * @param channel - The transport's channel.
  * @param listener - The message listener to subscribe (also the unsubscribe handle on close).
- * @param logger - Logger for the success/failure lines, or `undefined`.
- * @param component - The owning class name, used as the log message prefix.
- * @param onError - Called with the subscription error before it is thrown
- *   (both transports emit it on their `error` stream).
- * @returns A promise that resolves once subscribed and attached, or rejects with
- *   the `SessionSubscriptionFailed`.
+ * @param logger - Logger for the success and failure lines.
+ * @param component - The owning component's name, used as the log message prefix.
+ * @param onError - Called with the wrapped error before it is thrown, so the owner can put it on its error stream.
+ * @returns A promise that resolves once subscribed and attached.
+ * @throws {Ably.ErrorInfo} `SessionSubscriptionFailed` wrapping the subscribe or attach failure.
  */
 export const subscribeAndAttach = async (
   channel: Ably.RealtimeChannel,
@@ -58,25 +41,18 @@ export const subscribeAndAttach = async (
   onError: (error: Ably.ErrorInfo) => void,
 ): Promise<void> => {
   try {
-    // Drop any registration a prior failed attempt left behind before
-    // re-subscribing, so retries don't double-register the listener.
     channel.unsubscribe(listener);
     await channel.subscribe(listener);
-    // Force the attach: subscribe's implicit attach can resolve with the channel
-    // still INITIALIZED, but the write guard needs it ATTACHED/ATTACHING. attach()
-    // is idempotent, so this is a no-op once the implicit attach has completed.
     await channel.attach();
-    logger?.debug(`${component}.connect(); subscribed and attached`);
+    logger?.debug(`${component}.subscribe(); subscribed and attached`);
   } catch (error) {
-    // One bracket covers both steps; name both so an attach failure isn't
-    // mislabelled as a subscribe failure.
     const errInfo = new Ably.ErrorInfo(
       `unable to subscribe and attach channel; ${errorMessage(error)}`,
       ErrorCode.SessionSubscriptionFailed,
       500,
       errorCause(error),
     );
-    logger?.error(`${component}.connect(); subscribe or attach failed`, {
+    logger?.error(`${component}.subscribe(); subscribe or attach failed`, {
       channel: channel.name,
       error: errorMessage(error),
     });
@@ -87,11 +63,9 @@ export const subscribeAndAttach = async (
 
 /**
  * Wrap a failure thrown while processing an inbound channel message as a
- * `SessionMessageProcessingFailed`, preserving the original as `cause`. Single
- * source of truth for the message-processing error shape both transports
- * surface. Kept distinct from the connect-time `SessionSubscriptionFailed`:
- * the subscription survives this, so the transport stays usable and the fix
- * is in the handler.
+ * `SessionMessageProcessingFailed`, preserving the original as `cause`. Kept
+ * distinct from `SessionSubscriptionFailed`: the subscription survives this,
+ * so the transport stays usable and the fix is in the codec or the handler.
  * @param error - The thrown value.
  * @returns The wrapped error.
  */
@@ -104,157 +78,18 @@ export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
   );
 
 /**
- * Invoke a caller's per-page progress callback inside an error bracket. The
- * callback reports progress and nothing more, so a throw from it is logged and
- * the walk carries on: failing the scan it is reporting on would turn a
- * heartbeat bug into a lost history read, and there is no error surface a
- * progress-only callback belongs on. Every history walk reports through here so
- * the isolation cannot drift between them.
- * @param onPage - The caller's callback, or undefined when none was supplied.
- * @param site - The reporting walk's name, for the log line.
- * @param logger - Optional logger for the throw.
- */
-export const reportPage = (onPage: (() => void) | undefined, site: string, logger?: Logger): void => {
-  if (!onPage) return;
-  try {
-    onPage();
-  } catch (error) {
-    logger?.error('reportPage(); onPage callback threw', { site, error: errorMessage(error) });
-  }
-};
-
-/**
- * Single-flight connection guard shared by both transports. Owns the connect
- * promise and the last connect failure so the client and agent transports cannot
- * drift on the retry-after-failure semantics or the write-guard error shapes.
- *
- * A successful or in-flight connect is cached and returned to every caller, so
- * `connect()` is idempotent. A FAILED connect is deliberately NOT cached: the
- * promise is cleared so a subsequent `connect()` retries the subscribe/attach
- * against a channel that may since have recovered. The failure is retained so a
- * write awaited through {@link ConnectGuard.requireConnected} surfaces the real
- * cause rather than a stale rejection, and tells the caller to reconnect.
- */
-export class ConnectGuard {
-  /** The in-flight or successfully-settled connect promise; cleared on failure. */
-  private _promise: Promise<void> | undefined;
-  /** The most recent connect failure, retained after the promise is cleared. */
-  private _lastError: Ably.ErrorInfo | undefined;
-  /** Whether `connect()` has ever started an attempt (stays true after a failure). */
-  private _attempted = false;
-
-  /**
-   * Whether `connect()` has ever been called. Stays true after a failed attempt
-   * (which clears the connect promise), so `close()` can gate the
-   * unsubscribe/detach that the attempt's `subscribe()` set up even when the
-   * attach that followed it failed.
-   * @returns True once a connect attempt has started.
-   */
-  get attempted(): boolean {
-    return this._attempted;
-  }
-
-  /**
-   * Return the in-flight/successful connect promise, or start a fresh attempt
-   * via `attempt`. Single-flight: concurrent and repeat calls share one attempt.
-   * A rejected attempt is not cached (the next call retries) but its rejection
-   * still propagates, so the caller of `connect()` observes the failure.
-   * @param attempt - Runs the subscribe/attach; invoked only when no attempt is held.
-   * @returns The shared connect promise.
-   */
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- return the cached promise by reference, not a fresh wrapper
-  connect(attempt: () => Promise<void>): Promise<void> {
-    if (this._promise) return this._promise;
-    this._attempted = true;
-    this._promise = this._attempt(attempt);
-    return this._promise;
-  }
-
-  private async _attempt(attempt: () => Promise<void>): Promise<void> {
-    try {
-      await attempt();
-      this._lastError = undefined;
-    } catch (error) {
-      // Do not cache the rejection: clear the promise so a later connect()
-      // retries, and keep the cause so requireConnected() can surface it.
-      this._promise = undefined;
-      this._lastError =
-        errorCause(error) ?? new Ably.ErrorInfo(errorMessage(error), ErrorCode.SessionSubscriptionFailed, 500);
-      throw error;
-    }
-  }
-
-  /**
-   * The write guard: `await` this before any write. Resolves once connected.
-   * Rejects with `InvalidArgument` when `connect()` has never been called; when a
-   * prior `connect()` failed, rejects with the real failure (as `cause`) wrapped
-   * in guidance to call `connect()` again.
-   * @param method - The method name being guarded, for the error message.
-   * @returns A promise that resolves once connected.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when never connected, or the
-   *   wrapped connect failure when a prior attempt failed.
-   */
-  async requireConnected(method: string): Promise<void> {
-    const promise = this._promise;
-    if (promise) {
-      try {
-        await promise;
-        return;
-      } catch {
-        // The attempt rejected; _attempt() recorded _lastError before this
-        // propagated, so fall through to surface the wrapped guidance.
-      }
-    }
-    if (this._lastError) {
-      throw new Ably.ErrorInfo(
-        `unable to ${method}; connect() failed, call connect() again to retry; ${this._lastError.message}`,
-        this._lastError.code,
-        this._lastError.statusCode,
-        this._lastError,
-      );
-    }
-    throw new Ably.ErrorInfo(
-      `unable to ${method}; connect() must be called before ${method}()`,
-      ErrorCode.InvalidArgument,
-      400,
-    );
-  }
-}
-
-/**
- * Build the terminal-state error every post-`close()` call on either transport
- * rejects with. One definition so the two cannot drift on the code, status or
- * wording a consumer switches on.
- * @param method - The method name being guarded, named in the error message.
+ * Build the error every call on a closed transport throws.
+ * @param method - The method name, named in the error message.
  * @returns The error.
  */
 export const closedError = (method: string): Ably.ErrorInfo =>
   new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
 
 /**
- * Guard a transport verb: throw once closed, and otherwise require a
- * successful `connect()` (the connect guard supplies the retry guidance on a
- * failed one). The caller passes its own closed flag, which it also reads on
- * paths that have nothing to do with connecting.
- * @param closed - Whether the calling transport has been closed.
- * @param guard - The calling transport's connect guard.
- * @param method - The method name being guarded, named in the error message.
- * @returns A promise that resolves once the verb may proceed.
- * @throws {Ably.ErrorInfo} `SessionClosed` when closed, or the connect guard's
- *   error when `connect()` was never called or failed.
- */
-export const requireOpen = async (closed: boolean, guard: ConnectGuard, method: string): Promise<void> => {
-  if (closed) throw closedError(method);
-  await guard.requireConnected(method);
-};
-
-/**
- * Whether a channel state change breaks message continuity:
- * - FAILED, SUSPENDED, DETACHED — no more messages expected (or a gap)
- * - ATTACHED with `resumed: false` (an UPDATE) — messages were lost
- *
- * The initial attach (ATTACHED with no prior attach) is the caller's concern
- * and is not handled here.
+ * Whether a channel state change breaks message continuity: FAILED, SUSPENDED
+ * or DETACHED, where no more messages are expected, or ATTACHED with
+ * `resumed: false`, where messages were lost. The initial attach is the
+ * watcher's concern and is not handled here.
  * @param stateChange - The channel state change to classify.
  * @returns True when continuity was lost.
  */
@@ -266,61 +101,32 @@ export const isContinuityLost = (stateChange: Ably.ChannelStateChange): boolean 
 };
 
 /**
- * Build the `SessionContinuityNotGuaranteed` error for a continuity-breaking state
- * change, attaching the state change's `reason` as `cause`.
- * @param stateChange - The continuity-breaking state change.
- * @param verb - The operation that can no longer proceed, for the
- *   `unable to <verb>; ...` message (e.g. "deliver events", "continue").
- * @returns The continuity-loss error.
- */
-export const continuityLostError = (stateChange: Ably.ChannelStateChange, verb: string): Ably.ErrorInfo => {
-  const { current } = stateChange;
-  return new Ably.ErrorInfo(
-    `unable to ${verb}; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
-    ErrorCode.SessionContinuityNotGuaranteed,
-    500,
-    stateChange.reason,
-  );
-};
-
-/**
  * Watch a channel for continuity loss and report each one to the owner.
  *
- * Owns the parts both transports had verbatim: the listener registration, the
- * already-attached seed, the pre-attach gate, and the removal on close. Only
- * the reaction differs between them, so that is the injected callback — the
- * agent aborts its registered runs, the client drains its in-flight waiters.
+ * Registers its listener on construction so a retried attach cannot report a
+ * loss once per attempt, seeds from an already-attached channel because
+ * attaching an attached channel emits no state change, and ignores state
+ * changes before the first attach, which are the channel coming up.
  */
 export class ContinuityWatcher {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _onLoss: (stateChange: Ably.ChannelStateChange) => void;
   /** One bound reference, so `dispose()` removes the same listener it registered. */
   private readonly _listener: Ably.channelEventCallback;
-  /**
-   * Whether the channel has attached at least once. State changes before the
-   * first attach are the transport coming up, not continuity being lost.
-   */
   private _hasAttachedOnce: boolean;
   private _disposed = false;
 
   /**
    * @param channel - The transport's channel.
-   * @param onLoss - Called with each continuity-breaking state change, after
-   *   the pre-attach gate. Never called once disposed.
+   * @param onLoss - Called with each continuity-breaking state change after the first attach. Never called once disposed.
    */
   constructor(channel: Ably.RealtimeChannel, onLoss: (stateChange: Ably.ChannelStateChange) => void) {
     this._channel = channel;
     this._onLoss = onLoss;
-    // A caller-owned channel can already be ATTACHED, and attaching an
-    // attached channel emits no state change — seed from the current state or
-    // the first continuity loss is swallowed as "not attached yet".
     this._hasAttachedOnce = channel.state === 'attached';
     this._listener = (stateChange: Ably.ChannelStateChange) => {
       this._handle(stateChange);
     };
-    // Registered on construction, not in connect(): connect() is idempotent
-    // and retryable, and ably-js keeps listeners in an array with no dedup, so
-    // a retried connect would report each continuity loss once per attempt.
     channel.on(this._listener);
   }
 

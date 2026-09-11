@@ -1,103 +1,110 @@
-/**
- * HistoryPager unit tests — the per-transport pager over the shared
- * `walkHistoryBatch`. The walk contract itself is pinned in
- * history-walk.test.ts; these tests cover what the pager owns: the cursor
- * opens lazily on the first call (no channel traffic before it), each call
- * returns the next older slice, concurrent calls serialise onto one cursor,
- * and a decode failure routes to `onDecodeError` without failing the batch.
- */
-
 import type * as Ably from 'ably';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { HistoryPager } from '../../../src/core/transport/history-pager.js';
+import type { Delivery } from '../../../src/core/codec/index.js';
+import { openHistoryWalk } from '../../../src/core/transport/history-pager.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockChannel } from '../../helper/mock-channel.js';
-import type { TestInput, TestOutput } from '../../helper/name-aware-decoder.js';
-import { createNameAwareDecoder, outputTexts } from '../../helper/name-aware-decoder.js';
-import { boomMsg, outputMsg } from '../../helper/wire-messages.js';
 
-describe('HistoryPager', () => {
-  it('opens the cursor lazily and pages one slice per call', async () => {
-    const channel = createMockChannel([[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]]);
-    const pager = new HistoryPager<TestInput, TestOutput>({
-      channel,
-      pageSize: 10,
-      decoder: createNameAwareDecoder(),
-    });
+const wire = (serial: string): Ably.InboundMessage =>
+  // CAST: a minimal stub with the fields the walk and the fixture decode read.
+  ({
+    action: 'message.create',
+    serial,
+    data: serial,
+    extras: { ai: { type: 'note' } },
+    version: {},
+  }) as Ably.InboundMessage;
 
-    // Construction touches nothing — the cursor opens on the first call.
-    expect(channel.history).not.toHaveBeenCalled();
+/**
+ * A delivery fixture that decodes every message to its serial, the one named
+ * `skip` to no event, and the one named `twin` to two events.
+ * @param message - The history message.
+ * @returns The deliveries.
+ */
+const toDeliveries = (message: Ably.InboundMessage): Delivery<string>[] => {
+  if (message.serial === 'skip') return [{ event: undefined, message }];
+  if (message.serial === 'twin')
+    return [
+      { event: 'twin-a', message },
+      { event: 'twin-b', message },
+    ];
+  return [{ event: message.serial, message }];
+};
 
-    const first = await pager.next();
-    expect(channel.history).toHaveBeenCalledTimes(1);
-    expect(outputTexts(first.events)).toEqual(['two']);
-    expect(first.exhausted).toBe(false);
+const events = (page: { items: Delivery<string>[] }): (string | undefined)[] => page.items.map((d) => d.event);
 
-    const second = await pager.next();
-    expect(outputTexts(second.events)).toEqual(['one']);
-    expect(second.exhausted).toBe(true);
+describe('openHistoryWalk', () => {
+  it('reads the newest page, oldest first within it, and leads to the older pages through next()', async () => {
+    const channel = createMockChannel([
+      [wire('s6'), wire('s5')],
+      [wire('s4'), wire('s3')],
+      [wire('s2'), wire('s1')],
+    ]);
+
+    const first = await openHistoryWalk({ channel, limit: 2, toDeliveries });
+    expect(events(first)).toEqual(['s5', 's6']);
+    expect(first.hasNext).toBe(true);
+
+    const second = await first.next();
+    expect(events(second)).toEqual(['s3', 's4']);
+    expect(second.hasNext).toBe(true);
+
+    const third = await second.next();
+    expect(events(third)).toEqual(['s1', 's2']);
+    expect(third.hasNext).toBe(false);
   });
 
-  it('serialises concurrent calls onto the one cursor', async () => {
-    const channel = createMockChannel([[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]]);
-    const pager = new HistoryPager<TestInput, TestOutput>({
-      channel,
-      pageSize: 10,
-      decoder: createNameAwareDecoder(),
-    });
-
-    const [first, second] = await Promise.all([pager.next(), pager.next()]);
-
-    // No interleaving: the first call gets the newer slice whole, the second
-    // the older one.
-    expect(outputTexts(first.events)).toEqual(['two']);
-    expect(outputTexts(second.events)).toEqual(['one']);
+  it('reads until the attach point with the given page size', async () => {
+    const channel = createMockChannel([[wire('s1')]]);
+    await openHistoryWalk({ channel, limit: 25, toDeliveries });
+    expect(channel.history).toHaveBeenCalledWith({ limit: 25, untilAttach: true });
   });
 
-  it('rejects an aborted call before opening the cursor, and stays walkable after', async () => {
-    const channel = createMockChannel([[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]]);
-    const pager = new HistoryPager<TestInput, TestOutput>({ channel, pageSize: 10, decoder: createNameAwareDecoder() });
+  it('carries a message the codec has nothing for, with no event', async () => {
+    const channel = createMockChannel([[wire('s2'), wire('skip'), wire('s1')]]);
+    const page = await openHistoryWalk({ channel, limit: 3, toDeliveries });
+    expect(events(page)).toEqual(['s1', undefined, 's2']);
+  });
 
-    await expect(pager.next({ signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
-      ErrorCode.OperationCancelled,
+  it('lists one delivery per event when a message decodes to several', async () => {
+    const channel = createMockChannel([[wire('s2'), wire('twin'), wire('s1')]]);
+    const page = await openHistoryWalk({ channel, limit: 3, toDeliveries });
+    expect(events(page)).toEqual(['s1', 'twin-a', 'twin-b', 's2']);
+  });
+
+  it('resolves an empty page with no next once past the end', async () => {
+    const channel = createMockChannel([[wire('s1')]]);
+    const first = await openHistoryWalk({ channel, limit: 1, toDeliveries });
+    expect(first.hasNext).toBe(false);
+    const past = await first.next();
+    expect(past.items).toEqual([]);
+    expect(past.hasNext).toBe(false);
+  });
+
+  it('opens a new walk at the channel’s attach point on each call', async () => {
+    const channel = createMockChannel([[wire('s2')], [wire('s1')]]);
+    const a = await openHistoryWalk({ channel, limit: 1, toDeliveries });
+    const b = await openHistoryWalk({ channel, limit: 1, toDeliveries });
+    expect(events(a)).toEqual(['s2']);
+    expect(events(b)).toEqual(['s2']);
+    expect(channel.history).toHaveBeenCalledTimes(2);
+  });
+
+  it('serialises concurrent next() calls on one page so pages come back in order', async () => {
+    const channel = createMockChannel([[wire('s3')], [wire('s2')], [wire('s1')]]);
+    const first = await openHistoryWalk({ channel, limit: 1, toDeliveries });
+    const [a, b] = await Promise.all([first.next(), first.next()]);
+    expect(events(a)).toEqual(['s2']);
+    expect(events(b)).toEqual(['s1']);
+  });
+
+  it('rejects with SessionHistoryFetchFailed when the first page cannot be read', async () => {
+    const channel = createMockChannel([[wire('s1')]]);
+    channel.history.mockRejectedValue(new Error('history down'));
+    await expect(openHistoryWalk({ channel, limit: 1, toDeliveries })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.SessionHistoryFetchFailed,
     );
-    // Checked before the attach, so an aborted call costs no page fetch — and
-    // the signal is never bound to the shared cursor, which would wedge a
-    // later call's `hasNext()` at false.
-    expect(channel.history).not.toHaveBeenCalled();
-
-    const batch = await pager.next();
-    expect(outputTexts(batch.events)).toEqual(['two']);
-  });
-
-  it('isolates a follower from the link ahead of it failing', async () => {
-    const channel = createMockChannel([[outputMsg('s1', 'one')]]);
-    const pager = new HistoryPager<TestInput, TestOutput>({ channel, pageSize: 10, decoder: createNameAwareDecoder() });
-
-    // The chain exists so one caller walks at a time; a link's failure is its
-    // own caller's to observe, and must not reject the caller behind it.
-    const failing = pager.next({ signal: AbortSignal.abort() });
-    const follower = pager.next();
-
-    await expect(failing).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
-    const batch = await follower;
-    expect(outputTexts(batch.events)).toEqual(['one']);
-  });
-
-  it('routes a decode failure to onDecodeError and keeps the rest of the batch', async () => {
-    const channel = createMockChannel([[outputMsg('s2', 'kept'), boomMsg('s1')]]);
-    const errors: Ably.ErrorInfo[] = [];
-    const pager = new HistoryPager<TestInput, TestOutput>({
-      channel,
-      pageSize: 10,
-      decoder: createNameAwareDecoder(),
-      onDecodeError: (err) => errors.push(err),
-    });
-
-    const batch = await pager.next();
-
-    expect(outputTexts(batch.events)).toEqual(['kept']);
-    expect(errors).toHaveLength(1);
-  });
+    expect(vi.mocked(channel.history).mock.calls.length).toBeGreaterThan(1);
+  }, 20_000);
 });

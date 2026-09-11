@@ -1,12 +1,20 @@
 /** Shared mock Ably channel and paginated-history fakes for transport unit tests. */
 
 import type * as Ably from 'ably';
-import { vi } from 'vitest';
+import { type Mock, vi } from 'vitest';
 
 /** The mock surface a test drives and asserts on, alongside the channel cast. */
 export interface MockChannel {
   /** Records the message and resolves with a deterministic per-publish serial (`serial-<n>`). */
   publish: ReturnType<typeof vi.fn>;
+  /** Records the append into {@link MockChannel.appendCalls} and resolves. */
+  appendMessage: Mock<(message: Ably.Message) => Promise<Ably.UpdateDeleteResult>>;
+  /** Records the update into {@link MockChannel.updateCalls} and resolves. */
+  updateMessage: Mock<(message: Ably.Message) => Promise<Ably.UpdateDeleteResult>>;
+  /** Every message `appendMessage` received, in order. */
+  appendCalls: Ably.Message[];
+  /** Every message `updateMessage` received, in order. */
+  updateCalls: Ably.Message[];
   /** Captures the listener into {@link MockChannel.listener}. */
   subscribe: ReturnType<typeof vi.fn>;
   /** Clears {@link MockChannel.listener} when called with the captured listener. */
@@ -61,7 +69,21 @@ export const createMockChannel = (pages: Ably.InboundMessage[][] = []): MockChan
   const stateListeners = new Set<Ably.channelEventCallback>();
   const mock: MockChannel = {
     publishCalls: [],
+    appendCalls: [],
+    updateCalls: [],
     publishNames: () => mock.publishCalls.map((m) => m.name ?? ''),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+    appendMessage: vi.fn(async (msg: Ably.Message): Promise<Ably.UpdateDeleteResult> => {
+      mock.appendCalls.push(msg);
+      // CAST: the writer reads nothing off the result.
+      return {} as Ably.UpdateDeleteResult;
+    }),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+    updateMessage: vi.fn(async (msg: Ably.Message): Promise<Ably.UpdateDeleteResult> => {
+      mock.updateCalls.push(msg);
+      // CAST: the writer reads nothing off the result.
+      return {} as Ably.UpdateDeleteResult;
+    }),
     state: 'attached',
     stateListeners,
     on: vi.fn((listener: Ably.channelEventCallback): void => {

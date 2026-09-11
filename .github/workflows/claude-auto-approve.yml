@@ -1,14 +1,19 @@
 name: Claude Auto-Approve
 
-# Runs once per PR at the moment it becomes review-ready (opened non-draft,
-# or marked ready from draft). Claude reads the diff, decides whether the PR
-# is low-risk enough to approve without human review, and posts a single
-# review carrying the verdict — approving if low-risk, otherwise a stateless
-# comment-review.
+# Two jobs, in order.
+#
+# `review` gates the PR on the rules in .claude/rules/ and CLAUDE.md that have
+# one right answer, and reports whether the change makes a decision that should
+# have been recorded in a DR first. It runs on every push, because a gate a
+# fix cannot clear is not a gate.
+#
+# `auto-approve` then decides whether the PR is low-risk enough to approve
+# without human review. It runs only at the moment the PR becomes review-ready,
+# and only when the gate passed.
 
 on:
   pull_request:
-    types: [opened, ready_for_review]
+    types: [opened, ready_for_review, synchronize]
 
 permissions:
   contents: read
@@ -21,9 +26,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  auto-approve:
+  review:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     # Fork PRs are skipped: this is a public repo, so a pull_request run from a
     # fork has no access to the secrets below and could only ever fail.
     if: >-
@@ -47,6 +52,95 @@ jobs:
             exit 1
           fi
 
+      # Both gates diff two refs rather than the checkout, so they need the
+      # history either end of the range: a shallow clone makes them exit 2.
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Generate GitHub App Token
+        id: generate-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.CLAUDE_APP_ID }}
+          private-key: ${{ secrets.CLAUDE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Run the rules gate
+        uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.generate-token.outputs.token }}
+          allowed_bots: 'dependabot[bot]'
+          prompt: |
+            Read `.claude/skills/code-review-ci/SKILL.md` and carry out every step it describes, against this range:
+
+            - base: `${{ github.event.pull_request.base.sha }}`
+            - head: `${{ github.event.pull_request.head.sha }}`
+
+            Both are supplied, so skip Step 1 and pass both to each script. The checkout is the PR's merge commit, not its head, so never let a script default the head.
+
+            Write the Step 4 report to `/tmp/gate-rules.md`, verdict line first, then the table and the cleared-candidate counts. Write nothing else anywhere, and post nothing to the PR — a later step does that.
+          claude_args: |
+            --max-turns 30
+            --model claude-sonnet-5
+            --allowedTools "Read,Glob,Grep,Write,Bash(bash .claude/skills/code-review-ci/checks.sh:*),Bash(bash .claude/skills/code-review-ci/candidates.sh:*),Bash(git diff:*),Bash(git show:*),Bash(cat:*),Bash(head:*),Bash(wc:*)"
+
+      - name: Run the decision-record gate
+        uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.generate-token.outputs.token }}
+          allowed_bots: 'dependabot[bot]'
+          prompt: |
+            Read `.claude/skills/dr-required/SKILL.md` and carry out every step it describes, for PR #${{ github.event.pull_request.number }} against this range:
+
+            - base: `${{ github.event.pull_request.base.sha }}`
+            - head: `${{ github.event.pull_request.head.sha }}`
+
+            Run the signals script as `PR_NUMBER=${{ github.event.pull_request.number }} bash .claude/skills/dr-required/signals.sh <base> <head>`, once. Both refs are supplied, so skip Step 1.
+
+            Write the Step 5 report to `/tmp/gate-dr.md`, verdict line first. Write nothing else anywhere, and post nothing to the PR — a later step does that.
+          claude_args: |
+            --max-turns 8
+            --model claude-sonnet-5
+            --allowedTools "Write,Bash(bash .claude/skills/dr-required/signals.sh:*),Bash(gh pr view:*),Bash(git rev-parse:*),Bash(git merge-base:*)"
+
+      # Runs even when a gate step failed: a gate that crashed must still say so
+      # on the PR, and must still fail the check rather than leave it green. Not
+      # on cancellation, though — a superseded run has nothing to report.
+      - name: Post the gate report
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          .github/scripts/post-ci-review-comment.sh \
+            "${{ github.event.pull_request.number }}" \
+            /tmp/gate-rules.md \
+            /tmp/gate-dr.md
+
+  auto-approve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: review
+    # Once per PR, at the moment it becomes review-ready — a push re-runs the
+    # gate but does not re-open the approval question. `needs` carries the rest:
+    # a gate that failed, errored, or was skipped skips this job with it.
+    if: >-
+      github.event.action != 'synchronize' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      ANTHROPIC_CUSTOM_HEADERS: 'anthropic-workspace-id: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}'
+    steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -108,6 +202,8 @@ jobs:
             Treat a change to what CI is *allowed to do* as needs-human, however small the diff: a new workflow file, or an edit to a `permissions:` block, a trigger list, the secrets a job reads, or the scopes of a token it mints. The same goes for anything that changes who or what can approve, merge, or publish — including this auto-approve workflow and the scripts it calls. For this category the test is not whether the change is small, sound, or easy to revert; it is whether it widens what automation can do with no human in the loop.
 
             For dependabot PRs specifically: bumps of dev-only, test-only, or type-definition packages are low-risk. For other things, have a look around how the dependency is used in the repo and make a judgement call.
+
+            A gate has already reviewed this PR against the repo's rules and passed it. That is the only thing it tells you: it checks a fixed list of mechanical rules, not whether the change is sound, so it is not evidence either way for the question you are answering here.
 
             ## Output
 

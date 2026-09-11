@@ -16,6 +16,12 @@
       "import": "./dist/ably-ai-transport.js",
       "require": "./dist/ably-ai-transport.umd.cjs"
     },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "react-native": "./dist/react/ably-ai-transport-react.umd.cjs",
+      "import": "./dist/react/ably-ai-transport-react.js",
+      "require": "./dist/react/ably-ai-transport-react.umd.cjs"
+    },
     "./vercel": {
       "types": "./dist/vercel/index.d.ts",
       "react-native": "./dist/vercel/ably-ai-transport-vercel.umd.cjs",
@@ -31,9 +37,10 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:vercel && pnpm run build:openai",
+    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:openai",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
+    "build:react": "vite build --config ./src/react/vite.config.ts --emptyOutDir",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
     "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "prepare": "pnpm run build",

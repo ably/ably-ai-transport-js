@@ -213,7 +213,10 @@ report_casts() {
 cast_candidates < "$WORK/added-sdk" | report_casts BLOCKER
 
 ## 5. No new spec-point references (CLAUDE.md: the specification is not maintained).
-grep -E '// Spec: AIT-' "$WORK/added" \
+## Scoped to the code trees. Outside them the pattern appears in prose about the
+## rule rather than as a reference — this script's own text among it.
+grep -E '^(src|test|examples|demo)/' "$WORK/added" \
+  | grep -E '// Spec: AIT-' \
   | report_new_lines BLOCKER new-spec-ref \
     'new `// Spec: AIT-*` reference; CLAUDE.md states the specification is stale and forbids adding new spec references'
 

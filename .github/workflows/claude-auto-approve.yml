@@ -70,6 +70,13 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
 
+      # The action replaces `.claude/` with the base branch's copy before Claude
+      # starts, deleting whatever the base does not have, because the CLI reads
+      # settings and hooks from there and a PR head is untrusted. The gate lives
+      # under `.claude/skills/`, so it has to come out of git instead.
+      - name: Materialise the gate
+        run: .github/scripts/materialise-gate.sh "${{ github.event.pull_request.head.sha }}"
+
       - name: Run the rules gate
         uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
         env:
@@ -79,20 +86,25 @@ jobs:
           github_token: ${{ steps.generate-token.outputs.token }}
           allowed_bots: 'dependabot[bot]'
           prompt: |
-            Read `.claude/skills/code-review-ci/SKILL.md` and carry out every step it describes, against this range:
+            Read `.gate/.claude/skills/code-review-ci/SKILL.md` and carry out every step it describes, against this range:
 
             - base: `${{ github.event.pull_request.base.sha }}`
             - head: `${{ github.event.pull_request.head.sha }}`
 
             Both are supplied, so skip Step 1 and pass both to each script. The checkout is the PR's merge commit, not its head, so never let a script default the head.
 
-            Write the Step 4 report to `/tmp/gate-rules.md`, verdict line first, then the table and the cleared-candidate counts. Write nothing else anywhere, and post nothing to the PR — a later step does that.
+            The gate sits under `.gate/`, so prefix every `.claude/skills/...` path the document names with `.gate/` — the two scripts included. An earlier step has already checked they are all there; if a read or a run still fails, report that rather than searching for them elsewhere.
+
+            Write the Step 4 report to `.gate/report/rules.md`, verdict line first, then the table and the cleared-candidate counts. Write nothing else anywhere, and post nothing to the PR — a later step does that.
           claude_args: |
             --max-turns 30
             --model claude-sonnet-5
-            --allowedTools "Read,Glob,Grep,Write,Bash(bash .claude/skills/code-review-ci/checks.sh:*),Bash(bash .claude/skills/code-review-ci/candidates.sh:*),Bash(git diff:*),Bash(git show:*),Bash(cat:*),Bash(head:*),Bash(wc:*)"
+            --allowedTools "Read,Glob,Grep,Write,Bash(bash .gate/.claude/skills/code-review-ci/checks.sh:*),Bash(bash .gate/.claude/skills/code-review-ci/candidates.sh:*),Bash(git diff:*),Bash(git show:*),Bash(cat:*),Bash(head:*),Bash(wc:*),Bash(ls:*)"
 
+      # Not gated on the rules gate having succeeded: the two answer unrelated
+      # questions, and a crash in one should not silently drop the other.
       - name: Run the decision-record gate
+        if: ${{ !cancelled() }}
         uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}
@@ -101,18 +113,21 @@ jobs:
           github_token: ${{ steps.generate-token.outputs.token }}
           allowed_bots: 'dependabot[bot]'
           prompt: |
-            Read `.claude/skills/dr-required/SKILL.md` and carry out every step it describes, for PR #${{ github.event.pull_request.number }} against this range:
+            Read `.gate/.claude/skills/dr-required/SKILL.md` and carry out every step it describes, for PR #${{ github.event.pull_request.number }}.
 
-            - base: `${{ github.event.pull_request.base.sha }}`
-            - head: `${{ github.event.pull_request.head.sha }}`
+            Run the signals script, once, exactly as:
 
-            Run the signals script as `PR_NUMBER=${{ github.event.pull_request.number }} bash .claude/skills/dr-required/signals.sh <base> <head>`, once. Both refs are supplied, so skip Step 1.
+            ```
+            PR_NUMBER=${{ github.event.pull_request.number }} bash .gate/.claude/skills/dr-required/signals.sh ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+            ```
 
-            Write the Step 5 report to `/tmp/gate-dr.md`, verdict line first. Write nothing else anywhere, and post nothing to the PR — a later step does that.
+            Both refs are supplied there, so skip Step 1. An earlier step has already checked the script is at that path; if it still fails, report that rather than searching for it elsewhere.
+
+            Write the Step 5 report to `.gate/report/dr.md`, verdict line first. Write nothing else anywhere, and post nothing to the PR — a later step does that.
           claude_args: |
             --max-turns 8
             --model claude-sonnet-5
-            --allowedTools "Write,Bash(bash .claude/skills/dr-required/signals.sh:*),Bash(gh pr view:*),Bash(git rev-parse:*),Bash(git merge-base:*)"
+            --allowedTools "Read,Write,Bash(bash .gate/.claude/skills/dr-required/signals.sh:*),Bash(gh pr view:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(ls:*)"
 
       # Runs even when a gate step failed: a gate that crashed must still say so
       # on the PR, and must still fail the check rather than leave it green. Not
@@ -124,8 +139,8 @@ jobs:
         run: |
           .github/scripts/post-ci-review-comment.sh \
             "${{ github.event.pull_request.number }}" \
-            /tmp/gate-rules.md \
-            /tmp/gate-dr.md
+            .gate/report/rules.md \
+            .gate/report/dr.md
 
   auto-approve:
     runs-on: ubuntu-latest

@@ -96,6 +96,8 @@ jobs:
             The gate sits under `.gate/`, so prefix every `.claude/skills/...` path the document names with `.gate/` — the two scripts included. An earlier step has already checked they are all there; if a read or a run still fails, report that rather than searching for them elsewhere.
 
             Write the Step 4 report to `.gate/report/rules.md`, verdict line first, then the table and the cleared-candidate counts. Write nothing else anywhere, and post nothing to the PR — a later step does that.
+
+            Writing that file is the only way this gate reports anything; a run that ends without it reads as a crash. So write it whatever happens, including when you could not run a script or complete a step — `VERDICT: ERROR` with what stopped you, in that case.
           claude_args: |
             --max-turns 30
             --model claude-sonnet-5
@@ -108,6 +110,11 @@ jobs:
         uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          # The script reads the PR number from the environment. Setting it here
+          # rather than in front of the command keeps the command a literal
+          # prefix of the `allowedTools` entry below, which is what that entry
+          # matches on — a `VAR=x` in front of it does not match and is denied.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.generate-token.outputs.token }}
@@ -118,12 +125,16 @@ jobs:
             Run the signals script, once, exactly as:
 
             ```
-            PR_NUMBER=${{ github.event.pull_request.number }} bash .gate/.claude/skills/dr-required/signals.sh ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+            bash .gate/.claude/skills/dr-required/signals.sh ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
             ```
+
+            `PR_NUMBER` is already in the environment, so do not set it on the command line — prefixing the command with an assignment puts it outside what you are permitted to run.
 
             Both refs are supplied there, so skip Step 1. An earlier step has already checked the script is at that path; if it still fails, report that rather than searching for it elsewhere.
 
             Write the Step 5 report to `.gate/report/dr.md`, verdict line first. Write nothing else anywhere, and post nothing to the PR — a later step does that.
+
+            Writing that file is the only way this gate reports anything; a run that ends without it reads as a crash. So write it whatever happens, including when you could not run the script or complete a step — `VERDICT: ERROR` with what stopped you, in that case.
           claude_args: |
             --max-turns 8
             --model claude-sonnet-5

@@ -12,10 +12,26 @@ This is a gate, not a style review. It answers one question: if this DR were
 approved as written, could an engineer implement it — and could a reviewer hold
 it in their head long enough to disagree with it?
 
-"Implementable" is judged against the code, not against the document's own
-account of the code. A DR reads as complete far more often than it is, because
-the symbols it leans on are ones the reader is assumed to know. Resolving them
-is what separates a specific DR from a fluent one.
+A finding has to be one of three things: a **gap** in the design, a request for
+**clarity** on how a stated mechanism would actually work, or a **conflict** —
+between two parts of the document, or between the document and an external
+reality it describes. Anything else is out of scope, however true.
+
+That boundary is what keeps this a design review and not a code review of a
+document. The pull runs the other way, because a DR reads as complete far more
+often than it is: the symbols it leans on are ones the reader is assumed to
+know, and resolving them is what separates a specific DR from a fluent one. So
+the code is read — but for two purposes only:
+
+- to **test a claim the DR makes** about what exists today, because a decision
+  argued from a false premise gives its reviewer no way to check it;
+- to show the code **already does what the DR is re-deriving**, because citing a
+  working mechanism makes the proposal shorter and the design surer.
+
+Read for any other purpose, the code produces findings an author is right to
+reject. A DR may rename, replace and delete what exists now. That a proposed
+name is already taken, or that a proposed type differs from the shipped one, is
+not a defect in the decision.
 
 ## Scope, and what runs this instead
 
@@ -24,21 +40,30 @@ mandated pass before human review. It covers house style, the Confluence
 template, product-principle questions, and the voice/anti-pattern rubric. **Do
 not reimplement any of that here.**
 
-This skill adds the checks that skill does not make: mechanical completeness, a
-size gate with a hard fail, ordering, decision leakage, consistency, dependency
-direction, derivability of an implementation plan, and verification against the
+This skill adds the checks that skill does not make: a size gate with a hard
+fail, ordering, decision leakage, consistency, dependency direction,
+derivability of an implementation plan, and verification against the
 repositories the decision lands in.
 
-Run both. The clearest evidence that the canonical pass has not happened is a
-DR-index comment from automation asking for it — look for one, and say so in
-the report rather than inferring it from leftover placeholders.
+Two things are deliberately outside it.
+
+- **Template and header completeness** — placeholders in the header table, an
+  unset Approver, an empty Outcome. The canonical skill owns these, and a
+  DR-index bot already comments on them unprompted. Where such a comment
+  exists, say in the report that the canonical pass has not happened; do not
+  restate its contents as findings of this gate.
+- **Verification** — whether the DR says how the change will be tested. A
+  design document is not where a test plan is settled, so asking for one is
+  process rather than design.
+
+Run both.
 
 ## Inputs
 
 A DR identifier (`AITDR-019`), a Confluence page ID, or a URL. Given only a
 bare identifier, locate the page with `confluenceSearchPages` or
 `confluenceSearchUsingCql` (`title ~ "AITDR-" AND space = "AI"`); space keys are
-case-sensitive. Run the same sweep to enumerate siblings — checks 6 and 10 need
+case-sensitive. Run the same sweep to enumerate siblings — checks 5 and 8 need
 them.
 
 Fetch, via `callAblyTool`:
@@ -72,7 +97,7 @@ Two surfaces are easy to miss and both routinely decide the verdict:
   from a serial, persist a value, page a backlog — depends on the platform
   repository whether or not it names it.
 - **Adopters.** A DR that changes a public surface has a cost in whatever
-  consumes it. Check 8 cannot be answered from the SDK repo alone.
+  consumes it. Check 7 cannot be answered from the SDK repo alone.
 
 ### 2. Resolve each repository to a local checkout
 
@@ -143,8 +168,8 @@ Replaces the normal report entirely. Do not also emit a verdict.
 Classify every finding as **mechanical** or **substantive** before reporting it.
 
 - **Mechanical** — minutes of work, no bearing on whether the decision is
-  sound: an unfilled Approver field, undirected link labels, a missing
-  identifier on a citation.
+  sound: undirected link labels, a DR cited by description rather than
+  identifier, a sibling missing from the header table.
 - **Substantive** — blocks implementation or defeats review: an undecided wire
   format, contradictory statements, unstated adoption cost, a false premise,
   size.
@@ -155,27 +180,23 @@ with an undecided public surface is a distortion, and it teaches authors to
 ignore the gate. The instruction below not to soften a FAIL has this
 counterpart: do not inflate one either. Both defeat review.
 
+Mechanical findings have a floor as well. Report one only where it could mislead
+an implementer, or leave a reviewer unable to cite the passage they want to
+argue with. Repetition alone clears neither bar — a type block restated in two
+sections helps a reader, and becomes a finding only when the two copies
+**disagree**, which is the consistency check and not a tidiness one. A report
+that sets cosmetic observations beside an undecided wire format reads as a code
+review of the document, and invites the author to discount all of it.
+
 ## The checks
 
-Run all eleven. Each reports PASS, WARN or FAIL with the evidence that decided
+Run all nine. Each reports PASS, WARN or FAIL with the evidence that decided
 it — quote the offending text and say where it sits. A check with no evidence
 quoted is not a finding. Where a check bundles sub-checks, the evidence line
 must name which one fired. Evidence drawn from code cites
 `repo:path/to/file.ts:line`, never a paraphrase of what the code does.
 
-### 1. Header table is real, not placeholder
-
-FAIL if Approver is empty or still an `<ac:placeholder>`, or if Impact or Driver
-is unset. WARN if Contributors, Informed or Related documentation are
-placeholders. Fields the template expects to be empty before the decision closes
-— Outcome Summary, Outcome — are exempt while the DR is DRAFT or IN REVIEW.
-
-Impact carries its own justification in the best DRs — a label plus why, in
-terms of reversibility and cost of being wrong. Note its absence as a WARN.
-
-Mechanical.
-
-### 2. Size and navigability
+### 1. Size and navigability
 
 Count **all prose outside the header table, excluding code blocks and all
 tables**. Report that one number, with the excluded table and code totals
@@ -197,7 +218,7 @@ Navigability, assessed separately and reported in the same row:
 
 Substantive.
 
-### 3. Problem before mechanism, and a decision to review
+### 2. Problem before mechanism, and a decision to review
 
 The first substantive section must frame the problem, and the document must
 contain a decision.
@@ -207,7 +228,7 @@ contain a decision.
   `/problem|background|context/i`. **Exclude the page's own title from this
   test** and apply it to `h2` and below — a title that names the surface being
   decided is good practice, not a defect.
-- WARN if the first substantive section's heading matches *neither* pattern,
+- WARN if the first substantive section's heading matches _neither_ pattern,
   and escalate to FAIL if its prose is mechanism: backticked symbols, method
   calls, type names. A section headed "Preamble" that opens on
   `transport.pipe()` is mechanism-first however it is labelled.
@@ -215,11 +236,11 @@ contain a decision.
   document that describes a decision taken elsewhere is a design note, and
   cannot be reviewed as a DR.
 - WARN if a problem section exists but describes a whole strategic area rather
-  than the constraint forcing *this* decision now.
+  than the constraint forcing _this_ decision now.
 
 Substantive.
 
-### 4. No undecided content inside the decision
+### 3. No undecided content inside the decision
 
 Scan the proposal, recommendation and any API or wire-format sections for
 language that defers a decision the DR is supposed to make. These phrases are
@@ -243,7 +264,7 @@ Two extensions, both of which defeat a naive grep:
   platform can attach from a serial", "until the annotation mechanism lands" —
   follow it and scan the cited section. A decision deferred to a sibling that
   has not made it is still deferred, and this is the commonest way the check is
-  evaded. Where the sibling claims something already exists, check 11 settles
+  evaded. Where the sibling claims something already exists, check 9 settles
   it.
 - **Open questions are exempt from failing this check, but must still be
   read.** FAIL when an item in Open questions governs something the proposal
@@ -253,7 +274,7 @@ Two extensions, both of which defeat a naive grep:
 
 Substantive.
 
-### 5. Implementability, resolved against the code
+### 4. Implementability, resolved against the code
 
 Independent of the grep above, answer directly: **what decisions would an
 engineer still have to make to implement this?** Enumerate them. For each, say
@@ -262,17 +283,12 @@ the public surface, the wire, or the cost model (not fine).
 
 FAIL if any listed decision is load-bearing. This is the report's most valuable
 output — it is the property the DR exists to establish, and no keyword can
-detect it. **Do not skip it because check 4 passed.**
+detect it. **Do not skip it because check 3 passed.**
 
 **Ground every symbol.** For each type, method, field, header, message name,
 option and endpoint the DR names, resolve it in the repositories from the
 preflight and classify it:
 
-- **Exists, and the DR's use matches it.** Cite the definition and move on.
-- **Exists, but the DR's use disagrees with it** — a different signature, an
-  extra field, a changed return type, a narrower type than the code has. FAIL:
-  the DR is specifying a change it does not acknowledge as a change, so the
-  reviewer cannot see the blast radius and the implementer will discover it.
 - **Does not exist, and the DR specifies it fully.** The correct state for new
   work. PASS.
 - **Does not exist, and the DR names it without specifying it.** FAIL,
@@ -280,6 +296,14 @@ preflight and classify it:
   load-bearing decision: a symbol used as though the reader will recognise it,
   which nobody can implement without inventing its semantics. Say what would
   have to be invented.
+- **Exists, and it implements the mechanism the DR is designing.** Cite it — not
+  as a collision, but because the DR can then argue from something that works
+  instead of re-deriving it. The longest rationale section in a DR is sometimes
+  a proof of what already ships. Name the passage the citation would replace.
+- **Exists under the same name, in a different shape.** Not a finding. A DR may
+  replace what is there; the diff belongs to the PR. The exception is a DR that
+  claims the surface is _unchanged_ — that is a false premise, and it belongs to
+  check 9.
 
 Then check the reverse direction: where the DR says a surface is **unchanged**,
 confirm from the code that it can be. A surface whose current definition cannot
@@ -301,7 +325,7 @@ Shapes that recur, all FAIL:
 
 Substantive.
 
-### 6. Consistency, internal and across siblings
+### 5. Consistency, internal and across siblings
 
 The highest-value defect in a dense DR, and the one no other check sees.
 Contradictions are worse for an implementer than acknowledged open questions,
@@ -313,10 +337,20 @@ other section.
   contradiction — two primary keys for one table, a mechanism listed as
   "unchanged" in a scope table and removed in the proposal, a surface described
   one way in an overview and the opposite way in a reference section.
-- **Cross-sibling.** For each sibling this DR depends on, does either assert
-  something the other contradicts, or leave open something the other has
-  closed? Two DRs in review concurrently that disagree about a wire format is a
-  FAIL on both.
+- **Cross-sibling.** Two questions only, both of which cost a reader something
+  whichever document turns out to be right:
+  - **One capability, several names.** The same unbuilt thing specified under a
+    different name in each of several in-review DRs. WARN, listing the
+    spellings — whoever implements the first has to reconcile the rest.
+  - **A missing backlink.** This DR removes or replaces a surface a sibling
+    specifies, and the sibling does not link here. FAIL: those reviewers are
+    reviewing a surface this document deletes.
+
+  **Do not adjudicate between two unapproved DRs.** Where they disagree, say
+  they disagree and that someone has to choose. Neither is a source of truth
+  yet, so calling one correct claims an authority this gate does not have, and a
+  finding phrased that way is rightly ignored. A claim either one makes about
+  _existing_ code is a different matter, and belongs to check 9.
 
 Where the code has already implemented one of two contradictory statements, say
 which — it usually identifies which one the author meant.
@@ -326,7 +360,7 @@ check — treat such a comment as corroboration, not noise.
 
 Substantive.
 
-### 7. Directional dependencies
+### 6. Directional dependencies
 
 Every related-document link must carry a relationship: Supersedes, Superseded
 by, **Depends on**, **Blocks**, or Relates to.
@@ -349,7 +383,7 @@ DR's own rationale explicitly leans on, not every link in the table. Apply the
 same test to internal cross-references — section A deferring to B while B
 defers back to A is the same defect one level down.
 
-- **Mutual dependency** — each side depends on the other for a *different*
+- **Mutual dependency** — each side depends on the other for a _different_
   proposition, and each proposition bottoms out in a proof made in one place.
   Legitimate, but neither DR can be reviewed alone: FAIL on the labelling only,
   and state the reading order.
@@ -363,7 +397,7 @@ defers back to A is the same defect one level down.
 Labelling failures are mechanical; the three classifications above are
 substantive.
 
-### 8. Adoption and migration cost
+### 7. Adoption and migration cost
 
 Required when Impact is High, or when the DR changes anything a consumer must do
 to adopt it — a schema, a stored value, a persisted serial, an endpoint
@@ -389,23 +423,7 @@ Three required sub-points:
 
 Substantive.
 
-### 9. Testing implications
-
-WARN if nothing addresses how the decision will be verified. This repo mandates
-test coverage with every change, so a DR that is silent on verification hands
-the question to whoever writes the PR.
-
-Where the design's correctness claims are timing- or ordering-sensitive, name
-them and say which need the integration tier over a real channel. An exactness
-invariant with no stated way to prove it is the gap worth flagging.
-
-Where the repository has test tiers, say which tier each claim lands in and
-whether that tier can express it — an assertion about real channel ordering
-that only a mocked tier exists for is a gap the DR is handing forward.
-
-Mechanical unless the DR asserts an invariant it gives no way to test.
-
-### 10. Decomposability and external dependencies
+### 8. Decomposability and external dependencies
 
 Could this DR be turned into an ordered set of independently reviewable PRs,
 each mergeable on its own?
@@ -427,7 +445,7 @@ else answers is not schedulable.
 
 Mechanical, unless the design is genuinely indivisible.
 
-### 11. Claims about the current state are true
+### 9. Claims about the current state are true
 
 A DR's argument rests on premises about what exists today — what the code does,
 what it costs, what a platform supports, what an adopter must already do. Test
@@ -453,7 +471,7 @@ Two premises to test specifically, because they are asserted more often than
 checked:
 
 - **"The platform already does X."** Resolve it in the platform repository.
-  Check 4's deferral-by-reference and check 7's chain-terminating-in-an-open-
+  Check 3's deferral-by-reference and check 6's chain-terminating-in-an-open-
   question both dissolve into this one, and it is where a DR most often rests on
   something nobody has built.
 - **"This is what we do today."** A DR describing current behaviour as a foil
@@ -468,15 +486,20 @@ Substantive.
 Fixed order, so reports are comparable across DRs. (On a preflight halt, emit
 the halt report instead and nothing else.)
 
-1. **Verdict** — one line: *Reviewable and implementable* / *Reviewable, not
-   yet implementable* / *Not reviewable as written*. Then the single
+1. **Verdict** — one line: _Reviewable and implementable_ / _Reviewable, not
+   yet implementable_ / _Not reviewable as written_. Then the single
    **substantive** defect that decided it.
-2. **Decisions still open** — check 5's enumeration. Load-bearing first.
-3. **Check table** — eleven rows, PASS/WARN/FAIL, severity, one-line evidence
+2. **Decisions still open** — check 4's enumeration. Load-bearing first.
+3. **Check table** — nine rows, PASS/WARN/FAIL, severity, one-line evidence
    each.
-4. **Detail** — the substantive findings first, then mechanical ones grouped and
-   kept short. Each with quoted evidence and what would fix it.
-5. **Already objected to** — findings a reviewer has already raised, and three
+4. **Detail** — the substantive findings, each with quoted evidence and what
+   would fix it. Nothing mechanical in this part.
+5. **Minor** — the mechanical findings, under their own heading, one line each.
+   Keep them out of part 4 rather than ordered after it: a reviewer deciding
+   what to do about an undecided wire format should not have to read past a link
+   label to reach the next thing that matters, and an author skimming for what
+   blocks them should be able to stop at the heading.
+6. **Already objected to** — findings a reviewer has already raised, and three
    things about each:
    - Who raised it, and whether the author engaged. **Separate automated
      DR-index comments from human review**; for a bot comment the question is
@@ -489,17 +512,19 @@ the halt report instead and nothing else.)
      the same objection from the next reviewer. This is a distinct defect from
      an unanswered objection and is often the most actionable finding available.
    - Which check the objection lands on. An objection against a defect this gate
-     also found is the top priority regardless of severity.
+     also found is the top priority regardless of severity. Where it lands on
+     nothing — a template complaint, a request for a test plan — say that it
+     falls outside this gate rather than adopting it as a finding.
 
-Those five parts are the whole report. Add no trailing sections — no
+Those six parts are the whole report. Add no trailing sections — no
 consolidated list of fixes, no summary of what the DR gets right, no provenance
 or "checked against" appendix. Each belongs inside a part above and nowhere
 else:
 
-- **A fix** belongs in part 4, on the finding it fixes. Collected into a numbered
-  list at the end it loses the evidence that motivated it, duplicates every
-  finding at a second length, and reads as a work plan the gate has no standing
-  to set.
+- **A fix** belongs in part 4 or 5, on the finding it fixes. Collected into a
+  numbered list at the end it loses the evidence that motivated it, duplicates
+  every finding at a second length, and reads as a work plan the gate has no
+  standing to set.
 - **A strength** belongs in the row of the check that passed. A DR that states
   its own boundary, or cites the code it argues from, earns a PASS with that as
   the evidence; a section praising it separately makes the report longer without
@@ -512,8 +537,7 @@ else:
 Report what the checks found. Do not soften a FAIL because the underlying
 reasoning is good — dense, well-argued documents are exactly the ones that
 defeat review, and saying so is the point of the gate. Equally, do not inflate a
-good document by weighing a blank form field the same as an undecided wire
-format.
+good document by weighing a link label the same as an undecided wire format.
 
 Where a claim could not be settled, say it could not be settled — in the row
 and detail of the check that could not settle it, naming the evidence that would.

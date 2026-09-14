@@ -8,8 +8,8 @@ name: Claude Auto-Approve
 # fix cannot clear is not a gate.
 #
 # `auto-approve` then decides whether the PR is low-risk enough to approve
-# without human review. It runs only at the moment the PR becomes review-ready,
-# and only when the gate passed.
+# without human review. It answers that once per PR — the first time it finds a
+# PR review-ready with the gate passed — and leaves its answer standing.
 
 on:
   pull_request:
@@ -157,11 +157,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: review
-    # Once per PR, at the moment it becomes review-ready — a push re-runs the
-    # gate but does not re-open the approval question. `needs` carries the rest:
-    # a gate that failed, errored, or was skipped skips this job with it.
+    # `needs` carries the gate: one that failed, errored, or was skipped skips
+    # this job with it. Whether the approval question has already been answered
+    # is a question about the PR, asked in the first step below.
     if: >-
-      github.event.action != 'synchronize' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     env:
@@ -183,12 +182,33 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
 
+      # The approval question is asked once per PR, and the review already on it
+      # is what says whether it has been. Keying that off the triggering event
+      # instead would ask it only on the push that opened the PR, so a PR opened
+      # before this workflow existed — or whose opening event it missed — would
+      # never be assessed at all.
+      - name: Check whether the PR has already been assessed
+        id: assessed
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          reviews=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --repo "$GITHUB_REPOSITORY" --json reviews --jq '.reviews[].body')
+          if printf '%s' "$reviews" | grep -qF '<!-- claude-auto-approve -->'; then
+            echo 'already=true' >> "$GITHUB_OUTPUT"
+            echo '::notice::Already assessed; leaving the existing review in place'
+          else
+            echo 'already=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Pre-fetch PR diff
+        if: steps.assessed.outputs.already == 'false'
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}
         run: .github/scripts/prefetch-pr-diff.sh "${{ github.event.pull_request.number }}" 8000
 
       - name: Run Claude assessment
+        if: steps.assessed.outputs.already == 'false'
         uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}

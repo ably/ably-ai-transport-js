@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Read the gate reports, post them to the PR as a single upserted comment, and
-# exit non-zero when the blocking gate did not pass.
+# Read the gate reports and comment on the PR when a gate has something to say,
+# then exit non-zero when the blocking gate did not pass.
+#
+# A gate that passed says nothing: the check's own status already reports that,
+# and a comment restating it is noise above the conversation. The comment exists
+# to carry a reason, so only the gates that did not pass appear in it, and it is
+# removed once they all do.
 #
 # The rules gate blocks; the DR gate is reported and never affects the exit
 # code. A missing or unparseable rules report is treated as a failure — a gate
@@ -32,50 +37,65 @@ verdict_of() {
 rules_verdict=$(verdict_of "$rules_report")
 dr_verdict=$(verdict_of "$dr_report")
 
-# Everything except the verdict line, so the body can render it as a heading.
-body_of() {
-  if [ -s "$1" ]; then
-    grep -v '^VERDICT: ' "$1" | sed '/./,$!d'
+# A heading, the report minus its verdict line, and what the reader does next.
+# The command substitution drops the report's trailing newlines and the sed its
+# leading blank lines, so the spacing does not depend on how the gate wrote it.
+section() {
+  local title=$1 report=$2 note=$3 body
+  if [ -s "$report" ]; then
+    body=$(grep -v '^VERDICT: ' "$report" | sed '/./,$!d')
   else
-    echo '_The gate produced no report. Check the workflow logs._'
+    body='The gate produced no report. See the workflow logs.'
   fi
-}
-
-icon_of() {
-  case "$1" in
-    PASS) echo '✅' ;;
-    FAIL) echo '❌' ;;
-    *) echo '⚠️' ;;
-  esac
+  printf '\n## %s\n\n%s\n\n_%s_\n' "$title" "$body" "$note"
 }
 
 {
-  printf '%s\n\n' "$MARKER"
-  printf '## %s Rules gate — %s\n\n' "$(icon_of "$rules_verdict")" "$rules_verdict"
-  body_of "$rules_report"
-  printf '\n\n## %s Decision record — %s\n\n' "$(icon_of "$dr_verdict")" "$dr_verdict"
-  body_of "$dr_report"
-  printf '\n\n---\n\n'
+  printf '%s\n' "$MARKER"
+
   case "$rules_verdict" in
-    PASS) printf 'The rules gate passed. The decision-record result is advisory and does not affect this check.\n' ;;
-    FAIL) printf 'The rules gate blocks this check. Address the findings above and push; the gate re-runs on every push.\n' ;;
-    *) printf 'The rules gate could not run, so this check fails rather than passing untested. See the workflow logs.\n' ;;
+    PASS) ;;
+    FAIL)
+      section 'Rules gate failed' "$rules_report" \
+        'Address the findings and push — the gate re-runs on every push.'
+      ;;
+    *)
+      section 'Rules gate could not run' "$rules_report" \
+        'The check fails rather than passing untested.'
+      ;;
+  esac
+
+  case "$dr_verdict" in
+    PASS) ;;
+    FAIL)
+      section 'Decision record required' "$dr_report" \
+        'Advisory: the decision-record gate does not affect this check.'
+      ;;
+    *)
+      section 'Decision-record gate could not run' "$dr_report" \
+        'Advisory: the decision-record gate does not affect this check.'
+      ;;
   esac
 } > /tmp/ci-review-comment.md
 
-# One comment per PR, edited in place, so a fixed PR does not keep a stale
-# failure sitting above the conversation.
 # --jq runs per page, so the filter emits ids and the pick happens in the pipe.
 existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments?per_page=100" --paginate \
-  --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | tail -n 1)
+  --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id")
 
-if [ "$rules_verdict" = PASS ] && [ "$dr_verdict" = PASS ] && [ -z "$existing" ]; then
-  echo "::notice::Both gates passed; nothing to comment"
+if [ "$rules_verdict" = PASS ] && [ "$dr_verdict" = PASS ]; then
+  for id in $existing; do
+    gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id"
+  done
+  echo "::notice::Both gates passed; nothing to report"
   exit 0
 fi
 
-if [ -n "$existing" ]; then
-  gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
+# One comment per PR, edited in place, so a PR under repair does not collect a
+# comment per push.
+target=$(echo "$existing" | tail -n 1)
+
+if [ -n "$target" ]; then
+  gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$target" \
     -f body="$(cat /tmp/ci-review-comment.md)" --jq .html_url
 else
   gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file /tmp/ci-review-comment.md

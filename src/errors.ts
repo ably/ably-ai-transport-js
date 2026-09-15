@@ -15,8 +15,10 @@ export enum ErrorCode {
   InvalidArgument = 40003,
 
   /**
-   * The operation was cancelled (Ably 40033) — a caller-supplied `AbortSignal`
-   * fired during a history load or a history page wait.
+   * The operation was cancelled (Ably 40033): a caller-supplied `AbortSignal`
+   * fired during a history load or a history page wait, or a pipe's signal
+   * fired, `close()` included. A cancelled pipe has flushed and repaired what
+   * it wrote before it rejects with this.
    */
   OperationCancelled = 40033,
 
@@ -44,10 +46,10 @@ export enum ErrorCode {
   StreamedMessageFinalizeFailed = 104000,
 
   /**
-   * The transport could not subscribe to and attach its channel during
-   * `connect()`. Nothing sends or receives until the attach succeeds; whether a
-   * retry helps depends on the `cause` (a transient disconnect clears, a
-   * capability or auth rejection does not).
+   * The transport could not subscribe to and attach its channel on the first
+   * `subscribe()`. Nothing is delivered until the attach succeeds; the next
+   * `subscribe()` retries, and whether that helps depends on the `cause` (a
+   * transient disconnect clears, a capability or auth rejection does not).
    */
   SessionSubscriptionFailed = 104001,
 
@@ -58,18 +60,25 @@ export enum ErrorCode {
   SessionClosed = 104004,
 
   /**
-   * A publish to the channel was rejected. Raised on the input and steer write
-   * paths; a capability rejection surfaces as
+   * A publish through `send` was rejected. A capability rejection surfaces as
    * {@link ErrorCode.InsufficientCapability} instead. The underlying Ably
    * failure is the `cause`.
    */
   SessionSendFailed = 104005,
 
   /**
-   * Processing an inbound channel message threw — the codec decoding it, or a
-   * transport-level subscription callback. The subscription survives and the
-   * transport keeps sending and receiving; only that one message's processing
-   * failed. The thrown value is the `cause`.
+   * A pipe rejected: the source stream threw (a provider rate limit, a model
+   * error, a network failure), the codec could not encode an event, a publish
+   * or update failed mid-stream, or the repair of a stream whose append failed
+   * also failed. The underlying failure is the `cause`. Registered in
+   * ably-common as `run_response_stream_failed`.
+   */
+  PipeFailed = 104008,
+
+  /**
+   * The codec threw while decoding an inbound channel message. The message is
+   * still delivered with no event, the subscription survives, and the
+   * transport keeps sending and receiving. The thrown value is the `cause`.
    */
   SessionMessageProcessingFailed = 104009,
 

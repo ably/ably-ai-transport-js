@@ -42,20 +42,17 @@ this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).wit
 
 // Passed to child components — always the resolved logger, so context
 // accumulates and an omitted logger still resolves to the Silent default.
-this._runManager = createRunManager(channel, this._logger);
+this._writer = createPipeWriter(channel, this._logger);
 
 // Child adds its own context
-this._logger = logger?.withContext({ component: 'RunManager' });
-
-// The agent transport does the same — a top-level transport accepts
-// `logger?` but never STORES an unresolved one: it resolves to the Silent
-// default at construction. Only sub-components take `logger?` and pass it down.
-const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
-  component: 'AgentTransport',
-});
+this._logger = logger?.withContext({ component: 'PipeWriter' });
 ```
 
-Context accumulates — a log call from RunManager will include the parent's context plus `component: 'RunManager'` automatically. Context provided in individual log calls overrides matching keys from the parent.
+A top-level transport accepts `logger?` but never stores an unresolved one: it
+resolves to the Silent default at construction. Only sub-components take
+`logger?` and pass it down.
+
+Context accumulates: a log call from the pipe writer includes the parent's context plus `component: 'PipeWriter'` automatically. Context provided in individual log calls overrides matching keys from the parent.
 
 ## Custom Log Handler
 
@@ -65,7 +62,7 @@ The logger delegates to a `LogHandler` function. A default `consoleLogger` is pr
 type LogHandler = (message: string, level: LogLevel, context?: LogContext) => void;
 ```
 
-`src/core/transport/run-manager.ts` is the reference implementation to copy
+`src/core/transport/pipe-writer.ts` is the reference implementation to copy
 from. The examples below are deliberately generic (`DefaultFoo.bar()`) so they
 cannot drift against a rename — read the real strings off the code, not from
 here.
@@ -80,22 +77,22 @@ The default console logger formats as:
 
 Log messages follow the pattern `ClassName.methodName(); <description>`.
 Prefix with the component a reader would name: the class where one backs the
-component (`DefaultRunManager.`), the public component name where a factory
-composes an object literal (`AgentTransport.`, `RunStepWriter.`), and the bare
-function name for a standalone helper (`pipeStream`, `walkHistoryBatch`).
+component (`DefaultDecoderCore.`), the public component name where a factory
+composes an object literal (`Transport.`, `PipeWriter.`), and the bare
+function name for a standalone helper (`pipeStream`, `subscribeAndAttach`).
 
 ```ts
 // Method entry (trace)
 this._logger.trace('DefaultFoo.bar();');
 
 // Successful completion (debug)
-this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
+this._logger.debug('DefaultFoo.start(); started', { id });
 
 // With context object
 this._logger.debug('DefaultFoo.bar(); promoting serial', { msgId, serial });
 
 // Decision/branch (debug)
-this._logger.debug('DefaultFoo.bar(); taking the resume path', { runId, reason });
+this._logger.debug('DefaultFoo.bar(); taking the resume path', { id, reason });
 
 // Warning
 this._logger.warn('DefaultFoo.bar(); unexpected message action', {
@@ -126,10 +123,10 @@ Pass structured data as the second argument, not interpolated into the message s
 
 ```ts
 // Good — structured context
-this._logger.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
+this._logger.debug('DefaultFoo.end(); ended', { id, reason });
 
 // Bad — data in the message string
-this._logger.debug(`DefaultRunManager.endRun(); run ${runId} ended with reason ${reason}`);
+this._logger.debug(`DefaultFoo.end(); ${id} ended with reason ${reason}`);
 ```
 
 Use context for IDs, counts, states, and parameters. Keep context objects shallow.

@@ -68,6 +68,10 @@ import {
   resolveChannelModes,
   stripUndefined,
 } from '../src/index.js';
+import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
+import { createOpenAICodec, openai } from '../src/openai/index.js';
+import type { VercelCrossMajorChunk, VercelEvent, VercelUserMessage } from '../src/vercel/index.js';
+import { createVercelCodec, vercel } from '../src/vercel/index.js';
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
 /** The only keys a built codec may carry. */
@@ -133,5 +137,25 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<LogHandler>().toBeFunction();
     expectTypeOf<LogContext>().not.toBeNever();
     expectTypeOf<Ably.ErrorInfo>().toHaveProperty('code');
+  });
+});
+
+describe('@ably/ai-transport/vercel', () => {
+  it('exports the codec, its factory and its event types', () => {
+    expect(typeof createVercelCodec).toBe('function');
+    expect(Object.keys(vercel).toSorted()).toEqual(CODEC_KEYS);
+    expectTypeOf<VercelEvent>().toHaveProperty('type');
+    expectTypeOf<VercelUserMessage>().toHaveProperty('message');
+    expectTypeOf<VercelCrossMajorChunk>().toHaveProperty('type');
+  });
+});
+
+describe('@ably/ai-transport/openai', () => {
+  it('exports the codec, its factory and its event types', () => {
+    expect(typeof createOpenAICodec).toBe('function');
+    expect(Object.keys(openai).toSorted()).toEqual(CODEC_KEYS);
+    expectTypeOf<OpenAIEvent>().toHaveProperty('type');
+    expectTypeOf<OpenAIInput>().toHaveProperty('items');
+    expectTypeOf<OpenAIStreamEvent>().toHaveProperty('type');
   });
 });

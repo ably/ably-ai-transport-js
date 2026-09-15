@@ -20,13 +20,13 @@ general guidance in the shared skill when writing the commit message:
 - **Component prefix**: begin the summary with a lowercase prefix naming
   the architectural area the change relates to, followed by `: ` and a
   lowercase, imperative description. For example,
-  `transport: extract the shared run lifecycle publisher`. The prefix names the
-  area, not the file path.
-  - Primary areas: `codec:`, `transport:`, `vercel:`, `openai:`, `docs:`,
-    `project:`.
+  `transport: drain pending appends before a publish or update`. The prefix
+  names the area, not the file path.
+  - Primary areas: `codec:`, `transport:`, `react:`, `vercel:`, `openai:`,
+    `docs:`, `project:`.
   - For a change scoped to a single sub-component, name it directly instead
-    of the broad area — e.g. `clientTransport:`, `agentTransport:`,
-    `receiveTransport:`, `runManager:`, `steerCoordinator:`.
+    of the broad area — e.g. `pipeWriter:`, `decoderCore:`, `catchUp:`,
+    `historyPager:`.
   - Compose when a change is specific to one layer of an area:
     `vercel codec:`.
   - Repository tooling uses a path-style prefix: `claude/skills:`,

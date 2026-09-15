@@ -1,0 +1,39 @@
+{
+  "name": "ably-ai-transport-minimal-demo",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "prebuild": "cd ../.. && pnpm install && pnpm run build",
+    "build": "tsc --noEmit && next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@ably/ai-transport": "link:../..",
+    "@ai-sdk/anthropic": "^4.0.49",
+    "@ai-sdk/openai": "^4",
+    "ably": "link:../../node_modules/ably",
+    "ai": "^7",
+    "next": "^16",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/node": "^25",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^16",
+    "typescript": "^5"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.3.0",
+      "onFail": "download"
+    }
+  }
+}

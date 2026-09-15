@@ -4,7 +4,7 @@
  * Ably records which library produced a connection through a channel param
  * named `agent`, sent on ATTACH. It identifies the SDK, and it has nothing to
  * do with the AI agent this package also helps you build — see
- * `createAgentTransport` for that one.
+ * `createTransport` for that one.
  *
  * A caller resolves its own channel, so this SDK cannot set the param itself.
  * It supplies the string and the caller passes it to `channels.get`.

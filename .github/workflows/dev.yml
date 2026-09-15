@@ -126,3 +126,41 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run test:integration
+
+  demo-minimal:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    name: demo minimal
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.BASE_NODE_VERSION }}
+          cache: pnpm
+      # The demo links `@ably/ai-transport` from the repo root (`link:../..`),
+      # so it needs the SDK's `dist/` built first.
+      - name: pnpm install (lib)
+        run: pnpm install --frozen-lockfile
+      - name: pnpm run build (lib)
+        run: pnpm run build
+      - name: pnpm install (demo)
+        run: pnpm install --frozen-lockfile
+        working-directory: demo/minimal
+      - name: pnpm run typecheck (demo)
+        run: pnpm run typecheck
+        working-directory: demo/minimal
+      - name: pnpm run lint (demo)
+        run: pnpm run lint
+        working-directory: demo/minimal
+      - name: next build (demo)
+        run: pnpm exec next build
+        working-directory: demo/minimal
+        # A dummy key: the build bundles the routes without calling them.
+        env:
+          ABLY_API_KEY: dummy:key
+          MOCK_LLM: '1'

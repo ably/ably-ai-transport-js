@@ -1,9 +1,6 @@
 /**
- * Shared utilities for working with Ably messages.
- *
- * These are general-purpose helpers used by both the codec and transport
- * layers. They live at the top level to avoid either layer depending on
- * the other.
+ * Shared utilities used by the codec and transport layers. They live at the
+ * top level so neither layer depends on the other for them.
  */
 
 import * as Ably from 'ably';
@@ -40,11 +37,11 @@ export type Stripped<T> = {
 
 /**
  * Remove all keys whose value is `undefined` from a shallow object.
- * Returns a new object — the input is not mutated. Useful for building
- * chunk literals with optional fields without conditional spread noise.
+ * Returns a new object; the input is not mutated. Useful for building event
+ * literals with optional fields without conditional spread noise.
  *
  * The return type converts `{ foo: T | undefined }` to `{ foo?: T }`,
- * matching the optional-field pattern used by the AI SDK chunk types.
+ * matching the optional-field pattern used by provider event types.
  * @param obj - The object to strip undefined values from.
  * @returns A shallow copy with undefined-valued keys removed.
  */
@@ -55,7 +52,7 @@ export const stripUndefined = <T extends Record<string, unknown>>(obj: T): Strip
       result[key] = obj[key];
     }
   }
-  // CAST: The runtime strip guarantees the Stripped<T> contract —
+  // CAST: The runtime strip guarantees the Stripped<T> contract:
   // required keys are always present, optional keys are absent when undefined.
   return result as Stripped<T>;
 };

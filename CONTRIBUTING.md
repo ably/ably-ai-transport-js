@@ -38,6 +38,7 @@ pnpm run test:integration
 ```shell
 pnpm run build          # Build all entry points
 pnpm run build:core     # Build core entry point only
+pnpm run build:react    # Build react entry point only
 pnpm run build:vercel   # Build vercel entry point only
 pnpm run build:openai   # Build openai entry point only
 ```

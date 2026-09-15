@@ -60,6 +60,9 @@ Use **Edit** on:
 
 1. `package.json` — the `version` field. Do NOT use `pnpm version`; it creates
    a tag and a commit, and the human controls both.
+2. `src/version.ts` — the `VERSION` constant, which the SDK reports as its
+   Ably-Agent string. `test/core/agent.test.ts` fails if the two drift, so
+   `pnpm test` catches a half-done bump.
 
 **No lockfile work.** `pnpm-lock.yaml` does not record the package's own
 version, so no lockfile changes. Do not run

@@ -1,6 +1,40 @@
-// The package's shared foundations: the utilities, the event emitter, the
-// error codes and the logger. The transport and the codec contract are built
-// on these and land on top of them.
+// The transport
+export type {
+  ChannelWriter,
+  HistoryOptions,
+  HistoryPage,
+  PipeOptions,
+  PipeResult,
+  PipeSource,
+  SendResult,
+  Transport,
+  TransportOptions,
+} from './core/transport/index.js';
+export { createTransport } from './core/transport/index.js';
+
+// Channel resolution for a caller-owned channel: the SDK's channel agent
+// param and the mode-set union, for an application that resolves its own
+// channel with `client.channels.get(name, options)`.
+export { channelAgent } from './core/agent.js';
+export { OBJECT_MODES, resolveChannelModes } from './core/channel-options.js';
+
+// Codec contract and builder
+export type {
+  Codec,
+  DecodedRow,
+  DecoderCore,
+  DecoderCoreOptions,
+  DefineCodecConfig,
+  Delivery,
+  EncodedMessage,
+  EncodedRow,
+  EventRow,
+  EventRows,
+  RowEvent,
+  RowEventType,
+  RowMessage,
+} from './core/codec/index.js';
+export { createDecoderCore, defineCodec } from './core/codec/index.js';
 
 // Utilities
 export type { Stripped } from './utils.js';

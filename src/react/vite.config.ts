@@ -8,21 +8,25 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
-      exclude: ['react/**', 'vercel/**', 'openai/**'],
     }),
   ],
   build: {
-    outDir: '../dist',
+    outDir: '../../dist/react',
     lib: {
       entry: resolve(__dirname, 'index.ts'),
-      name: 'AblyAiTransport',
-      fileName: 'ably-ai-transport',
+      name: 'AblyAiTransportReact',
+      fileName: 'ably-ai-transport-react',
+      formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably'],
+      external: ['ably', 'ably/react', 'react', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
       output: {
         globals: {
           ably: 'Ably',
+          'ably/react': 'AblyReact',
+          react: 'React',
+          'react/jsx-runtime': 'ReactJsxRuntime',
+          'react/jsx-dev-runtime': 'ReactJsxDevRuntime',
         },
       },
     },

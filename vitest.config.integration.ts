@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['test/**/*.integration.test.ts'],
+    include: ['test/**/*.integration.test.ts', 'test/**/*.integration.test.tsx'],
     globalSetup: ['test/helper/test-setup.ts'],
     setupFiles: ['test/helper/expectations.ts'],
     // The tier's deadline; tests do not set their own.

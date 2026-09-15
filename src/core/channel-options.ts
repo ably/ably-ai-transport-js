@@ -16,7 +16,7 @@
  *
  * EVERY place that resolves channel options for an AI Transport channel must
  * funnel through {@link resolveChannelModes} so they all request the SAME modes
- * in the SAME order. That includes the React `<ClientTransportProvider>`, the
+ * in the SAME order. That includes the React `<TransportProvider>`, the
  * ably-js `<ChannelProvider>` it renders, and an application resolving the
  * channel itself with a plain `channels.get(name, options)` — the transport
  * cannot set modes once the caller owns resolution, so the obligation is the
@@ -49,7 +49,7 @@ const AIT_BASE_MODES: readonly Ably.ChannelMode[] = [
  * The channel modes required to read and write Ably LiveObjects.
  *
  * Under React, pass it as the `channelModes` prop of
- * `<ClientTransportProvider>` (`channelModes: OBJECT_MODES`) to request object
+ * `<TransportProvider>` (`channelModes: OBJECT_MODES`) to request object
  * access on the transport's channel, enabling the LiveObjects channel hooks
  * under the provider. A caller resolving the channel itself passes it to
  * {@link resolveChannelModes} instead — `modes: resolveChannelModes(OBJECT_MODES)`

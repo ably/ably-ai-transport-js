@@ -217,8 +217,11 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
 7. **The SDK owns two wire fields, and the builder two more, all under
-   `extras.ai`.** A row speaks in `headers`, and where they sit on the wire is
-   the builder's choice: it writes them under `extras.headers`, the extras key
+   `extras.ai`.** A row speaks in `data` and `headers`: a plain publish
+   carries the event in `data`, and a message that is appended to carries the
+   appended text in `data` and the event's other fields in `headers`, since
+   an append grows `data` and carries nothing else. Where headers sit on the
+   wire is the builder's choice: it writes them under `extras.headers`, the extras key
    Ably provides for a publisher's own fields, and its own `type` and `json`
    under `extras.ai`, the key the platform reserves for this SDK, and reads
    `extras.ai.type` back to pick the row. The transport's pipe writer stamps

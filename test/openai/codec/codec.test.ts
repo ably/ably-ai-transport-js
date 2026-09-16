@@ -15,34 +15,31 @@ describe('the OpenAI codec', () => {
   });
 
   describe('encode', () => {
-    it('streams a function call’s arguments under the item id and publishes the rest', () => {
+    it('streams a function call’s arguments under the item id and publishes the rest whole', () => {
       const encoded = encodeAll(codec, toolCallResponse);
+      // A plain publish carries the whole event as the body, with the text
+      // the deltas streamed sent empty; a delta carries its text, appended.
+      const expected = decodedOf(toolCallResponse);
       expect(encoded.map(({ message, ...ops }) => ({ data: message.data as unknown, ...ops }))).toEqual([
-        { data: '' },
+        { data: expected[0] },
         { data: '{"city":', append: 'fc_1' },
         { data: '"London"}', append: 'fc_1' },
-        { data: '', ends: 'fc_1' },
-        { data: { ...functionCall, arguments: '', status: 'completed' } },
-        { data: { id: 'resp_1', status: 'completed', output: [] } },
+        { data: expected[3], ends: 'fc_1' },
+        { data: expected[4] },
+        { data: expected[5] },
       ]);
     });
 
-    it('empties the text a closer repeats and keeps the rest of the event', () => {
+    it('empties the text a closer repeats and keeps the rest of the event, in the body', () => {
       const [done] = codec.encode(at(textResponse, 5));
       expect(done?.ends).toBe('msg_1:0');
-      expect(done?.message.extras).toEqual({
-        ai: { type: 'response.output_text.done', json: ['logprobs'] },
-        headers: {
-          type: 'response.output_text.done',
-          item_id: 'msg_1',
-          output_index: 0,
-          content_index: 0,
-          text: '',
-          logprobs: '[]',
-        },
+      expect(done?.message).toEqual({
+        name: 'ai',
+        data: { ...at(textResponse, 5), text: '' },
+        extras: { ai: { type: 'response.output_text.done' } },
       });
       const [args] = codec.encode(at(toolCallResponse, 4));
-      expect(args?.message.extras).toMatchObject({ headers: { arguments: '', name: 'weather' } });
+      expect(args?.message.data).toMatchObject({ arguments: '', name: 'weather' });
     });
 
     it('empties a finished item’s streamed text and keeps what the deltas could not carry', () => {
@@ -66,12 +63,17 @@ describe('the OpenAI codec', () => {
         },
       });
       expect(encoded?.message.data).toEqual({
-        ...message,
-        status: 'completed',
-        content: [
-          { type: 'output_text', text: '', annotations, logprobs },
-          { type: 'refusal', refusal: '' },
-        ],
+        type: 'response.output_item.done',
+        output_index: 0,
+        sequence_number: 9,
+        item: {
+          ...message,
+          status: 'completed',
+          content: [
+            { type: 'output_text', text: '', annotations, logprobs },
+            { type: 'refusal', refusal: '' },
+          ],
+        },
       });
     });
 
@@ -89,13 +91,15 @@ describe('the OpenAI codec', () => {
           encrypted_content: 'opaque',
         },
       });
-      expect(encoded?.message.data).toEqual({
-        id: 'rs_1',
-        type: 'reasoning',
-        status: 'completed',
-        summary: [{ type: 'summary_text', text: '' }],
-        content: [{ type: 'reasoning_text', text: '' }],
-        encrypted_content: 'opaque',
+      expect(encoded?.message.data).toMatchObject({
+        item: {
+          id: 'rs_1',
+          type: 'reasoning',
+          status: 'completed',
+          summary: [{ type: 'summary_text', text: '' }],
+          content: [{ type: 'reasoning_text', text: '' }],
+          encrypted_content: 'opaque',
+        },
       });
     });
 
@@ -106,8 +110,9 @@ describe('the OpenAI codec', () => {
         status: 'completed',
         queries: ['weather in London'],
       };
-      const [encoded] = codec.encode({ type: 'response.output_item.done', output_index: 0, item, sequence_number: 9 });
-      expect(encoded?.message.data).toEqual(item);
+      const event: OpenAIEvent = { type: 'response.output_item.done', output_index: 0, item, sequence_number: 9 };
+      const [encoded] = codec.encode(event);
+      expect(encoded?.message.data).toEqual(event);
     });
 
     it('empties the terminal response’s output and keeps its status and usage', () => {
@@ -120,10 +125,14 @@ describe('the OpenAI codec', () => {
       } as unknown as Responses.Response;
       const [encoded] = codec.encode({ type: 'response.completed', response, sequence_number: 9 });
       expect(encoded?.message.data).toEqual({
-        id: 'resp_9',
-        status: 'completed',
-        output: [],
-        usage: { input_tokens: 3, output_tokens: 7, total_tokens: 10 },
+        type: 'response.completed',
+        sequence_number: 9,
+        response: {
+          id: 'resp_9',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 3, output_tokens: 7, total_tokens: 10 },
+        },
       });
     });
 
@@ -175,7 +184,7 @@ describe('the OpenAI codec', () => {
       ]);
     });
 
-    it('carries an event’s fields under extras.headers without its sequence number, arrays as JSON text', () => {
+    it('carries an event’s fields under extras.headers, arrays as JSON text', () => {
       expect(codec.encode(at(textResponse, 3))[0]?.message).toEqual({
         name: 'ai',
         data: 'It is 21°C',
@@ -187,6 +196,7 @@ describe('the OpenAI codec', () => {
             output_index: 0,
             content_index: 0,
             logprobs: '[]',
+            sequence_number: 3,
           },
         },
       });
@@ -200,10 +210,11 @@ describe('the OpenAI codec', () => {
       }
     });
 
-    it('publishes an output item that is not a function call as a plain event', () => {
+    it('publishes an output item that is not a function call as a plain event, whole in the body', () => {
       const [encoded] = codec.encode(at(textResponse, 1));
       expect(encoded?.publish).toBeUndefined();
-      expect(encoded?.message.data).toBe('');
+      expect(encoded?.message.data).toEqual(at(textResponse, 1));
+      expect(encoded?.message.extras).toEqual({ ai: { type: 'response.output_item.added' } });
     });
 
     it('publishes input items as the message data', () => {
@@ -211,6 +222,135 @@ describe('the OpenAI codec', () => {
       expect(codec.encode({ type: 'input', items })).toEqual([
         { message: { name: 'ai', data: items, extras: { ai: { type: 'input' } } } },
       ]);
+    });
+
+    it('streams a hosted tool’s code, input or arguments under its item id and empties the repeat in its closer', () => {
+      const streams: { delta: OpenAIEvent; done: OpenAIEvent; field: string }[] = [
+        {
+          delta: {
+            type: 'response.code_interpreter_call_code.delta',
+            item_id: 'ci_1',
+            output_index: 0,
+            delta: 'print(',
+            sequence_number: 1,
+          },
+          done: {
+            type: 'response.code_interpreter_call_code.done',
+            item_id: 'ci_1',
+            output_index: 0,
+            code: 'print(1)',
+            sequence_number: 2,
+          },
+          field: 'code',
+        },
+        {
+          delta: {
+            type: 'response.custom_tool_call_input.delta',
+            item_id: 'ct_1',
+            output_index: 0,
+            delta: '{"q":',
+            sequence_number: 1,
+          },
+          done: {
+            type: 'response.custom_tool_call_input.done',
+            item_id: 'ct_1',
+            output_index: 0,
+            input: '{"q":1}',
+            sequence_number: 2,
+          },
+          field: 'input',
+        },
+        {
+          delta: {
+            type: 'response.mcp_call_arguments.delta',
+            item_id: 'mcp_1',
+            output_index: 0,
+            delta: '{"a":',
+            sequence_number: 1,
+          },
+          done: {
+            type: 'response.mcp_call_arguments.done',
+            item_id: 'mcp_1',
+            output_index: 0,
+            arguments: '{"a":1}',
+            sequence_number: 2,
+          },
+          field: 'arguments',
+        },
+      ];
+      for (const { delta, done, field } of streams) {
+        const itemId = 'item_id' in delta ? delta.item_id : '';
+        const [first, last] = encodeAll(codec, [delta, done]);
+        expect(first?.append).toBe(itemId);
+        expect(first?.message.data).toBe('delta' in delta ? delta.delta : undefined);
+        expect(last?.ends).toBe(itemId);
+        expect(last?.message.data).toMatchObject({ [field]: '' });
+        // The decoded sequence is the agent's, with the closer's repeat emptied.
+        const [expectedDelta, expectedDone] = decodedOf([delta, done]);
+        expect(roundTrip(createOpenAICodec(), [delta, done])).toStrictEqual([
+          expectedDelta,
+          { ...expectedDone, [field]: '' },
+        ]);
+      }
+    });
+
+    it('publishes an audio delta, a transcript delta and a partial image whole, one message each', () => {
+      const events: OpenAIEvent[] = [
+        { type: 'response.audio.delta', delta: 'AAAA', sequence_number: 1 },
+        { type: 'response.audio.transcript.delta', delta: 'Hello', sequence_number: 2 },
+        {
+          type: 'response.image_generation_call.partial_image',
+          item_id: 'ig_1',
+          output_index: 0,
+          partial_image_index: 0,
+          partial_image_b64: 'iVBOR',
+          sequence_number: 3,
+        },
+      ];
+      const encoded = encodeAll(codec, events);
+      // No stream key exists for these, so each is a plain publish carrying
+      // the whole event as the body.
+      expect(encoded.map(({ message, ...ops }) => ({ data: message.data as unknown, ...ops }))).toEqual([
+        { data: events[0] },
+        { data: events[1] },
+        { data: events[2] },
+      ]);
+      expect(encoded[2]?.message.extras).toEqual({ ai: { type: 'response.image_generation_call.partial_image' } });
+      expect(roundTrip(createOpenAICodec(), events)).toStrictEqual(decodedOf(events));
+    });
+
+    it('empties the streamed field of a finished hosted-tool item', () => {
+      // CAST: minimal items carrying the fields the row empties; the row reads `type` and one field.
+      const items = [
+        { id: 'ci_1', type: 'code_interpreter_call', code: 'print(1)', status: 'completed' },
+        { id: 'ct_1', type: 'custom_tool_call', call_id: 'c', name: 't', input: '{"q":1}' },
+        { id: 'mcp_1', type: 'mcp_call', name: 't', server_label: 's', arguments: '{"a":1}' },
+      ] as unknown as Responses.ResponseOutputItem[];
+      const emptied = items.map((item) => {
+        const [encoded] = codec.encode({
+          type: 'response.output_item.done',
+          output_index: 0,
+          item,
+          sequence_number: 9,
+        });
+        // CAST: the body is the event; the test reads its item.
+        return (encoded?.message.data as { item?: unknown } | undefined)?.item;
+      });
+      expect(emptied).toEqual([
+        { id: 'ci_1', type: 'code_interpreter_call', code: '', status: 'completed' },
+        { id: 'ct_1', type: 'custom_tool_call', call_id: 'c', name: 't', input: '' },
+        { id: 'mcp_1', type: 'mcp_call', name: 't', server_label: 's', arguments: '' },
+      ]);
+    });
+
+    it('empties the text a finished part repeats and keeps its annotations, in the body', () => {
+      const [done] = codec.encode(at(textResponse, 6));
+      expect(done?.ends).toBeUndefined();
+      expect(done?.message).toEqual({
+        name: 'ai',
+        data: { ...at(textResponse, 6), part: { type: 'output_text', text: '', annotations: [] } },
+        extras: { ai: { type: 'response.content_part.done' } },
+      });
     });
 
     it('throws for an event type outside the union', () => {
@@ -221,7 +361,7 @@ describe('the OpenAI codec', () => {
   });
 
   describe('decode', () => {
-    it('round-trips both responses event for event, without sequence numbers', () => {
+    it('round-trips both responses event for event', () => {
       expect(roundTrip(codec, toolCallResponse)).toStrictEqual(decodedOf(toolCallResponse));
       // A fresh codec: the simulated wire reuses its serials, which a decoder
       // table that has seen them would drop as replays.
@@ -231,23 +371,25 @@ describe('the OpenAI codec', () => {
     it('decodes history as the sequence the agent produced, with the text deltas joined', () => {
       const decoded = historyOf(encodeAll(codec, textResponse)).flatMap((m) => codec.decode(m));
       const expected = decodedOf(textResponse);
+      // The message the deltas share keeps the last append's headers, so the
+      // joined delta reads back with the last delta's sequence number.
       expect(decoded).toStrictEqual([
         at(expected, 0),
         at(expected, 1),
-        { ...at(expected, 2), delta: 'It is 21°C in London.' },
+        { ...at(expected, 3), delta: 'It is 21°C in London.' },
         ...expected.slice(4),
       ]);
     });
 
-    it('decodes an event from the builder’s type when the spread type header is missing', () => {
-      const [delivery] = deliveriesOf(encodeAll(codec, [at(textResponse, 5)]));
+    it('throws for a plain publish whose body is not an object', () => {
+      const [delivery] = deliveriesOf([
+        { message: { name: 'ai', data: 'nope', extras: { ai: { type: 'response.output_item.added' } } } },
+      ]);
       if (delivery === undefined) throw new Error('fixture');
-      // CAST: `extras` is typed `any`; the fixture reads the two keys the builder wrote.
-      const extras = delivery.extras as { ai: unknown; headers: Record<string, unknown> };
-      const headers = Object.fromEntries(Object.entries(extras.headers).filter(([key]) => key !== 'type'));
-      // CAST: a fixture inbound message whose headers lost their type copy.
-      const stripped = { ...delivery, extras: { ai: extras.ai, headers } } as typeof delivery;
-      expect(codec.decode(stripped)).toEqual(decodedOf([at(textResponse, 5)]));
+      expect(() => codec.decode(delivery)).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: 'unable to decode response.output_item.added; data is not an object',
+      });
     });
 
     it('round-trips the input items', () => {
@@ -273,6 +415,7 @@ describe('the OpenAI codec', () => {
           content_index: 0,
           logprobs: [],
           delta: 'It is 21°C in London.',
+          sequence_number: 4,
         },
       ]);
     });

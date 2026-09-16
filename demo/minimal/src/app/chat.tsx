@@ -19,6 +19,22 @@ const textOf = (message: UIMessage): string =>
     .map((part) => part.text)
     .join('');
 
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+
+/**
+ * The `requestId` header the publishing call attached, read off the raw Ably
+ * message. The client stamps it on its prompt and the route on the reply and
+ * any abort, so every message of a turn carries the prompt's id.
+ * @param message - The delivered Ably message.
+ * @returns The request id, or `undefined` for a message without one.
+ */
+const requestIdOf = (message: Delivery<VercelEvent>['message']): string | undefined => {
+  const extras: unknown = message.extras;
+  if (!isRecord(extras) || !isRecord(extras.headers)) return undefined;
+  const { requestId } = extras.headers;
+  return typeof requestId === 'string' ? requestId : undefined;
+};
+
 export function Chat({ channelName }: { channelName: string }) {
   const { transport } = useTransport<VercelEvent>();
   const [messages, setMessages] = useState<UIMessage[]>([]);
@@ -28,10 +44,10 @@ export function Chat({ channelName }: { channelName: string }) {
   // The AI SDK's reducer merges one reply per stream: the `start` chunk opens
   // a stream, every chunk until `finish` is enqueued on it, and each state the
   // reducer yields replaces the message in the list. Streams are keyed by the
-  // connection that published the chunk: the route opens an Ably client per
-  // reply, so a reply's chunks all carry one connection id, and the closers
-  // of one reply cannot land in the stream of the next when a user sends
-  // before the previous reply has finished.
+  // `requestId` header the client stamps on its prompt and the route on the
+  // reply and its abort, so two replies from one agent process, or from two
+  // tabs, cannot land in each other's stream. The form still takes one prompt
+  // at a time.
   const replies = useRef(new Map<string, ReadableStreamDefaultController<UIMessageChunk>>());
   // Whether a reply is streaming now, which holds the composer. Set by a live
   // chunk of a reply the page is merging and cleared when the last open reply
@@ -92,7 +108,7 @@ export function Chat({ channelName }: { channelName: string }) {
         upsert(event.message);
         return;
       }
-      const from = message.connectionId ?? '';
+      const from = requestIdOf(message) ?? '';
       if (event.type === 'start') {
         // Reserve the reply's place in the list now. The reducer yields its
         // first state asynchronously, and a replayed batch would otherwise
@@ -207,7 +223,7 @@ export function Chat({ channelName }: { channelName: string }) {
     // Publish the message on the channel first, then wake the agent with it.
     // The server holds the conversation so far in its store and adds this
     // message to it.
-    await transport.send({ type: 'user-message', message });
+    await transport.send({ type: 'user-message', message }, { headers: { requestId: message.id } });
     await fetch('/api/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

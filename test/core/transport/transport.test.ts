@@ -2,13 +2,35 @@ import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Delivery } from '../../../src/core/codec/index.js';
+import { defineCodec } from '../../../src/core/codec/index.js';
+import type { MessageHeaders } from '../../../src/core/transport/headers.js';
 import type { Transport } from '../../../src/core/transport/transport.js';
 import { createTransport } from '../../../src/core/transport/transport.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createSplitCodec, type SplitEvent } from '../../helper/split-codec.js';
 import { flushMicrotasks } from '../../helper/streams.js';
-import { createTestCodec, neverEndingStream, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
+import {
+  asyncIterableOf,
+  createTestCodec,
+  neverEndingStream,
+  streamOf,
+  type TestEvent,
+  textEvents,
+} from '../../helper/test-codec.js';
+
+/** A headers map the type would refuse, for the runtime check a cast or a JavaScript caller reaches. */
+// CAST: deliberately outside MessageHeaders to exercise the runtime check.
+const badHeaders = { ok: 'x', meta: { nested: true } } as unknown as MessageHeaders;
+
+/**
+ * The `extras.headers` a recorded message carries.
+ * @param message - A message the mock channel recorded.
+ * @returns Its `extras.headers`, or `undefined` when it has none.
+ */
+const headersOf = (message: Ably.Message): unknown =>
+  // CAST: Ably types `extras` as `any`; the test reads one key off it.
+  (message.extras as { headers?: unknown } | undefined)?.headers;
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- a handler that ignores its deliveries
 const noop = (): void => {};
@@ -141,6 +163,64 @@ describe('createTransport', () => {
       );
       expect(channel.publish).toHaveBeenCalledTimes(2);
     });
+
+    it("carries the call's headers on every message it publishes", async () => {
+      const split = createTransport({ channel, codec: createSplitCodec() });
+      await split.send({ type: 'both', a: 'x', b: 'y' }, { headers: { requestId: 'r1' } });
+      expect(channel.publishCalls.map((m) => headersOf(m))).toEqual([{ requestId: 'r1' }, { requestId: 'r1' }]);
+    });
+
+    it('prefers the decoder headers over the pipe headers', async () => {
+      // A decode row that writes Ably headers on purpose, which is what the
+      // row property is for. The test codec and both shipped codecs write
+      // none, so only a codec like this one can collide with a caller.
+      interface TaggedEvent {
+        type: 'note';
+      }
+      const tagged = defineCodec({
+        name: 'tagged',
+        typeOf: (e: TaggedEvent) => e.type,
+        events: {
+          note: {
+            encode: () => ({ headers: { tenant: 'row' } }),
+            decode: (): TaggedEvent => ({ type: 'note' }),
+          },
+        },
+      });
+      const taggedTransport = createTransport({ channel, codec: tagged });
+      await taggedTransport.send({ type: 'note' }, { headers: { tenant: 'caller', requestId: 'r1' } });
+      expect(channel.publishCalls[0]?.extras).toEqual({
+        ai: { type: 'note' },
+        headers: { tenant: 'row', requestId: 'r1' },
+      });
+    });
+
+    it("carries the call's headers alone when the codec's rows write none", async () => {
+      await transport.send({ type: 'text-start', id: 'm1' }, { headers: { requestId: 'r1' } });
+      expect(channel.publishCalls[0]?.extras).toEqual({
+        ai: { type: 'text-start', fields: { id: 'm1' } },
+        headers: { requestId: 'r1' },
+      });
+    });
+
+    it('drops an undefined header value', async () => {
+      // CAST: an undefined value is outside MessageHeaders; a JavaScript caller can still pass one.
+      const headers = { requestId: 'r1', empty: undefined } as unknown as MessageHeaders;
+      await transport.send({ type: 'note', text: 'x' }, { headers });
+      expect(headersOf(channel.publishCalls[0] ?? {})).toEqual({ requestId: 'r1' });
+    });
+
+    it('rejects InvalidArgument for a header that is not a primitive, before encoding', async () => {
+      const codec = createTestCodec();
+      const encode = vi.spyOn(codec, 'encode');
+      const spied = createTransport({ channel, codec });
+      await expect(spied.send({ type: 'note', text: 'x' }, { headers: badHeaders })).rejects.toBeErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: "unable to send; header 'meta' is not a string, number, boolean or null",
+      });
+      expect(encode).not.toHaveBeenCalled();
+      expect(channel.publishCalls).toHaveLength(0);
+    });
   });
 
   describe('pipe', () => {
@@ -172,6 +252,43 @@ describe('createTransport', () => {
       const pending = transport.pipe(neverEndingStream<TestEvent>(), { signal: controller.signal });
       controller.abort();
       await expect(pending).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    });
+
+    it("carries the call's headers on the opener, every append, an update, the repair and the closer", async () => {
+      // The second delta's append fails and is not recorded (the rejection
+      // replaces the mock's recording for that call); the third is recorded.
+      // The end repairs the stream with an update, and the replace before it
+      // is an update of its own.
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      const events: TestEvent[] = [
+        ...textEvents('m1', 'a', 'b', 'c').slice(0, -1),
+        { type: 'text-replace', id: 'm1', text: 'abc' },
+        { type: 'text-end', id: 'm1' },
+      ];
+      await transport.pipe(streamOf<TestEvent>(...events), { headers: { requestId: 'r1' } });
+
+      // The test codec writes no Ably headers, so each message carries the
+      // call's alone.
+      const expected = { requestId: 'r1' };
+      expect(channel.publishCalls.map((m) => headersOf(m))).toEqual([expected, expected, expected]);
+      expect(channel.appendCalls.map((m) => headersOf(m))).toEqual([expected]);
+      expect(channel.updateCalls.map((m) => headersOf(m))).toEqual([expected, expected]);
+    });
+
+    it('rejects InvalidArgument for a header that is not a primitive, without touching the source', async () => {
+      const stream = streamOf<TestEvent>({ type: 'note', text: 'a' });
+      await expect(transport.pipe(stream, { headers: badHeaders })).rejects.toBeErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: "unable to pipe; header 'meta' is not a string, number, boolean or null",
+      });
+      expect(stream.locked).toBe(false);
+
+      const { iterable, state } = asyncIterableOf<TestEvent>({ type: 'note', text: 'a' });
+      await expect(transport.pipe(iterable, { headers: badHeaders })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.InvalidArgument,
+      );
+      expect(state.returned).toBe(false);
+      expect(channel.publishCalls).toHaveLength(0);
     });
   });
 

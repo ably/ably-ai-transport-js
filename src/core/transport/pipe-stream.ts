@@ -9,6 +9,8 @@
  * pipe: the writer repairs it when the stream ends, and a failed repair is what
  * rejects. On every exit, cancel included, the writer is flushed and the source
  * released before the pipe settles, so a provider's generator can clean up.
+ * The call's headers, when it has any, are added to every message before it
+ * reaches the writer, so the writer's repair snapshot carries them too.
  */
 
 import * as Ably from 'ably';
@@ -17,6 +19,7 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
+import { type MessageHeaders, withHeaders } from './headers.js';
 import type { PipeWriter } from './pipe-writer.js';
 
 /**
@@ -149,13 +152,22 @@ const pipeFailed = (what: string, error: unknown, event?: unknown): Ably.ErrorIn
 const cancelledError = (): Ably.ErrorInfo =>
   new Ably.ErrorInfo('unable to pipe; cancelled by signal', ErrorCode.OperationCancelled, 400);
 
+/** What `pipeStream` takes beside its source, codec and writer. */
+export interface PipeStreamOptions {
+  /** Fires to cancel the pipe. */
+  signal?: AbortSignal;
+  /** The call's headers, added to every message before it reaches the writer. Already checked by the transport. */
+  headers?: MessageHeaders;
+  /** Logger for diagnostics. */
+  logger?: Logger;
+}
+
 /**
  * Pipe a source of events through a codec to a writer.
  * @param source - The events to pipe.
  * @param codec - The codec that turns each event into an Ably message.
  * @param writer - This pipe's writer, holding its key table.
- * @param signal - Fires to cancel the pipe.
- * @param logger - Logger for diagnostics.
+ * @param options - The signal, the call's headers and the logger.
  * @returns The serial of the last publish, once the source has ended.
  * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fired; `PipeFailed` when the source, an encode, a write or a repair failed, with the failure as `cause`.
  */
@@ -163,9 +175,9 @@ export const pipeStream = async <E>(
   source: PipeSource<E>,
   codec: Codec<E>,
   writer: PipeWriter,
-  signal?: AbortSignal,
-  logger?: Logger,
+  options: PipeStreamOptions = {},
 ): Promise<PipeResult> => {
+  const { signal, headers, logger } = options;
   logger?.trace('pipeStream();');
   const puller = toPuller(source, logger);
   const abort = abortSignalToPromise(signal);
@@ -214,7 +226,9 @@ export const pipeStream = async <E>(
         // An event's messages are written as a unit; the signal is read again
         // before the next event, not between them.
         for (const message of encoded) {
-          const acked = await writer.write(message);
+          const stamped =
+            headers === undefined ? message : { ...message, message: withHeaders(message.message, headers) };
+          const acked = await writer.write(stamped);
           if (acked !== undefined) serial = acked;
         }
       } catch (error) {

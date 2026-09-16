@@ -4,7 +4,9 @@
  * `send` publishes one event as the messages its codec encodes it to. `pipe`
  * reads a source of events and writes each one as a publish, append or update,
  * with its own key table for the streams the codec names. Neither needs the
- * channel attached.
+ * channel attached, and both take `headers`, a flat map added to every
+ * message the call publishes so a subscriber can tell one call's messages
+ * from another's.
  *
  * `subscribe` is the receive side. The first call registers the transport's
  * channel listener and then attaches, so no message can arrive with nothing to
@@ -31,6 +33,7 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec, Delivery } from '../codec/codec.js';
 import { closedError, ContinuityWatcher, subscribeAndAttach, wrapMessageProcessingError } from './channel-support.js';
+import { type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import { type HistoryOptions, type HistoryPage, openHistoryWalk } from './history-pager.js';
 import { type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
 import { createPipeWriter } from './pipe-writer.js';
@@ -54,10 +57,38 @@ export interface SendResult {
   serial: string | undefined;
 }
 
+/** Options for {@link Transport.send}. */
+export interface SendOptions {
+  /**
+   * Headers for every message the call publishes, under `extras.headers`, the
+   * key Ably provides for a publisher's own fields. Where the codec's row sets
+   * the same key, the row's value is preferred, so a row keeps a header it
+   * writes. The merged map reaches the row's `decode` in its `headers`, since
+   * the wire cannot tell a caller's headers from a row's; the shipped Vercel
+   * and OpenAI codecs write no headers and rebuild their events from the
+   * message body and `extras.ai.fields`, so a decoded provider event carries
+   * none of these. An `undefined` value is dropped; any other value
+   * outside string, number, boolean and null rejects the call with
+   * `InvalidArgument` before anything is published. A subscriber reads them
+   * off `delivery.message.extras.headers`.
+   */
+  headers?: MessageHeaders;
+}
+
 /** Options for {@link Transport.pipe}. */
 export interface PipeOptions {
   /** Fires to cancel the pipe. The pipe stops reading at the next event boundary, flushes what it has written, and rejects `OperationCancelled`. */
   signal?: AbortSignal;
+  /**
+   * Headers for every message the pipe publishes: the publish that opens a
+   * stream, each append, each update, the repair of a failed append and the
+   * message that ends a stream. Ably keeps the last write's `extras` on an
+   * appended message, so a header on every write is what keeps it on the
+   * stored message. Merged and checked as {@link SendOptions.headers}; a
+   * rejected pipe has not touched its source. They ride on every append, so
+   * keep them small.
+   */
+  headers?: MessageHeaders;
 }
 
 /**
@@ -74,10 +105,11 @@ export interface Transport<E> {
    * `publish` key on an encoded message is a one-off here: nothing is
    * remembered for a later append.
    * @param event - The event to publish.
+   * @param options - The call's headers.
    * @returns The ack serial of the last publish, or `undefined` when the codec published nothing.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when any of the event's messages appends or updates, since `send` has no key table (nothing is published); `InsufficientCapability` when the channel rejects a publish for a capability reason; `SessionSendFailed` for any other publish failure; `SessionClosed` after `close()`.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, or when any of the event's messages appends or updates, since `send` has no key table (nothing is published either way); `InsufficientCapability` when the channel rejects a publish for a capability reason; `SessionSendFailed` for any other publish failure; `SessionClosed` after `close()`.
    */
-  send(event: E): Promise<SendResult>;
+  send(event: E, options?: SendOptions): Promise<SendResult>;
   /**
    * Read a source of events and write each one as the codec directs. Resolves
    * when the source ends, with the ack serial of the last publish. Rejects with
@@ -87,9 +119,9 @@ export interface Transport<E> {
    * is the `cause`. Before it settles either way the pipe flushes and repairs
    * what it wrote, so a cancelled pipe leaves whole messages behind.
    * @param source - The events to write, a ReadableStream or an async iterable.
-   * @param options - The pipe's abort signal.
+   * @param options - The pipe's abort signal and the call's headers.
    * @returns The serial of the last publish; see {@link PipeResult}.
-   * @throws {Ably.ErrorInfo} `SessionClosed` when called after `close()`; `OperationCancelled` when cancelled; `PipeFailed` when the pipe could not finish.
+   * @throws {Ably.ErrorInfo} `SessionClosed` when called after `close()`; `InvalidArgument` when a header value is not a string, number, boolean or null, before the source is touched; `OperationCancelled` when cancelled; `PipeFailed` when the pipe could not finish.
    */
   pipe(source: PipeSource<E>, options?: PipeOptions): Promise<PipeResult>;
   /**
@@ -210,9 +242,10 @@ class DefaultTransport<E> implements Transport<E> {
     });
   }
 
-  async send(event: E): Promise<SendResult> {
-    this._logger.trace('Transport.send();');
+  async send(event: E, options?: SendOptions): Promise<SendResult> {
+    this._logger.trace('Transport.send();', { headers: Object.keys(options?.headers ?? {}) });
     if (this._closed) throw closedError('send');
+    const headers = prepareHeaders(options?.headers, 'send');
     const encoded = this._codec.encode(event);
     // Checked before the first publish, so an event that mixes a publish with
     // an append writes nothing.
@@ -224,7 +257,9 @@ class DefaultTransport<E> implements Transport<E> {
       );
     }
     let serial: string | undefined;
-    for (const { message } of encoded) serial = await this._publish(message);
+    for (const { message } of encoded) {
+      serial = await this._publish(headers === undefined ? message : withHeaders(message, headers));
+    }
     this._logger.debug('Transport.send(); published', { serial, messages: encoded.length });
     return { serial };
   }
@@ -252,13 +287,16 @@ class DefaultTransport<E> implements Transport<E> {
   }
 
   async pipe(source: PipeSource<E>, options?: PipeOptions): Promise<PipeResult> {
-    this._logger.trace('Transport.pipe();');
+    this._logger.trace('Transport.pipe();', { headers: Object.keys(options?.headers ?? {}) });
     if (this._closed) throw closedError('pipe');
+    // Checked before the source is read, so a rejected pipe has locked no
+    // stream and called no iterator's return().
+    const headers = prepareHeaders(options?.headers, 'pipe');
     const controller = new AbortController();
     // The pipe stops on the caller's signal or on close(), whichever fires first.
     const signal = options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
     const writer = createPipeWriter(this._channel, this._logger);
-    const done = pipeStream(source, this._codec, writer, signal, this._logger);
+    const done = pipeStream(source, this._codec, writer, { signal, headers, logger: this._logger });
     const inFlight: InFlightPipe = { controller, done };
     this._pipes.add(inFlight);
     try {

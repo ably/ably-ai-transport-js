@@ -233,10 +233,12 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    row writes it only to expose a field there on purpose. Ably admits only a
    flat map of string, number, boolean and null values under it (error 40032
    otherwise), so the row property is typed to that and written as given; the
-   builder translates and checks nothing. A row's `decode` receives
-   `extras.headers` as delivered, any headers the publishing call attached
-   included, since the wire cannot tell them from the row's; the shipped
-   codecs rebuild events from `fields` and never spread `headers`. A `type`
+   builder translates and checks nothing. The transport adds the headers of
+   the `send` or `pipe` call and prefers the row's where both name a key, so a
+   row keeps a header it writes and its `decode` sees the merged map
+   (`src/core/transport/headers.ts`), since the wire cannot tell a caller's
+   headers from the row's; the shipped codecs rebuild events from `fields` and
+   never spread `headers`. A `type`
    key in `fields` travels like any other, and the type the builder matched
    reaches a row's `decode` as `type` on the body. A row never touches
    `extras`. A message
@@ -259,6 +261,7 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     `src/core/channel-options.ts`.
 11. **No message assembly anywhere in the package.** No reducer, no merge
     driver, no projection type, and no grouping: a delivery carries one
-    event, and the application groups deliveries by `message.serial` or
-    by the ids the provider's own events carry, then folds them with the
-    provider's reducer. `demo/minimal/src/app/chat.tsx` is the worked example.
+    event, and the application groups deliveries by `message.serial`, by
+    the ids the provider's own events carry, or by a header the publishing
+    call attached, then folds them with the provider's reducer.
+    `demo/minimal/src/app/chat.tsx` is the worked example.

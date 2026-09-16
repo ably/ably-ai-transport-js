@@ -365,6 +365,35 @@ describe('transport over Ably', () => {
     expect(history[1]?.message.data).toBe('The weather is mild.');
   });
 
+  it("carries a call's headers on a prompt and on every message of a repaired reply, read back from history", async () => {
+    const name = uniqueChannelName();
+    const headers = { requestId: 'r1' };
+    await transportOn(name).send({ type: 'note', text: 'What is the weather?' }, { headers });
+    // The injected failure hits the stream's first append, so the reply is
+    // repaired with an update: the stored message keeps the headers only
+    // because every write, the repair included, carries them.
+    const flaky = failingFirstAppend(channelFor(ablyRealtimeClient(), name), new Error('injected append failure'));
+    const agent = createTransport({ channel: flaky, codec: createTestCodec() });
+    await agent.pipe(streamOf<TestEvent>(...textEvents('m1', 'The weather', ' is mild.')), { headers });
+
+    const history = await drainHistory(transportOn(name));
+    expect(history.map((d) => d.event)).toEqual([
+      { type: 'note', text: 'What is the weather?' },
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'The weather is mild.' },
+      { type: 'text-end', id: 'm1' },
+    ]);
+    // The test codec's rows write their event fields under extras.ai.fields
+    // and no Ably headers, so extras.headers carries the call's alone.
+    // CAST: Ably types `extras` as `any`; the test reads one key off it.
+    expect(history.map((d) => (d.message.extras as { headers?: unknown } | undefined)?.headers)).toEqual([
+      { requestId: 'r1' },
+      { requestId: 'r1' },
+      { requestId: 'r1' },
+      { requestId: 'r1' },
+    ]);
+  });
+
   it('rejects a pipe OperationCancelled when the transport closes under it', async () => {
     const agent = transportOn(uniqueChannelName());
     const source = new ReadableStream<TestEvent>({

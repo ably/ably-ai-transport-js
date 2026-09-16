@@ -19,7 +19,7 @@ export type TestEvent =
 
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
 
-const idOf = (headers: Record<string, unknown> = {}): string => asString(headers.id);
+const idOf = (fields: Record<string, unknown> = {}): string => asString(fields.id);
 
 /**
  * Build a fresh test codec. Fresh, because a built codec's decoder core
@@ -33,21 +33,21 @@ export const createTestCodec = (): Codec<TestEvent> =>
     typeOf: (e: TestEvent) => e.type,
     events: {
       'text-start': {
-        encode: (e) => ({ headers: { id: e.id } }),
-        decode: ({ headers }) => ({ type: 'text-start', id: idOf(headers) }),
+        encode: (e) => ({ fields: { id: e.id } }),
+        decode: ({ fields }) => ({ type: 'text-start', id: idOf(fields) }),
       },
       'text-delta': {
         // The first delta of a stream publishes the message the rest append to.
-        encode: (e) => ({ data: e.delta, headers: { id: e.id }, append: e.id }),
-        decode: ({ data, headers }) => ({ type: 'text-delta', id: idOf(headers), delta: asString(data) }),
+        encode: (e) => ({ data: e.delta, fields: { id: e.id }, append: e.id }),
+        decode: ({ data, fields }) => ({ type: 'text-delta', id: idOf(fields), delta: asString(data) }),
       },
       'text-end': {
-        encode: (e) => ({ headers: { id: e.id }, ends: e.id }),
-        decode: ({ headers }) => ({ type: 'text-end', id: idOf(headers) }),
+        encode: (e) => ({ fields: { id: e.id }, ends: e.id }),
+        decode: ({ fields }) => ({ type: 'text-end', id: idOf(fields) }),
       },
       'text-replace': {
-        encode: (e) => ({ data: e.text, headers: { id: e.id }, update: e.id }),
-        decode: ({ data, headers }) => ({ type: 'text-replace', id: idOf(headers), text: asString(data) }),
+        encode: (e) => ({ data: e.text, fields: { id: e.id }, update: e.id }),
+        decode: ({ data, fields }) => ({ type: 'text-replace', id: idOf(fields), text: asString(data) }),
       },
       note: {
         encode: (e) => ({ data: e.text }),

@@ -18,3 +18,7 @@ export type {
   RowMessage,
 } from './define-codec.js';
 export { defineCodec } from './define-codec.js';
+
+// The value type Ably admits under `extras.headers`, which types a row's
+// `headers` on both halves of the round trip.
+export type { HeaderPrimitive } from '../wire.js';

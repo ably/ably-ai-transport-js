@@ -184,19 +184,21 @@ describe('the OpenAI codec', () => {
       ]);
     });
 
-    it('carries an event’s fields under extras.headers, arrays as JSON text', () => {
+    it('carries a delta’s other fields under extras.ai.fields, arrays as they are, with no headers', () => {
       expect(codec.encode(at(textResponse, 3))[0]?.message).toEqual({
         name: 'ai',
         data: 'It is 21°C',
         extras: {
-          ai: { type: 'response.output_text.delta', json: ['logprobs'] },
-          headers: {
+          ai: {
             type: 'response.output_text.delta',
-            item_id: 'msg_1',
-            output_index: 0,
-            content_index: 0,
-            logprobs: '[]',
-            sequence_number: 3,
+            fields: {
+              type: 'response.output_text.delta',
+              item_id: 'msg_1',
+              output_index: 0,
+              content_index: 0,
+              logprobs: [],
+              sequence_number: 3,
+            },
           },
         },
       });
@@ -371,7 +373,7 @@ describe('the OpenAI codec', () => {
     it('decodes history as the sequence the agent produced, with the text deltas joined', () => {
       const decoded = historyOf(encodeAll(codec, textResponse)).flatMap((m) => codec.decode(m));
       const expected = decodedOf(textResponse);
-      // The message the deltas share keeps the last append's headers, so the
+      // The message the deltas share keeps the last append's fields, so the
       // joined delta reads back with the last delta's sequence number.
       expect(decoded).toStrictEqual([
         at(expected, 0),

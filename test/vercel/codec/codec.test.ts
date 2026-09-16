@@ -81,15 +81,15 @@ describe('the Vercel codec', () => {
       });
     });
 
-    it('carries a delta’s text as the body and the rest of the chunk under extras.headers', () => {
+    it('carries a delta’s text as the body and the rest of the chunk under extras.ai.fields, with no headers', () => {
       expect(codec.encode({ type: 'text-delta', id: 'txt_1', delta: 'hi' })[0]?.message).toEqual({
         name: 'ai',
         data: 'hi',
-        extras: { ai: { type: 'text-delta' }, headers: { type: 'text-delta', id: 'txt_1' } },
+        extras: { ai: { type: 'text-delta', fields: { type: 'text-delta', id: 'txt_1' } } },
       });
     });
 
-    it('carries a delta’s nested field as JSON text in extras.headers, listed under extras.ai.json', () => {
+    it('carries a delta’s nested field as an object under extras.ai.fields', () => {
       const [encoded] = codec.encode({
         type: 'text-delta',
         id: 'txt_1',
@@ -97,12 +97,14 @@ describe('the Vercel codec', () => {
         providerMetadata: { openai: { itemId: 'msg_1' } },
       });
       expect(encoded?.message.extras).toEqual({
-        ai: { type: 'text-delta', json: ['providerMetadata'] },
-        headers: { type: 'text-delta', id: 'txt_1', providerMetadata: '{"openai":{"itemId":"msg_1"}}' },
+        ai: {
+          type: 'text-delta',
+          fields: { type: 'text-delta', id: 'txt_1', providerMetadata: { openai: { itemId: 'msg_1' } } },
+        },
       });
     });
 
-    it('carries a plain publish’s nested field as an object in the body, with no extras.ai.json', () => {
+    it('carries a plain publish’s nested field as an object in the body', () => {
       const chunk: VercelEvent = {
         type: 'tool-input-available',
         toolCallId: 'call_1',

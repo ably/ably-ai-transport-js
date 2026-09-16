@@ -22,6 +22,15 @@ import {
 } from '../../helper/test-codec.js';
 
 /**
+ * The `extras.headers` a recorded message carries.
+ * @param message - A message the mock channel recorded.
+ * @returns Its `extras.headers`, or `undefined` when it has none.
+ */
+const headersOf = (message: Ably.Message): unknown =>
+  // CAST: Ably types `extras` as `any`; the test reads one key off it.
+  (message.extras as { headers?: unknown } | undefined)?.headers;
+
+/**
  * The value a promise rejects with.
  * @param promise - A promise expected to reject.
  * @returns Its rejection.
@@ -153,7 +162,7 @@ describe('pipeStream', () => {
     it('stops reading when the signal fires and rejects OperationCancelled', async () => {
       const controller = new AbortController();
       const source = neverEndingStream<TestEvent>();
-      const pending = pipeStream(source, codec, writer, controller.signal);
+      const pending = pipeStream(source, codec, writer, { signal: controller.signal });
       controller.abort();
       await expect(pending).rejects.toBeErrorInfo({
         code: ErrorCode.OperationCancelled,
@@ -167,7 +176,7 @@ describe('pipeStream', () => {
       const controller = new AbortController();
       controller.abort();
       await expect(
-        pipeStream(streamOf<TestEvent>({ type: 'note', text: 'a' }), codec, writer, controller.signal),
+        pipeStream(streamOf<TestEvent>({ type: 'note', text: 'a' }), codec, writer, { signal: controller.signal }),
       ).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
       expect(channel.publishCalls).toHaveLength(0);
     });
@@ -175,12 +184,9 @@ describe('pipeStream', () => {
     it('returns the iterator of an async iterable it stops reading', async () => {
       const controller = new AbortController();
       const { iterable, state } = asyncIterableOf<TestEvent>({ type: 'note', text: 'a' });
-      const pending = pipeStream(
-        { [Symbol.asyncIterator]: () => neverYielding(iterable, state) },
-        codec,
-        writer,
-        controller.signal,
-      );
+      const pending = pipeStream({ [Symbol.asyncIterator]: () => neverYielding(iterable, state) }, codec, writer, {
+        signal: controller.signal,
+      });
       controller.abort();
       await expect(pending).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
       expect(state.returned).toBe(true);
@@ -191,13 +197,10 @@ describe('pipeStream', () => {
       const logger = makeLogger({ logLevel: LogLevel.Warn, logHandler });
       const controller = new AbortController();
       const state = { returned: false };
-      const pending = pipeStream(
-        { [Symbol.asyncIterator]: () => returnRejecting<TestEvent>(state) },
-        codec,
-        writer,
-        controller.signal,
+      const pending = pipeStream({ [Symbol.asyncIterator]: () => returnRejecting<TestEvent>(state) }, codec, writer, {
+        signal: controller.signal,
         logger,
-      );
+      });
       controller.abort();
       await expect(pending).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
       expect(state.returned).toBe(true);
@@ -216,13 +219,10 @@ describe('pipeStream', () => {
       const logger = makeLogger({ logLevel: LogLevel.Warn, logHandler });
       const controller = new AbortController();
       const state = { returned: false };
-      const pending = pipeStream(
-        { [Symbol.asyncIterator]: () => returnThrowing<TestEvent>(state) },
-        codec,
-        writer,
-        controller.signal,
+      const pending = pipeStream({ [Symbol.asyncIterator]: () => returnThrowing<TestEvent>(state) }, codec, writer, {
+        signal: controller.signal,
         logger,
-      );
+      });
       controller.abort();
       await expect(pending).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
       expect(state.returned).toBe(true);
@@ -237,7 +237,7 @@ describe('pipeStream', () => {
     it('writes nothing more after the cancel', async () => {
       const controller = new AbortController();
       const source = abortingAfter<TestEvent>(controller, { type: 'note', text: 'first' });
-      await expect(pipeStream(source, codec, writer, controller.signal)).rejects.toBeErrorInfoWithCode(
+      await expect(pipeStream(source, codec, writer, { signal: controller.signal })).rejects.toBeErrorInfoWithCode(
         ErrorCode.OperationCancelled,
       );
       expect(channel.publishCalls).toHaveLength(1);
@@ -247,7 +247,7 @@ describe('pipeStream', () => {
       channel.appendMessage.mockRejectedValueOnce(new Error('network'));
       const controller = new AbortController();
       const source = abortingAfter<TestEvent>(controller, ...textEvents('m1', 'a', 'b').slice(0, 3));
-      await expect(pipeStream(source, codec, writer, controller.signal)).rejects.toBeErrorInfoWithCode(
+      await expect(pipeStream(source, codec, writer, { signal: controller.signal })).rejects.toBeErrorInfoWithCode(
         ErrorCode.OperationCancelled,
       );
       // The second delta's append failed; the cancel still repairs the stream.
@@ -263,11 +263,40 @@ describe('pipeStream', () => {
       const source = abortingAfter<TestEvent>(controller, ...textEvents('m1', 'a', 'b').slice(0, 3));
       // The caller knows it cancelled; what it does not know is that the
       // channel is missing text, so the repair failure is the rejection.
-      await expect(pipeStream(source, codec, writer, controller.signal)).rejects.toBeErrorInfo({
+      await expect(pipeStream(source, codec, writer, { signal: controller.signal })).rejects.toBeErrorInfo({
         code: ErrorCode.PipeFailed,
         message: 'unable to pipe; repair failed: unable to repair stream; 1 of 1 repairs failed',
         cause: { code: ErrorCode.StreamedMessageFinalizeFailed },
       });
+    });
+  });
+
+  describe('headers', () => {
+    // The test codec's rows write their event fields under extras.ai.fields
+    // and no Ably headers, so extras.headers carries the call's alone.
+    const expected = { requestId: 'r1' };
+
+    it("carries the call's headers on the opener, the appends and the closer", async () => {
+      await pipeStream(streamOf<TestEvent>(...textEvents('m1', 'a', 'b')), codec, writer, {
+        headers: { requestId: 'r1' },
+      });
+      expect(channel.publishCalls.map((m) => headersOf(m))).toEqual([expected, expected, expected]);
+      expect(channel.appendCalls.map((m) => headersOf(m))).toEqual([expected]);
+    });
+
+    it('carries the headers on the repair of a failed append', async () => {
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await pipeStream(streamOf<TestEvent>(...textEvents('m1', 'a', 'b')), codec, writer, {
+        headers: { requestId: 'r1' },
+      });
+      expect(channel.updateCalls.map((m) => headersOf(m))).toEqual([expected]);
+    });
+
+    it('stamps every message an event encodes to', async () => {
+      await pipeStream(streamOf<SplitEvent>({ type: 'both', a: 'x', b: 'y' }), createSplitCodec(), writer, {
+        headers: { requestId: 'r1' },
+      });
+      expect(channel.publishCalls.map((m) => headersOf(m))).toEqual([{ requestId: 'r1' }, { requestId: 'r1' }]);
     });
   });
 

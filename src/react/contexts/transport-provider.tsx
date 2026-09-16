@@ -2,14 +2,20 @@
  * TransportProvider: creates a {@link Transport} on the named channel and
  * makes it available to descendants through {@link TransportContext}.
  *
- * Reads the Ably Realtime client from the surrounding `<AblyProvider>`,
- * resolves the channel through ably-js (`client.channels.get`) with this
- * SDK's channel agent and mode set, and creates the transport on it. The
- * provider also wraps its children in ably-js's own `<ChannelProvider>` for
- * the same channel with the identical options, so descendants can use ably-js
- * channel hooks (`usePresence`, `useChannel`, …) without adding their own, and
- * without the hooks' `setOptions` triggering a reattach or reverting the mode
- * set.
+ * Reads the Ably Realtime client from the surrounding `<AblyProvider>` and
+ * creates the transport on it by channel name. The transport resolves the
+ * channel. The provider also wraps its children in ably-js's own
+ * `<ChannelProvider>` for the same channel, which is what lets descendants use
+ * ably-js channel hooks (`usePresence`, `useChannel`,
+ * `useChannelStateListener`): those hooks read their channel out of that
+ * context and throw without it.
+ *
+ * `<ChannelProvider>` is handed the same options the transport resolved with,
+ * from the one function that builds them. Its layout effect calls
+ * `setOptions`, which replaces a channel's options rather than merging into
+ * them, so passing none would drop the attribution, the echo param and the
+ * modes. ably-js appends its own `react-hooks` agent to the one it is given,
+ * so both libraries stay attributed.
  *
  * The transport is created inside an effect, not during render, and the
  * effect's own cleanup closes it. A render React throws away (a Suspense
@@ -19,9 +25,9 @@
  * cleanup. Nothing attaches the channel until a hook subscribes or reads
  * history.
  *
- * The effect re-runs on the Ably client, the channel name, or the resolved
- * channel options (which track the codec and the requested modes), so a change
- * to any of them closes the old transport and builds a new one. Because
+ * The effect re-runs on the Ably client, the channel name, the codec's
+ * attribution tag or the requested modes, so a change to any of them closes
+ * the old transport and builds a new one. Because
  * creation happens after the commit, `transport` is `undefined` for the first
  * render; every hook returns it optional, so a consumer guards on it.
  *
@@ -34,8 +40,7 @@ import * as Ably from 'ably';
 import { ChannelProvider, useAbly } from 'ably/react';
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
-import { channelAgent } from '../../core/agent.js';
-import { resolveChannelModes } from '../../core/channel-options.js';
+import { transportChannelOptions } from '../../core/channel-options.js';
 import type { Transport, TransportOptions } from '../../core/transport/index.js';
 import { createTransport } from '../../core/transport/index.js';
 import { ErrorCode } from '../../errors.js';
@@ -45,11 +50,11 @@ import { TransportContext } from './transport-context.js';
 
 /**
  * Props for {@link TransportProvider}: every {@link TransportOptions} field
- * except `channel`, which the provider resolves from the surrounding
- * `<AblyProvider>`'s client by `channelName`.
+ * except `client`, which the provider reads from the surrounding
+ * `<AblyProvider>`.
  * @template E - The codec's event union.
  */
-export interface TransportProviderProps<E> extends Omit<TransportOptions<E>, 'channel'>, PropsWithChildren {
+export interface TransportProviderProps<E> extends Omit<TransportOptions<E>, 'client'>, PropsWithChildren {
   /** The name of the channel to create the transport on. */
   channelName: string;
   /**
@@ -93,53 +98,48 @@ export const TransportProvider = <E,>({
 }: TransportProviderProps<E>): ReactNode => {
   const client = useAbly();
 
-  // Resolve the channel options once per codec/modes pair: the SDK's channel
-  // agent (so ably-js's React hooks append their agent rather than overwriting
-  // it) and the resolved mode set. The provider and the ChannelProvider use
-  // the identical options object, so ably-js's order- and duplicate-sensitive
-  // mode comparison never sees a difference and never reattaches.
-  //
-  // Keyed on what the options are built from, not on the identity of the
-  // props carrying it: the codec contributes only its `adapterTag`, and the
-  // modes only their contents. The transport is rebuilt whenever these options
-  // change, so a caller writing `codec={createVercelCodec()}` or
-  // `channelModes={[...]}` inline, a fresh value every render, would otherwise
-  // close and reopen the channel on each one.
+  // What the channel resolution is built from, as scalar effect keys rather
+  // than the props carrying them: the codec contributes only its `adapterTag`,
+  // and the modes only their contents. A caller writing
+  // `codec={createVercelCodec()}` or `channelModes={[...]}` inline passes a
+  // fresh value every render, which would otherwise close and reopen the
+  // channel on each one.
   const adapterTag = transportOptions.codec.adapterTag;
   const modesKey = channelModes === undefined ? '' : channelModes.join(',');
-  const channelOptions = useMemo<Ably.ChannelOptions>(() => {
-    const options: Ably.ChannelOptions = { params: { agent: channelAgent(transportOptions.codec) } };
-    const modes = resolveChannelModes(channelModes);
-    if (modes) options.modes = modes;
-    return options;
-    // `codec` and `channelModes` are read through the two keys above, which
-    // track everything this memo reads off them.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keying on the identity of `codec` or `channelModes` would rebuild the transport on every render for a caller passing either inline, which closes and reopens the channel
-  }, [adapterTag, modesKey]);
+  const { echoMessages } = transportOptions;
+
+  // The same options the transport resolves with, memoized so the
+  // ChannelProvider's own `setOptions` effect does not re-run every render.
+  const channelOptions = useMemo<Ably.ChannelOptions>(
+    () => transportChannelOptions({ codec: { adapterTag }, channelModes, echoMessages }),
+    // `channelModes` is read through `modesKey`, which tracks its contents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keying on the identity of `channelModes` would rebuild the transport on every render for a caller passing it inline, which closes and reopens the channel
+    [adapterTag, modesKey, echoMessages],
+  );
 
   const [slot, setSlot] = useState<TransportSlot>({ transport: undefined, error: undefined });
 
   // The transport's own options are a rest object with a fresh identity every
-  // render, so they cannot be effect deps. Read them through a ref: the effect
-  // below owns when a transport is built, and these are the values it builds
-  // from at that moment.
-  const optionsRef = useRef(transportOptions);
-  optionsRef.current = transportOptions;
+  // render, and `channelModes` is an array with one too, so neither can be an
+  // effect dep. Read them through a ref: the effect below owns when a
+  // transport is built, and these are the values it builds from at that
+  // moment.
+  const optionsRef = useRef({ ...transportOptions, channelModes });
+  optionsRef.current = { ...transportOptions, channelModes };
 
   // Create and close in one effect, so every transport that exists has a
-  // cleanup paired with it. Keyed on everything the channel resolution depends
-  // on; `channelOptions` is itself memoized on the codec and modes.
+  // cleanup paired with it. Keyed on everything the transport's channel
+  // resolution reads.
   useEffect(() => {
     const options = optionsRef.current;
     let transport: Transport<E>;
     try {
-      const channel = client.channels.get(channelName, channelOptions);
-      transport = createTransport({ ...options, channel });
+      transport = createTransport({ ...options, client, channelName });
     } catch (error) {
       // This is the only place a construction failure surfaces, so the
-      // original has to survive: `client.channels.get()` throws a plain Error
-      // on a closed client or a bad channel name, and "unknown error" leaves
-      // the developer nothing to act on.
+      // original has to survive: a transport whose channel cannot be resolved
+      // throws with the reason, and "unknown error" leaves the developer
+      // nothing to act on.
       options.logger
         ?.withContext({ component: 'TransportProvider' })
         .error('TransportProvider(); transport construction failed', { channelName, error: errorMessage(error) });
@@ -170,7 +170,9 @@ export const TransportProvider = <E,>({
       // each to settle; a pipe's own rejection is its caller's to observe.
       void transport.close();
     };
-  }, [client, channelName, channelOptions]);
+    // `codec` and `channelModes` reach the effect through the ref; the two
+    // keys above track everything the resolution reads off them.
+  }, [client, channelName, adapterTag, modesKey]);
 
   const parentContext = useContext(TransportContext);
 

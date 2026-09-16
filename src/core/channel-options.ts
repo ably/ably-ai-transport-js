@@ -14,13 +14,9 @@
  * `AIT_BASE_MODES` is exactly the server default, so opting into extra
  * modes adds the extras and changes nothing else.
  *
- * EVERY place that resolves channel options for an AI Transport channel must
- * funnel through {@link resolveChannelModes} so they all request the SAME modes
- * in the SAME order. That includes the React `<TransportProvider>`, the
- * ably-js `<ChannelProvider>` it renders, and an application resolving the
- * channel itself with a plain `channels.get(name, options)` — the transport
- * cannot set modes once the caller owns resolution, so the obligation is the
- * caller's wherever it resolves.
+ * The transport is the one place that resolves a channel, and it funnels the
+ * caller's `channelModes` through {@link resolveChannelModes}, so every
+ * transport on the same channel requests the SAME modes in the SAME order.
  *
  * ably-js compares modes order- and duplicate-sensitively when deciding whether
  * a `setOptions` call needs a reattach; identical arrays compare equal, so
@@ -29,6 +25,8 @@
  */
 
 import type * as Ably from 'ably';
+
+import { channelAgent } from './agent.js';
 
 /**
  * The modes AI Transport always needs — byte-for-byte the server's default
@@ -48,12 +46,9 @@ const AIT_BASE_MODES: readonly Ably.ChannelMode[] = [
 /**
  * The channel modes required to read and write Ably LiveObjects.
  *
- * Under React, pass it as the `channelModes` prop of
- * `<TransportProvider>` (`channelModes: OBJECT_MODES`) to request object
- * access on the transport's channel, enabling the LiveObjects channel hooks
- * under the provider. A caller resolving the channel itself passes it to
- * {@link resolveChannelModes} instead — `modes: resolveChannelModes(OBJECT_MODES)`
- * — which is the same funnel the provider goes through.
+ * Pass it as `createTransport`'s `channelModes` option
+ * (`channelModes: OBJECT_MODES`) to request object access on the transport's
+ * channel, which is what the ably-js LiveObjects API on that channel needs.
  */
 export const OBJECT_MODES: readonly Ably.ChannelMode[] = ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'];
 
@@ -87,7 +82,7 @@ const MODE_ORDER: readonly Ably.ChannelMode[] = [
  * {@link Ably.ChannelMode}, but is possible with the type's lowercase aliases)
  * is appended after the canonical ones, sorted alphabetically, so the result
  * is still deterministic.
- * @param extraModes - Modes to request on top of the server default set. Omit or pass an empty array to request no modes at all.
+ * @param extraModes - Modes to request on top of the server default set, as the transport's `channelModes` option supplies them. Omit or pass an empty array to request no modes at all.
  * @returns The canonically-ordered, de-duplicated mode set, or `undefined` when no extra modes were requested.
  */
 export const resolveChannelModes = (extraModes?: readonly Ably.ChannelMode[]): Ably.ChannelMode[] | undefined => {
@@ -96,4 +91,39 @@ export const resolveChannelModes = (extraModes?: readonly Ably.ChannelMode[]): A
   const ordered = MODE_ORDER.filter((mode) => requested.has(mode));
   const unknown = [...requested].filter((mode) => !MODE_ORDER.includes(mode)).toSorted();
   return [...ordered, ...unknown];
+};
+
+/**
+ * The channel options a transport resolves its channel with.
+ *
+ * One function, because two callers must agree byte for byte: the transport
+ * resolves the channel with these, and the React provider hands the same ones
+ * to ably-js's `<ChannelProvider>`, whose layout effect calls `setOptions`
+ * with whatever it was given. `setOptions` replaces a channel's options rather
+ * than merging into them, so a provider that passed none would drop the
+ * attribution, the echo param and the modes the transport asked for. ably-js
+ * appends its own `react-hooks` agent to the one it is given, which is why the
+ * agent survives that round trip.
+ * @param options - What the options are built from.
+ * @param options.codec - The codec whose tag joins the attribution string.
+ * @param options.codec.adapterTag - The codec's attribution tag; appended when present.
+ * @param options.channelModes - Modes to request on top of the server default set.
+ * @param options.echoMessages - Whether the channel delivers this connection's own publishes back to it. Defaults to `true`, the platform default.
+ * @returns The channel options.
+ */
+export const transportChannelOptions = (options: {
+  codec: { readonly adapterTag?: string };
+  channelModes?: readonly Ably.ChannelMode[];
+  echoMessages?: boolean;
+}): Ably.ChannelOptions => {
+  const params: Ably.ChannelParams = { agent: channelAgent(options.codec) };
+  // Ably delivers a connection's own publishes back to it, which is what an
+  // application folding every delivery into one list wants. Only an explicit
+  // opt-out turns it off, for a publisher that renders what it sent from the
+  // event it sent and reconciles on the serial `send` returned.
+  if (options.echoMessages === false) params.echo = 'false';
+  const channelOptions: Ably.ChannelOptions = { params };
+  const modes = resolveChannelModes(options.channelModes);
+  if (modes) channelOptions.modes = modes;
+  return channelOptions;
 };

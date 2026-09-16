@@ -55,7 +55,6 @@ import type {
   TransportOptions,
 } from '../src/index.js';
 import {
-  channelAgent,
   consoleLogger,
   createDecoderCore,
   createTransport,
@@ -66,7 +65,6 @@ import {
   LogLevel,
   makeLogger,
   OBJECT_MODES,
-  resolveChannelModes,
   stripUndefined,
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
@@ -90,10 +88,8 @@ import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 const CODEC_KEYS = ['adapterTag', 'decode', 'encode'];
 
 describe('@ably/ai-transport', () => {
-  it('exports the transport factory and channel resolution helpers', () => {
+  it('exports the transport factory and the channel modes a transport can request', () => {
     expect(typeof createTransport).toBe('function');
-    expect(typeof channelAgent).toBe('function');
-    expect(typeof resolveChannelModes).toBe('function');
     expect(Array.isArray(OBJECT_MODES)).toBe(true);
   });
 
@@ -119,6 +115,9 @@ describe('@ably/ai-transport', () => {
 
   it('exports the public types', () => {
     expectTypeOf<Transport<TestEvent>>().toHaveProperty('pipe');
+    expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('client');
+    expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('channelName');
+    expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('echoMessages');
     expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('codec');
     expectTypeOf<SendResult>().toHaveProperty('serial');
     expectTypeOf<PipeOptions>().toHaveProperty('signal');

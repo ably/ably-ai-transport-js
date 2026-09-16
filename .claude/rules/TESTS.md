@@ -21,7 +21,7 @@ One exception: the React surface is tested per _surface_, not per module. A prov
 
 ### Style
 
-- Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` records publishes, appends and updates and serves history pages; `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.
+- Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` records publishes, appends and updates and serves history pages, and `test/helper/mock-client.ts` is the client a transport resolves it from, recording the name and options each `channels.get` received. `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.
 - A codec suite round-trips through `test/helper/wire.ts`, which turns what the codec encoded into the inbound messages a subscriber would receive, with the serial bookkeeping the pipe writer does on a real channel. A built codec remembers every serial it has seen, so a test that round-trips twice uses a fresh codec the second time.
 - `flushMicrotasks()` or a `setImmediate` hop instead of `setTimeout`; never a clock in a test.
 - React suites select jsdom per file with a `// @vitest-environment jsdom` docblock and drive components through `@testing-library/react`; the vitest config carries no environment setting.
@@ -63,6 +63,8 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 ### Conventions
 
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
+- A test that waits on channel state, or stands in for another application on the shared channel, gets the channel from a bare `client.channels.get(name)`. The transport owns that channel's options, so asking with none of its own returns the instance the transport resolved and cannot conflict with it.
+- A scenario uses one connection to both write and read, which the platform's own echo allows. A test of the `echoMessages: false` opt-out uses a second connection as its barrier, since a message that never arrives cannot be waited for.
 - Clean up clients in `afterEach` via `closeAllClients()`
 - Shared unit-tier helpers live in `test/helper/`; the integration tier's own recorder and history drain live in `test/integration/helpers.ts`
 - **Await events, never clocks.** `createDeliveryRecorder()` buffers every delivery as it arrives and re-checks pending predicates on each one, so a test awaits the delivery it needs instead of polling a growing array. Recorders take no timeout: vitest's own test timeout is the only deadline, and a test that hangs is a test that found something.

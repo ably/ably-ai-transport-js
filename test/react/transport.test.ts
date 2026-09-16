@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 /**
- * The React surface: TransportProvider creates a Transport on the named
- * channel (resolved through ably-js with the SDK's agent and mode set),
- * survives a Strict-Mode remount, and closes it on a true unmount;
+ * The React surface: TransportProvider creates a Transport from the client of
+ * the surrounding <AblyProvider> and a channel name, leaving the channel's
+ * resolution to the transport, survives a Strict-Mode remount, and closes it
+ * on a true unmount;
  * useTransport reads it back; useDeliveries, useHistory and
  * useTransportStatus wrap the transport's subscribe, history and events in
  * effects.
@@ -16,7 +17,7 @@ import * as Ably from 'ably';
 import { createElement, type ReactNode, StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { OBJECT_MODES, resolveChannelModes } from '../../src/core/channel-options.js';
+import { OBJECT_MODES, transportChannelOptions } from '../../src/core/channel-options.js';
 import type { Delivery } from '../../src/core/codec/index.js';
 import type { HistoryPage, Transport } from '../../src/core/transport/index.js';
 import { ErrorCode } from '../../src/errors.js';
@@ -51,8 +52,12 @@ const provider = ({
     children,
   );
 
-// Capture the options the provider passes to ably-js's <ChannelProvider>.
-const channelProviderCapture = vi.hoisted(() => ({ options: undefined as Ably.ChannelOptions | undefined }));
+// Capture what the provider passes to ably-js's <ChannelProvider>, and how
+// often it rendered, so a test can tell "no options" from "never rendered".
+const channelProviderCapture = vi.hoisted(() => ({
+  options: undefined as Ably.ChannelOptions | undefined,
+  renders: 0,
+}));
 
 // Stand-in Realtime client returned by the mocked `useAbly()`; its channels.get
 // records the resolution the provider performs.
@@ -68,6 +73,7 @@ vi.mock('ably/react', async () => {
     useAbly: () => fakeAblyClient,
     ChannelProvider: ({ children, options }: { children?: ReactNode; options?: Ably.ChannelOptions }) => {
       channelProviderCapture.options = options;
+      channelProviderCapture.renders += 1;
       return h(Fragment, undefined, children);
     },
   };
@@ -184,34 +190,41 @@ const delivery = (event: unknown): Delivery<unknown> =>
 beforeEach(() => {
   vi.clearAllMocks();
   channelProviderCapture.options = undefined;
+  channelProviderCapture.renders = 0;
   createTransportMock.mockImplementation(() => createFakeTransport());
 });
 
 describe('TransportProvider', () => {
-  it('resolves the channel by name and creates the transport on it', () => {
+  it('builds the transport from the provider’s client and channel name, and resolves no channel itself', () => {
     renderHook(() => useTransport(), { wrapper: wrapDefault });
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- asymmetric matcher for the agent-seeded params bag
-    const anyParams: Ably.ChannelOptions = expect.objectContaining({ params: expect.anything() });
-    expect(channelsGetMock).toHaveBeenCalledWith('ai:test', anyParams);
     expect(createTransportMock).toHaveBeenCalledTimes(1);
-    // CAST: the mock records the options bag; only channel is read.
-    const options = createTransportMock.mock.calls[0]?.[0] as { channel: { name: string } };
-    expect(options.channel.name).toBe('ai:test');
+    // CAST: the mock records the options bag the provider passed.
+    const options = createTransportMock.mock.calls[0]?.[0] as { client: Ably.Realtime; channelName: string };
+    expect(options.client).toBe(fakeAblyClient);
+    expect(options.channelName).toBe('ai:test');
+    // The transport owns the channel and its options, so the provider never
+    // resolves one of its own.
+    expect(channelsGetMock).not.toHaveBeenCalled();
   });
 
-  it('passes the same agent-seeded options to the ChannelProvider', () => {
+  it('gives the ChannelProvider the options the transport resolved with', () => {
     renderHook(() => useTransport(), { wrapper: wrapDefault });
 
-    const resolved = channelsGetMock.mock.calls[0]?.[1];
-    expect(channelProviderCapture.options).toBe(resolved);
+    expect(channelProviderCapture.renders).toBeGreaterThan(0);
+    // ably-js's ChannelProvider calls setOptions with whatever it is given,
+    // and setOptions replaces rather than merges, so passing none would drop
+    // the attribution the transport stamped.
+    expect(channelProviderCapture.options).toEqual(transportChannelOptions({ codec: { adapterTag: 'test' } }));
     expect(channelProviderCapture.options?.params?.agent).toContain('ai-transport-js');
   });
 
-  it('requests the resolved mode set when channelModes are supplied', () => {
+  it('passes channelModes through to the transport, which resolves them', () => {
     renderHook(() => useTransport(), { wrapper: wrapWithModes });
 
-    expect(channelProviderCapture.options?.modes).toEqual(resolveChannelModes(OBJECT_MODES));
+    // CAST: the mock records the options bag the provider passed.
+    const options = createTransportMock.mock.calls[0]?.[0] as { channelModes?: readonly Ably.ChannelMode[] };
+    expect(options.channelModes).toBe(OBJECT_MODES);
   });
 
   it('pairs every Strict-Mode transport with its own close', async () => {
@@ -358,9 +371,9 @@ describe('useTransport', () => {
     // parent's, so the inner provider constructs first.
     createTransportMock.mockImplementation((options: unknown) => {
       // CAST: the mocked factory is typed `(options: unknown) => unknown`; the
-      // provider always passes the resolved channel through.
-      const { channel } = options as { channel: Ably.RealtimeChannel };
-      return channel.name === 'ai:outer' ? outer : inner;
+      // provider always passes the channel name through.
+      const { channelName } = options as { channelName: string };
+      return channelName === 'ai:outer' ? outer : inner;
     });
 
     const { result } = renderHook(

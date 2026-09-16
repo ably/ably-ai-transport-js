@@ -11,28 +11,26 @@
 import * as Ably from 'ably';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { channelAgent, createTransport, ErrorCode, type Transport } from '../../../src/index.js';
+import { createTransport, ErrorCode, type Transport } from '../../../src/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createTestCodec, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
 import { controlledStream, createDeliveryRecorder, drainHistory, failingFirstAppend } from '../helpers.js';
 
-const codec = createTestCodec();
-
-const channelFor = (client: Ably.Realtime, name: string): Ably.RealtimeChannel =>
-  client.channels.get(name, { params: { agent: channelAgent(codec) } });
-
 const transportOn = (name: string): Transport<TestEvent> =>
-  createTransport({ channel: channelFor(ablyRealtimeClient(), name), codec: createTestCodec() });
+  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createTestCodec() });
 
 /**
  * A transport with the channel it reads, for a subscriber that waits for the attach.
+ * The channel comes back from a bare `channels.get`, which is how an
+ * application shares the channel the transport owns the options of.
  * @param name - The channel name.
  * @returns The transport and its channel.
  */
 const readerOn = (name: string): { transport: Transport<TestEvent>; channel: Ably.RealtimeChannel } => {
-  const channel = channelFor(ablyRealtimeClient(), name);
-  return { transport: createTransport({ channel, codec: createTestCodec() }), channel };
+  const client = ablyRealtimeClient();
+  const transport = createTransport({ client, channelName: name, codec: createTestCodec() });
+  return { transport, channel: client.channels.get(name) };
 };
 
 const isTextEnd = (deliveries: { event?: TestEvent }[]): boolean =>
@@ -41,6 +39,47 @@ const isTextEnd = (deliveries: { event?: TestEvent }[]): boolean =>
 describe('transport over Ably', () => {
   afterEach(() => {
     closeAllClients();
+  });
+
+  it('attaches the channel it resolved, and shares it with an application that asks for it by name', async () => {
+    const name = uniqueChannelName();
+    const client = ablyRealtimeClient();
+    const transport = createTransport({ client, channelName: name, codec: createTestCodec() });
+
+    transport.subscribe(createDeliveryRecorder<TestEvent>().record);
+
+    // The transport owns the channel's options, so an application wanting the
+    // same channel asks for it with none and gets the instance the transport
+    // attached. The platform has to accept the agent param for that attach to
+    // reach ATTACHED at all.
+    const shared = client.channels.get(name);
+    await shared.whenState('attached');
+    expect(shared.state).toBe('attached');
+  });
+
+  it('keeps a publisher’s own message off its subscription when echoMessages opts out', async () => {
+    const name = uniqueChannelName();
+    const writer = createTransport({
+      client: ablyRealtimeClient(),
+      channelName: name,
+      codec: createTestCodec(),
+      echoMessages: false,
+    });
+    const own = createDeliveryRecorder<TestEvent>();
+    writer.subscribe(own.record);
+
+    const { transport: reader, channel: readerChannel } = readerOn(name);
+    const others = createDeliveryRecorder<TestEvent>();
+    reader.subscribe(others.record);
+    await readerChannel.whenState('attached');
+
+    await writer.send({ type: 'note', text: 'What is the weather?' });
+    // The other connection receiving it is the barrier: the publish is on the
+    // channel by the time this resolves, so an echo would already have arrived.
+    await others.waitFor((d) => d.length === 1);
+
+    expect(others.events()).toEqual([{ type: 'note', text: 'What is the weather?' }]);
+    expect(own.deliveries).toEqual([]);
   });
 
   it('streams a reply as a message per start and end and one that grows by appends, and a subscriber decodes each delta', async () => {
@@ -282,7 +321,9 @@ describe('transport over Ably', () => {
     reader.subscribe(recorder.record);
     await readerChannel.whenState('attached');
 
-    const foreign = channelFor(ablyRealtimeClient(), name);
+    // Another application on the shared channel, with none of the transport's
+    // channel options.
+    const foreign = ablyRealtimeClient().channels.get(name);
     await foreign.publish({ name: 'chat.message', data: { text: 'hello from the app' } });
     await transportOn(name).send({ type: 'note', text: 'ours' });
     await recorder.waitFor((d) => d.length === 2);
@@ -302,7 +343,7 @@ describe('transport over Ably', () => {
 
     const { serial } = await writer.send({ type: 'note', text: 'to be removed' });
     await recorder.waitFor((d) => d.length === 1);
-    await channelFor(ablyRealtimeClient(), name).deleteMessage({ serial });
+    await ablyRealtimeClient().channels.get(name).deleteMessage({ serial });
     await recorder.waitFor((d) => d.length === 2);
 
     const deletion = recorder.deliveries[1];
@@ -349,8 +390,8 @@ describe('transport over Ably', () => {
     const name = uniqueChannelName();
     // The first delta is a publish; the injected failure hits the second,
     // which is the stream's first append.
-    const flaky = failingFirstAppend(channelFor(ablyRealtimeClient(), name), new Error('injected append failure'));
-    const agent = createTransport({ channel: flaky, codec: createTestCodec() });
+    const flaky = failingFirstAppend(ablyRealtimeClient(), new Error('injected append failure'));
+    const agent = createTransport({ client: flaky, channelName: name, codec: createTestCodec() });
 
     await expect(agent.pipe(streamOf<TestEvent>(...textEvents('m1', 'The weather', ' is mild.')))).resolves.toEqual({
       serial: expect.any(String) as string,
@@ -372,8 +413,8 @@ describe('transport over Ably', () => {
     // The injected failure hits the stream's first append, so the reply is
     // repaired with an update: the stored message keeps the headers only
     // because every write, the repair included, carries them.
-    const flaky = failingFirstAppend(channelFor(ablyRealtimeClient(), name), new Error('injected append failure'));
-    const agent = createTransport({ channel: flaky, codec: createTestCodec() });
+    const flaky = failingFirstAppend(ablyRealtimeClient(), new Error('injected append failure'));
+    const agent = createTransport({ client: flaky, channelName: name, codec: createTestCodec() });
     await agent.pipe(streamOf<TestEvent>(...textEvents('m1', 'The weather', ' is mild.')), { headers });
 
     const history = await drainHistory(transportOn(name));

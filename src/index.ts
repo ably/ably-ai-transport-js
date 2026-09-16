@@ -14,11 +14,8 @@ export type {
 } from './core/transport/index.js';
 export { createTransport } from './core/transport/index.js';
 
-// Channel resolution for a caller-owned channel: the SDK's channel agent
-// param and the mode-set union, for an application that resolves its own
-// channel with `client.channels.get(name, options)`.
-export { channelAgent } from './core/agent.js';
-export { OBJECT_MODES, resolveChannelModes } from './core/channel-options.js';
+// The extra channel modes a transport can request, as its `channelModes`.
+export { OBJECT_MODES } from './core/channel-options.js';
 
 // Codec contract and builder
 export type {

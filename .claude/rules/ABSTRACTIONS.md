@@ -107,7 +107,8 @@ codec was written.
 
 ## The transport surface
 
-`createTransport({ channel, codec, logger? })` returns one object with six
+`createTransport({ client, channelName, codec, channelModes?, echoMessages?, logger? })`
+resolves its channel off the client and returns one object with six
 operations. `send` encodes one event and publishes it as a one-off message,
 resolving with the ack serial. `pipe` reads a stream or async iterable, writes
 each event as its row directs, and resolves with the serial of its last publish
@@ -128,8 +129,10 @@ A delivery is `{ event, message }`, and every message is delivered. `event` is
 the shared channel, a replay the codec's version guard dropped, a
 `message.delete`, or a decode that threw. The application always sees the raw
 message and decides for itself. Publishing emits nothing locally: the sender's
-own message comes back as the ordinary channel delivery, so a consumer that
-wants optimistic UI renders its own and reconciles on the serial `send`
+own message comes back as the ordinary channel delivery, so an application that
+folds every delivery into one list shows its own message from the same source
+as everyone else's. `echoMessages: false` turns that off, for a publisher that
+renders what it sent from the event it sent and reconciles on the serial `send`
 returned.
 
 ## Composition, not inheritance
@@ -249,15 +252,24 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 8. **Explicit exports.** Only what an `index.ts` re-exports is public API.
 9. **Self-contained features.** Each manages its own subscriptions, state, and
    cleanup.
-10. **Single shared channel, caller-owned.** One Ably channel per transport,
-    shared by all features. The caller resolves and owns the channel; the
-    transport subscribes its own listener and never detaches it. Two
-    obligations come with that: the caller stamps `channelAgent(codec)` as the
-    channel's `params.agent`, because the SDK cannot set it once the caller
-    owns resolution, and every resolver of the same channel funnels its modes
-    through `resolveChannelModes()` so they all request the same modes in the
-    same order. ably-js compares them order-sensitively, so two resolvers that
-    disagree reattach the channel or silently revert its mode set. See
+10. **Single shared channel, transport-resolved.** One Ably channel per
+    transport, shared by all features. The transport resolves it by name off
+    the client it is given and owns its options: it stamps `channelAgent(codec)`
+    as the channel's `params.agent`, funnels the caller's `channelModes`
+    through `resolveChannelModes()` and turns the channel echo off when
+    `echoMessages` opts out, all through `transportChannelOptions()`, the one
+    function that builds them, so every transport on a channel requests the
+    same options in the same order. ably-js compares params and modes
+    order-sensitively and rejects a `channels.get` whose options would reattach
+    an attached channel, so two transports on one name must ask for the same
+    options. The transport owns the channel it resolved: it subscribes its own
+    listener, and `close()` detaches the channel when `subscribe` or `history`
+    attached it, so a transport sharing that name on the same client sees the
+    channel detach. The caller owns the client's lifecycle, and the transport
+    never closes it. Anything
+    that wants the same channel asks for it by name with no options of its own,
+    which is what the React provider's `<ChannelProvider>` does so ably-js's
+    channel hooks run on the channel the transport resolved. See
     `src/core/channel-options.ts`.
 11. **No message assembly anywhere in the package.** No reducer, no merge
     driver, no projection type, and no grouping: a delivery carries one

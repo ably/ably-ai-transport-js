@@ -6,7 +6,7 @@
  * the reply and the pipe's last serial in the store.
  */
 
-import { channelAgent, createTransport, ErrorCode } from '@ably/ai-transport';
+import { createTransport, ErrorCode } from '@ably/ai-transport';
 import { vercel } from '@ably/ai-transport/vercel';
 import { convertToModelMessages, streamText, toUIMessageStream, type UIMessage } from 'ai';
 import Ably from 'ably';
@@ -45,8 +45,7 @@ export async function POST(req: Request) {
   // Ably rolls the appends a connection publishes within 40ms into one
   // delivery; a window of 0 delivers every chunk as its own message.
   const ably = new Ably.Realtime({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
-  const channel = ably.channels.get(channelName, { params: { agent: channelAgent(vercel) } });
-  const transport = createTransport({ channel, codec: vercel });
+  const transport = createTransport({ client: ably, channelName, codec: vercel });
 
   try {
     const result = streamText({

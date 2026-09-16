@@ -21,6 +21,8 @@ export interface MockChannel {
   unsubscribe: ReturnType<typeof vi.fn>;
   /** Resolves immediately. */
   attach: ReturnType<typeof vi.fn>;
+  /** Resolves immediately. */
+  detach: Mock<() => Promise<void>>;
   /** Resolves with a paginated result over the pages given to {@link createMockChannel}. */
   history: ReturnType<typeof vi.fn>;
   /** Every message `publish` received, in order. */
@@ -116,9 +118,11 @@ export const createMockChannel = (pages: Ably.InboundMessage[][] = []): MockChan
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
     attach: vi.fn(async (): Promise<void> => undefined),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+    detach: vi.fn(async (): Promise<void> => undefined),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
     history: vi.fn(async (): Promise<Ably.PaginatedResult<Ably.InboundMessage>> => makePaginated(pages)),
   };
-  // CAST: tests only use publish/subscribe/unsubscribe/attach/history and the
+  // CAST: tests only use publish/subscribe/unsubscribe/attach/detach/history and the
   // state surface (state/on/off) — other RealtimeChannel members are unused.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };

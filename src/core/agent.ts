@@ -3,11 +3,10 @@
  *
  * Ably records which library produced a connection through a channel param
  * named `agent`, sent on ATTACH. It identifies the SDK, and it has nothing to
- * do with the AI agent this package also helps you build — see
- * `createTransport` for that one.
+ * do with the AI agent this package also helps you build.
  *
- * A caller resolves its own channel, so this SDK cannot set the param itself.
- * It supplies the string and the caller passes it to `channels.get`.
+ * The transport resolves its own channel, so it stamps this string on it and
+ * nothing outside the package needs to.
  */
 
 import { VERSION } from '../version.js';
@@ -21,9 +20,8 @@ const SDK_NAME = 'ai-transport-js';
  * This names the library to Ably's attribution. It does not name an AI agent.
  *
  * Pure, and safe to call repeatedly: the same codec always yields the same
- * string. Pass it as the channel's `params.agent` when resolving the channel,
- * or as a `<ChannelProvider options>` seed so ably-js's own React hooks append
- * their attribution to this one rather than replacing it.
+ * string. The transport passes it as the channel's `params.agent` when it
+ * resolves the channel.
  * @param codec - The codec whose optional tag adds a second attribution entry.
  * @param codec.adapterTag - The codec's attribution tag; appended when present.
  * @returns The channel `params.agent` string.

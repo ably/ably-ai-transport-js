@@ -12,28 +12,28 @@ import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { channelAgent, createTransport, type Transport } from '../../../src/index.js';
-import { createOpenAICodec, openai, type OpenAIEvent } from '../../../src/openai/index.js';
+import { createTransport, type Transport } from '../../../src/index.js';
+import { createOpenAICodec, type OpenAIEvent } from '../../../src/openai/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { at, decodedOf, textResponse, toolCallResponse } from '../../openai/codec/fixtures.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
-const channelFor = (client: Ably.Realtime, name: string): Ably.RealtimeChannel =>
-  client.channels.get(name, { params: { agent: channelAgent(openai) } });
-
 const transportOn = (name: string): Transport<OpenAIEvent> =>
-  createTransport({ channel: channelFor(ablyRealtimeClient(), name), codec: createOpenAICodec() });
+  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createOpenAICodec() });
 
 /**
  * A transport with the channel it reads, for a subscriber that waits for the attach.
+ * The channel comes back from a bare `channels.get`, which is how an
+ * application shares the channel the transport owns the options of.
  * @param name - The channel name.
  * @returns The transport and its channel.
  */
 const readerOn = (name: string): { transport: Transport<OpenAIEvent>; channel: Ably.RealtimeChannel } => {
-  const channel = channelFor(ablyRealtimeClient(), name);
-  return { transport: createTransport({ channel, codec: createOpenAICodec() }), channel };
+  const client = ablyRealtimeClient();
+  const transport = createTransport({ client, channelName: name, codec: createOpenAICodec() });
+  return { transport, channel: client.channels.get(name) };
 };
 
 const completions = (deliveries: { event?: OpenAIEvent }[]): number =>

@@ -112,8 +112,13 @@ export async function POST(req: Request) {
   // start and end included, is a publish. The pipe resolves with the serial of
   // its last publish, and rejects with an ErrorInfo whose code says whether
   // the signal cancelled it (OperationCancelled) or it failed (PipeFailed).
+  // The headers ride on every message of the reply, so the client can tell
+  // which prompt it answers.
   try {
-    await transport.pipe(toUIMessageStream({ stream: result.fullStream }), { signal: req.signal });
+    await transport.pipe(toUIMessageStream({ stream: result.fullStream }), {
+      signal: req.signal,
+      headers: { requestId: 'm1' },
+    });
     return new Response(null, { status: 204 });
   } catch (error) {
     const cancelled = error instanceof Ably.ErrorInfo && error.code === ErrorCode.OperationCancelled;
@@ -165,7 +170,7 @@ async function merge(stream: ReadableStream<UIMessageChunk>) {
 // Your own message comes back as an ordinary delivery under the serial send
 // returns; the agent hydrates the rest of the conversation from its store.
 const message: UIMessage = { id: 'm1', role: 'user', parts: [{ type: 'text', text: "what's the weather?" }] };
-const { serial } = await transport.send({ type: 'user-message', message });
+const { serial } = await transport.send({ type: 'user-message', message }, { headers: { requestId: message.id } });
 await fetch('/api/chat', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
@@ -208,6 +213,12 @@ transport.on('discontinuity', async () => {
   for (const delivery of parked) apply(delivery);
 });
 ```
+
+### Tagging a turn
+
+Both `send` and `pipe` take `headers`, a flat map of string, number, boolean or null values that the transport includes in `extras.headers` on every message published by that `send` or `pipe` call. Any headers returned by the codec are preferred to the headers set here, when there is a collision.
+
+You can read the headers from the raw Ably message in the subscribe handler, `message.extras.headers`, or in the `headers` field passed to `decode` in the codec builder.
 
 ### React client
 

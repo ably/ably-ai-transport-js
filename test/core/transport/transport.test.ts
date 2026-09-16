@@ -1,6 +1,8 @@
 import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { channelAgent } from '../../../src/core/agent.js';
+import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
 import type { Delivery } from '../../../src/core/codec/index.js';
 import { defineCodec } from '../../../src/core/codec/index.js';
 import type { MessageHeaders } from '../../../src/core/transport/headers.js';
@@ -8,6 +10,7 @@ import type { Transport } from '../../../src/core/transport/transport.js';
 import { createTransport } from '../../../src/core/transport/transport.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import { createMockClient } from '../../helper/mock-client.js';
 import { createSplitCodec, type SplitEvent } from '../../helper/split-codec.js';
 import { flushMicrotasks } from '../../helper/streams.js';
 import {
@@ -34,6 +37,9 @@ const headersOf = (message: Ably.Message): unknown =>
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- a handler that ignores its deliveries
 const noop = (): void => {};
+
+/** The channel name every transport here is built on. */
+const CHANNEL = 'chat';
 
 /**
  * The `extras` the builder writes for a set of fields: `type` under `ai`, the
@@ -83,7 +89,64 @@ describe('createTransport', () => {
 
   beforeEach(() => {
     channel = createMockChannel();
-    transport = createTransport({ channel, codec: createTestCodec() });
+    transport = createTransport({ client: createMockClient(channel), channelName: CHANNEL, codec: createTestCodec() });
+  });
+
+  describe('channel resolution', () => {
+    it('resolves the channel by name, attributed to the SDK and the codec', () => {
+      const client = createMockClient(channel);
+      const codec = createTestCodec();
+      createTransport({ client, channelName: CHANNEL, codec });
+      expect(client.channels.get).toHaveBeenCalledWith(CHANNEL, { params: { agent: channelAgent(codec) } });
+    });
+
+    it('leaves the platform echo in place, so a publisher is delivered its own message', () => {
+      const client = createMockClient(channel);
+      createTransport({ client, channelName: CHANNEL, codec: createTestCodec() });
+      expect(client.channels.get.mock.calls[0]?.[1]?.params).not.toHaveProperty('echo');
+    });
+
+    it('turns the channel echo off when echoMessages opts out', () => {
+      const client = createMockClient(channel);
+      createTransport({ client, channelName: CHANNEL, codec: createTestCodec(), echoMessages: false });
+      expect(client.channels.get.mock.calls[0]?.[1]?.params?.echo).toBe('false');
+    });
+
+    it('requests no modes when none are asked for, so the server applies its default set', () => {
+      const client = createMockClient(channel);
+      createTransport({ client, channelName: CHANNEL, codec: createTestCodec(), channelModes: [] });
+      expect(client.channels.get.mock.calls[0]?.[1]).not.toHaveProperty('modes');
+    });
+
+    it('requests the resolved mode set when channelModes opts in', () => {
+      const client = createMockClient(channel);
+      createTransport({ client, channelName: CHANNEL, codec: createTestCodec(), channelModes: OBJECT_MODES });
+      expect(client.channels.get.mock.calls[0]?.[1]?.modes).toEqual(resolveChannelModes(OBJECT_MODES));
+    });
+
+    it('throws InvalidArgument for an empty channel name and resolves nothing', () => {
+      const client = createMockClient(channel);
+      expect(() => createTransport({ client, channelName: '', codec: createTestCodec() })).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        statusCode: 400,
+        message: 'unable to create transport; channelName must be a non-empty string',
+      });
+      expect(client.channels.get).not.toHaveBeenCalled();
+    });
+
+    it('wraps a channel that cannot be resolved, keeping the failure as the cause', () => {
+      const client = createMockClient(channel);
+      // ably-js rejects a name already resolved with options that would
+      // reattach the channel, which is how two transports asking for
+      // different modes surfaces.
+      const conflict = new Ably.ErrorInfo('cannot be used to set channel options', 40000, 400);
+      client.channels.get.mockImplementationOnce(() => {
+        throw conflict;
+      });
+      expect(() =>
+        createTransport({ client, channelName: CHANNEL, codec: createTestCodec(), channelModes: OBJECT_MODES }),
+      ).toThrowErrorInfo({ code: 40000, statusCode: 400, cause: conflict });
+    });
   });
 
   describe('send', () => {
@@ -142,19 +205,31 @@ describe('createTransport', () => {
     });
 
     it('publishes every message the codec encodes an event to, in order, and returns the last serial', async () => {
-      const split = createTransport({ channel, codec: createSplitCodec() });
+      const split = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createSplitCodec(),
+      });
       await expect(split.send({ type: 'both', a: 'x', b: 'y' })).resolves.toEqual({ serial: 'serial-2' });
       expect(channel.publishCalls.map((m) => m.data as unknown)).toEqual(['x', 'y']);
     });
 
     it('publishes nothing when any of an event’s messages appends or updates', async () => {
-      const split = createTransport({ channel, codec: createSplitCodec() });
+      const split = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createSplitCodec(),
+      });
       await expect(split.send({ type: 'mixed', text: 'x' })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       expect(channel.publishCalls).toHaveLength(0);
     });
 
     it('rejects on the first publish that fails and leaves the earlier ones published', async () => {
-      const split = createTransport({ channel, codec: createSplitCodec() });
+      const split = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createSplitCodec(),
+      });
       channel.publish
         .mockResolvedValueOnce({ serials: ['serial-1'] })
         .mockRejectedValueOnce(new Ably.ErrorInfo('network', 80000, 500));
@@ -165,7 +240,11 @@ describe('createTransport', () => {
     });
 
     it("carries the call's headers on every message it publishes", async () => {
-      const split = createTransport({ channel, codec: createSplitCodec() });
+      const split = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createSplitCodec(),
+      });
       await split.send({ type: 'both', a: 'x', b: 'y' }, { headers: { requestId: 'r1' } });
       expect(channel.publishCalls.map((m) => headersOf(m))).toEqual([{ requestId: 'r1' }, { requestId: 'r1' }]);
     });
@@ -187,7 +266,11 @@ describe('createTransport', () => {
           },
         },
       });
-      const taggedTransport = createTransport({ channel, codec: tagged });
+      const taggedTransport = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: tagged,
+      });
       await taggedTransport.send({ type: 'note' }, { headers: { tenant: 'caller', requestId: 'r1' } });
       expect(channel.publishCalls[0]?.extras).toEqual({
         ai: { type: 'note' },
@@ -213,7 +296,7 @@ describe('createTransport', () => {
     it('rejects InvalidArgument for a header that is not a primitive, before encoding', async () => {
       const codec = createTestCodec();
       const encode = vi.spyOn(codec, 'encode');
-      const spied = createTransport({ channel, codec });
+      const spied = createTransport({ client: createMockClient(channel), channelName: CHANNEL, codec });
       await expect(spied.send({ type: 'note', text: 'x' }, { headers: badHeaders })).rejects.toBeErrorInfo({
         code: ErrorCode.InvalidArgument,
         message: "unable to send; header 'meta' is not a string, number, boolean or null",
@@ -385,7 +468,11 @@ describe('createTransport', () => {
     });
 
     it('delivers one delivery per event when the codec decodes a message to several', () => {
-      const split = createTransport({ channel, codec: createSplitCodec() });
+      const split = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createSplitCodec(),
+      });
       const deliveries: Delivery<SplitEvent>[] = [];
       split.subscribe((d) => deliveries.push(d));
       // CAST: a fixture inbound message with the name the split codec reads.
@@ -453,7 +540,11 @@ describe('createTransport', () => {
 
     it('returns a stream message a subscriber already received from history with no event', async () => {
       channel = createMockChannel([[deltaMessage('s2', 'two'), noteMessage('s1', 'one')]]);
-      transport = createTransport({ channel, codec: createTestCodec() });
+      transport = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createTestCodec(),
+      });
       const deliveries: Delivery<TestEvent>[] = [];
       transport.subscribe((d) => deliveries.push(d));
       channel.listener?.(deltaMessage('s2', 'two'));
@@ -476,7 +567,11 @@ describe('createTransport', () => {
   describe('history', () => {
     it('pages backwards from the attach point through the codec', async () => {
       channel = createMockChannel([[noteMessage('s2', 'two')], [noteMessage('s1', 'one')]]);
-      transport = createTransport({ channel, codec: createTestCodec() });
+      transport = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createTestCodec(),
+      });
       const first = await transport.history({ limit: 1 });
       expect(first.items.map((d) => d.event)).toEqual([{ type: 'note', text: 'two' }]);
       expect(first.hasNext).toBe(true);
@@ -492,7 +587,11 @@ describe('createTransport', () => {
         name: 'split',
       } as Ably.InboundMessage;
       channel = createMockChannel([[twin]]);
-      const split = createTransport({ channel, codec: createSplitCodec() });
+      const split = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createSplitCodec(),
+      });
       const page = await split.history({ limit: 1 });
       expect(page.items.map((d) => d.event)).toEqual([
         { type: 'half', text: 'x' },
@@ -502,7 +601,11 @@ describe('createTransport', () => {
 
     it('starts a new walk at the attach point on each call', async () => {
       channel = createMockChannel([[deltaMessage('s2', 'two')], [noteMessage('s1', 'one')]]);
-      transport = createTransport({ channel, codec: createTestCodec() });
+      transport = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createTestCodec(),
+      });
       const first = await transport.history({ limit: 1 });
       const again = await transport.history({ limit: 1 });
       expect(first.items.map((d) => d.message.serial)).toEqual(['s2']);
@@ -513,7 +616,11 @@ describe('createTransport', () => {
 
     it('includes a message whose decode threw, with no event, and reports the error', async () => {
       channel = createMockChannel([[inbound({ serial: 's1', fields: { type: 'rogue' } })]]);
-      transport = createTransport({ channel, codec: createTestCodec() });
+      transport = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createTestCodec(),
+      });
       const errors: Ably.ErrorInfo[] = [];
       transport.on('error', (e) => errors.push(e));
       const page = await transport.history({ limit: 1 });
@@ -546,6 +653,50 @@ describe('createTransport', () => {
       const outcome = expect(pending).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
       await transport.close();
       await outcome;
+    });
+
+    it('detaches the channel a subscribe attached', async () => {
+      transport.subscribe(vi.fn());
+      await flushMicrotasks();
+      await transport.close();
+      expect(channel.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('detaches the channel a history walk attached', async () => {
+      await transport.history({ limit: 10 });
+      await transport.close();
+      expect(channel.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a channel nothing attached, since send and pipe do not attach', async () => {
+      await transport.send({ type: 'note', text: 'x' });
+      await transport.pipe(streamOf<TestEvent>(...textEvents('m1', 'a')));
+      await transport.close();
+      expect(channel.detach).not.toHaveBeenCalled();
+    });
+
+    it('detaches only once the pipes in flight have settled', async () => {
+      transport.subscribe(vi.fn());
+      await flushMicrotasks();
+      let settled = false;
+      const outcome = transport.pipe(neverEndingStream<TestEvent>()).catch(() => {
+        settled = true;
+      });
+      let settledAtDetach: boolean | undefined;
+      channel.detach.mockImplementation(async (): Promise<void> => {
+        settledAtDetach = settled;
+        await Promise.resolve();
+      });
+      await transport.close();
+      await outcome;
+      expect(settledAtDetach).toBe(true);
+    });
+
+    it('resolves when the detach fails, since close never rejects', async () => {
+      transport.subscribe(vi.fn());
+      await flushMicrotasks();
+      channel.detach.mockRejectedValue(new Ably.ErrorInfo('detach failed', 90000, 500));
+      await expect(transport.close()).resolves.toBeUndefined();
     });
 
     it('rejects send and pipe once closed', async () => {

@@ -100,24 +100,49 @@ export const drainHistory = async <E>(transport: Transport<E>, limit = 50): Prom
 };
 
 /**
- * A channel whose first `appendMessage` rejects, for the append-repair
- * scenario. Every other call goes to the real channel.
- * @param channel - The real channel.
- * @param error - The rejection to inject.
- * @returns The wrapped channel.
+ * Wrap one of the target's members, binding every other one so the real
+ * object keeps its `this`.
+ * @param target - The object being proxied.
+ * @param property - The member being read.
+ * @param receiver - The proxy.
+ * @returns The bound member.
  */
-export const failingFirstAppend = (channel: Ably.RealtimeChannel, error: Error): Ably.RealtimeChannel => {
+const boundMember = (target: object, property: string | symbol, receiver: unknown): unknown => {
+  // CAST: the target's own members, bound so ably-js internals keep `this`.
+  const value = Reflect.get(target, property, receiver) as unknown;
+  return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+};
+
+/**
+ * A client whose channels' first `appendMessage` rejects, for the
+ * append-repair scenario. Every other call goes to the real client and its
+ * real channel.
+ * @param client - The real client.
+ * @param error - The rejection to inject.
+ * @returns The wrapped client.
+ */
+export const failingFirstAppend = (client: Ably.Realtime, error: Error): Ably.Realtime => {
   let injected = false;
-  return new Proxy(channel, {
+  const wrapChannel = (channel: Ably.RealtimeChannel): Ably.RealtimeChannel =>
+    new Proxy(channel, {
+      get: (target, property, receiver) => {
+        if (property === 'appendMessage' && !injected) {
+          injected = true;
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- a rejected promise stands in for the real call
+          return (): Promise<never> => Promise.reject(error);
+        }
+        return boundMember(target, property, receiver);
+      },
+    });
+  return new Proxy(client, {
     get: (target, property, receiver) => {
-      if (property === 'appendMessage' && !injected) {
-        injected = true;
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- a rejected promise stands in for the real call
-        return (): Promise<never> => Promise.reject(error);
+      if (property === 'channels') {
+        return {
+          get: (name: string, options?: Ably.ChannelOptions): Ably.RealtimeChannel =>
+            wrapChannel(target.channels.get(name, options)),
+        };
       }
-      // CAST: the target's own members, bound so ably-js internals keep `this`.
-      const value = Reflect.get(target, property, receiver) as unknown;
-      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      return boundMember(target, property, receiver);
     },
   });
 };

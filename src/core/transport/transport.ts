@@ -1,5 +1,10 @@
 /**
- * The transport: one Ably channel and one codec.
+ * The transport: one channel on an Ably Realtime client, and one codec.
+ *
+ * The transport resolves the channel by name off the client it is given,
+ * stamping the SDK's attribution on it and the modes the caller asked for. It
+ * owns that channel: `close` detaches it when the transport attached it. The
+ * caller owns the client's lifecycle, and `close` never closes it.
  *
  * `send` publishes one event as the messages its codec encodes it to. `pipe`
  * reads a source of events and writes each one as a publish, append or update,
@@ -31,8 +36,15 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
+import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
-import { closedError, ContinuityWatcher, subscribeAndAttach, wrapMessageProcessingError } from './channel-support.js';
+import {
+  bestEffortDetach,
+  closedError,
+  ContinuityWatcher,
+  subscribeAndAttach,
+  wrapMessageProcessingError,
+} from './channel-support.js';
 import { type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import { type HistoryOptions, type HistoryPage, openHistoryWalk } from './history-pager.js';
 import { type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
@@ -43,10 +55,16 @@ import { createPipeWriter } from './pipe-writer.js';
  * @template E - The codec's event union.
  */
 export interface TransportOptions<E> {
-  /** The channel to publish on and receive from. The caller resolves and owns it; the transport never detaches it. */
-  channel: Ably.RealtimeChannel;
+  /** The Ably Realtime client to resolve the channel from. The caller owns its lifecycle: `close()` never closes it. */
+  client: Ably.Realtime;
+  /** The name of the channel to publish on and receive from. The transport resolves it and owns its options, so an application that wants the same channel elsewhere asks for it by name with no options. */
+  channelName: string;
   /** The codec that turns events into Ably messages and back. */
   codec: Codec<E>;
+  /** Channel modes to request on top of the server default set, for example `OBJECT_MODES`. Omit to attach with no mode flags, which the server answers with its default set. Two transports sharing one client and channel name share the channel, so they must ask for the same modes. */
+  channelModes?: readonly Ably.ChannelMode[];
+  /** Whether the channel delivers this connection's own publishes back to it. `true` by default, the platform's own behaviour, so a publisher sees its own message as an ordinary delivery. Set `false` to render what you sent from the event you sent and reconcile on the serial `send` returned. */
+  echoMessages?: boolean;
   /** Logger for diagnostics. Silent when omitted. */
   logger?: Logger;
 }
@@ -174,8 +192,13 @@ export interface Transport<E> {
   /**
    * Stop every pipe in flight (each flushes and repairs what it wrote, then
    * rejects `OperationCancelled` to its caller), unsubscribe the channel
-   * listener and settle. Never rejects. Later calls on the transport throw
-   * `SessionClosed`. Idempotent.
+   * listener, then detach the channel if `subscribe` or `history` attached
+   * it. The transport resolved the channel, so it owns the detach, and a
+   * transport sharing the channel's name on the same client shares that
+   * channel and sees it detach. The detach is best effort: a failure is
+   * logged and swallowed. The client stays connected, since the caller owns
+   * it. Never rejects. Later calls on the transport throw `SessionClosed`.
+   * Idempotent.
    */
   close(): Promise<void>;
 }
@@ -190,6 +213,50 @@ interface TransportEvents<E> {
   discontinuity: undefined;
   error: Ably.ErrorInfo;
 }
+
+/**
+ * Resolve the transport's channel off the client.
+ *
+ * The options come from `transportChannelOptions`, the one place that builds
+ * them, so the React provider's `<ChannelProvider>` can hand ably-js the same
+ * ones. ably-js keeps one channel per name, so a name already resolved with
+ * different params or modes while the channel is attaching or attached is
+ * rejected by `channels.get` rather than silently reattached; that rejection
+ * reaches the caller as the cause.
+ * @param options - The transport's options.
+ * @param logger - Logger for the resolution and its failure.
+ * @returns The channel.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when `channelName` is empty; the wrapped `channels.get` failure otherwise.
+ */
+const resolveChannel = <E>(options: TransportOptions<E>, logger: Logger): Ably.RealtimeChannel => {
+  if (options.channelName === '') {
+    logger.error('Transport(); channel name is empty');
+    throw new Ably.ErrorInfo(
+      'unable to create transport; channelName must be a non-empty string',
+      ErrorCode.InvalidArgument,
+      400,
+    );
+  }
+  const channelOptions = transportChannelOptions(options);
+  try {
+    const channel = options.client.channels.get(options.channelName, channelOptions);
+    logger.debug('Transport(); resolved channel', { channel: channel.name, modes: channelOptions.modes });
+    return channel;
+  } catch (error) {
+    const cause = errorCause(error);
+    const wrapped = new Ably.ErrorInfo(
+      `unable to create transport; ${errorMessage(error)}`,
+      cause?.code ?? ErrorCode.InternalError,
+      cause?.statusCode ?? 500,
+      cause,
+    );
+    logger.error('Transport(); channel resolution failed', {
+      channel: options.channelName,
+      error: wrapped.message,
+    });
+    throw wrapped;
+  }
+};
 
 /**
  * Wrap a publish failure. A capability rejection gets its own code so an
@@ -221,14 +288,16 @@ class DefaultTransport<E> implements Transport<E> {
   private readonly _continuity: ContinuityWatcher;
   /** Whether the channel listener is registered and the attach is in flight or done. Cleared when the attach fails, so the next `subscribe` retries. */
   private _attached = false;
+  /** Whether `subscribe` or `history` ever asked the channel to attach, so `close()` knows to detach it. */
+  private _attachAttempted = false;
   private _closed = false;
 
   constructor(options: TransportOptions<E>) {
-    this._channel = options.channel;
-    this._codec = options.codec;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'Transport',
     });
+    this._channel = resolveChannel(options, this._logger);
+    this._codec = options.codec;
     this._emitter = new EventEmitter<TransportEvents<E>>(this._logger);
     this._listener = (message: Ably.InboundMessage) => {
       if (!this._closed) this._deliverNow(message);
@@ -319,6 +388,8 @@ class DefaultTransport<E> implements Transport<E> {
   async history(options: HistoryOptions): Promise<HistoryPage<E>> {
     this._logger.trace('Transport.history();', { limit: options.limit });
     if (this._closed) throw closedError('history');
+    // The walk attaches the channel to find its attach point.
+    this._attachAttempted = true;
     return openHistoryWalk({
       channel: this._channel,
       limit: options.limit,
@@ -347,6 +418,9 @@ class DefaultTransport<E> implements Transport<E> {
     // Each pipe rejects OperationCancelled to its own caller once it has
     // flushed and repaired; allSettled waits for that without rethrowing it here.
     await Promise.allSettled([...this._pipes].map(async (pipe) => pipe.done));
+    // Detach only after the pipes settle: a pipe flushes and repairs on this
+    // channel before it rejects.
+    await bestEffortDetach(this._channel, this._attachAttempted, this._logger, 'Transport');
   }
 
   /**
@@ -357,6 +431,7 @@ class DefaultTransport<E> implements Transport<E> {
   private _attach(): void {
     if (this._attached) return;
     this._attached = true;
+    this._attachAttempted = true;
     const attempt = subscribeAndAttach(this._channel, this._listener, this._logger, 'Transport', (error) => {
       this._emitter.emit('error', error);
     });
@@ -398,8 +473,13 @@ class DefaultTransport<E> implements Transport<E> {
 }
 
 /**
- * Create a transport over a channel and a codec.
+ * Create a transport over a codec and one channel of an Ably Realtime client.
+ *
+ * The channel is resolved at construction, so a name already resolved
+ * elsewhere with modes that differ from these is rejected here rather than
+ * changing the channel under whoever holds it.
  * @param options - See {@link TransportOptions}.
  * @returns The transport.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when `channelName` is empty; the failure `channels.get` raised, wrapped, when the channel cannot be resolved.
  */
 export const createTransport = <E>(options: TransportOptions<E>): Transport<E> => new DefaultTransport(options);

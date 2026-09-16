@@ -86,6 +86,29 @@ export const closedError = (method: string): Ably.ErrorInfo =>
   new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
 
 /**
+ * Detach a channel on close, best effort. Skipped when nothing ever asked the
+ * channel to attach. A failure is logged at debug and swallowed: the
+ * transport is closing, and the caller has nothing to retry.
+ * @param channel - The channel to detach.
+ * @param attempted - Whether an attach was ever requested.
+ * @param logger - Logger for the failure.
+ * @param component - The component name for the log line.
+ */
+export const bestEffortDetach = async (
+  channel: Ably.RealtimeChannel,
+  attempted: boolean,
+  logger: Logger | undefined,
+  component: string,
+): Promise<void> => {
+  if (!attempted) return;
+  try {
+    await channel.detach();
+  } catch (error) {
+    logger?.debug(`${component}.close(); channel detach failed`, { error: errorMessage(error) });
+  }
+};
+
+/**
  * Whether a channel state change breaks message continuity: FAILED, SUSPENDED
  * or DETACHED, where no more messages are expected, or ATTACHED with
  * `resumed: false`, where messages were lost. The initial attach is the

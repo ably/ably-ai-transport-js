@@ -80,7 +80,7 @@ The following code streams a model response from a Next.js route handler onto an
 import { streamText, convertToModelMessages, toUIMessageStream, type UIMessage } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import * as Ably from 'ably';
-import { channelAgent, createTransport, ErrorCode } from '@ably/ai-transport';
+import { createTransport, ErrorCode } from '@ably/ai-transport';
 import { vercel } from '@ably/ai-transport/vercel';
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
@@ -95,11 +95,10 @@ export async function POST(req: Request) {
   await recordMessage(channelName, message);
   const messages: UIMessage[] = await loadConversation(channelName);
 
-  // You resolve the channel, so you stamp the SDK's identity on it with
-  // channelAgent(codec). Every resolver of the same channel must request the
-  // same options, or ably-js reattaches it.
-  const channel = ably.channels.get(channelName, { params: { agent: channelAgent(vercel) } });
-  const transport = createTransport({ channel, codec: vercel });
+  // The transport resolves the channel off the client and owns its options.
+  // You keep the client: close() never closes it, and detaches the channel
+  // only when the transport attached it.
+  const transport = createTransport({ client: ably, channelName, codec: vercel });
 
   const result = streamText({
     model: openai('gpt-4o-mini'),
@@ -136,14 +135,13 @@ Publishing a message is one call, and reading the reply is a subscription. Each 
 ```typescript
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
 import * as Ably from 'ably';
-import { channelAgent, createTransport, type Delivery } from '@ably/ai-transport';
+import { createTransport, type Delivery } from '@ably/ai-transport';
 import { vercel, type VercelEvent } from '@ably/ai-transport/vercel';
 
 const ably = new Ably.Realtime({ authUrl: '/api/auth/token' });
 const channelName = 'conversations:abc';
 
-const channel = ably.channels.get(channelName, { params: { agent: channelAgent(vercel) } });
-const transport = createTransport({ channel, codec: vercel });
+const transport = createTransport({ client: ably, channelName, codec: vercel });
 
 // One delivery per inbound Ably message. The first subscribe attaches the
 // channel; nothing here assembles a message list, that is yours. Here the AI
@@ -159,8 +157,9 @@ const unsubscribe = transport.subscribe(({ event }) => {
   reply?.enqueue(event);
   if (event.type === 'finish') reply?.close();
 });
-// The channel is the caller's, so its state is read from it directly.
-await channel.whenState('attached');
+// To read the channel's state, ask for it by name with no options of your own
+// and you get the one the transport resolved.
+await ably.channels.get(channelName).whenState('attached');
 
 async function merge(stream: ReadableStream<UIMessageChunk>) {
   for await (const message of readUIMessageStream({ stream })) render(message);

@@ -74,9 +74,9 @@ export interface Delivery<E> {
  */
 export interface Codec<E> {
   /**
-   * Optional Ably-Agent identifier appended to the channel's `params.agent`
-   * by `channelAgent`, so traffic is attributed to this codec. Omit to
-   * contribute nothing.
+   * Optional Ably-Agent identifier the transport appends to its channel's
+   * `params.agent`, so traffic is attributed to this codec. Omit to contribute
+   * nothing.
    */
   readonly adapterTag?: string;
   /**

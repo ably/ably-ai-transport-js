@@ -205,9 +205,10 @@ describe('ContinuityWatcher', () => {
   });
 
   it('reports the first loss on a channel that was already attached', () => {
-    // A caller-owned channel can already be ATTACHED, and attaching an
-    // attached channel emits no state change, so the seed is the only thing
-    // that lets the first loss through.
+    // A channel resolved by name can already be ATTACHED, from another
+    // transport or from the application, and attaching an attached channel
+    // emits no state change, so the seed is the only thing that lets the first
+    // loss through.
     const { channel, fire } = watchableChannel('attached');
     const losses: Ably.ChannelState[] = [];
     new ContinuityWatcher(channel, (change) => losses.push(change.current));

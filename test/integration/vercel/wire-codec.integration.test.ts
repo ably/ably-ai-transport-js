@@ -13,28 +13,28 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { channelAgent, createTransport, type Transport } from '../../../src/index.js';
-import { createVercelCodec, vercel, type VercelEvent } from '../../../src/vercel/index.js';
+import { createTransport, type Transport } from '../../../src/index.js';
+import { createVercelCodec, type VercelEvent } from '../../../src/vercel/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
-const channelFor = (client: Ably.Realtime, name: string): Ably.RealtimeChannel =>
-  client.channels.get(name, { params: { agent: channelAgent(vercel) } });
-
 const transportOn = (name: string): Transport<VercelEvent> =>
-  createTransport({ channel: channelFor(ablyRealtimeClient(), name), codec: createVercelCodec() });
+  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createVercelCodec() });
 
 /**
  * A transport with the channel it reads, for a subscriber that waits for the attach.
+ * The channel comes back from a bare `channels.get`, which is how an
+ * application shares the channel the transport owns the options of.
  * @param name - The channel name.
  * @returns The transport and its channel.
  */
 const readerOn = (name: string): { transport: Transport<VercelEvent>; channel: Ably.RealtimeChannel } => {
-  const channel = channelFor(ablyRealtimeClient(), name);
-  return { transport: createTransport({ channel, codec: createVercelCodec() }), channel };
+  const client = ablyRealtimeClient();
+  const transport = createTransport({ client, channelName: name, codec: createVercelCodec() });
+  return { transport, channel: client.channels.get(name) };
 };
 
 /** The stream `toUIMessageStream` gives for a turn that calls a tool, then answers. */

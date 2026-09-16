@@ -2,30 +2,32 @@
  * The Vercel AI SDK codec: one row per `UIMessageChunk` type, plus the
  * `user-message` a client publishes to start a turn.
  *
- * Three chunk families stream, and in each the deltas alone share a message.
- * A `text-*` or `reasoning-*` start chunk is a plain publish; each delta
- * appends its text as the message `data` under the stream id, and the first
- * delta is the publish that opens that message; the end chunk is a plain
- * publish that ends the key. Ably's append replaces the stored `extras`, so
- * the message the deltas share reads back from history under the delta type
- * with the joined text as its `data`, and the start and end chunks keep their
- * own messages: history and a late joiner decode the same chunk sequence the
- * agent produced, with the deltas joined. `tool-input-*` streams the same way
- * keyed by the tool call id; its closer, `tool-input-available`, is the same
- * plain publish, and the SDK emits it straight from a `tool-call` when a
- * provider does not stream tool input, so it ends the key when there is one.
+ * Three chunk types stream: `text-delta`, `reasoning-delta` and
+ * `tool-input-delta`. Their deltas are appended to a single message: each
+ * delta carries its text as the message `data` and the rest of the chunk as
+ * headers, the first delta publishes the message under the stream id or tool
+ * call id, and the rest append to it. The start chunk before them and the
+ * end chunk after them are plain publishes of their own, and the end chunk
+ * ends the key. `tool-input-available` is the closer of a tool input stream;
+ * the SDK emits it straight from a `tool-call` when a provider does not
+ * stream tool input, so it ends the key when there is one.
  *
- * Every other chunk travels whole as a plain publish, its fields as the row's
- * headers, with two exceptions where the content is the message `data`: a
- * `tool-output-available` carries its `output` there, and a `data-*` part its
- * `data`. A transient data part is published ephemeral, so it reaches
- * subscribers and stays out of history.
+ * Ably's append replaces the stored `extras` with the extras from the last
+ * append operation. So when history returns the message the deltas built, it
+ * carries the last delta's headers and the whole text as its `data`, and a
+ * subscriber that reads history, or that joins late, decodes one delta
+ * carrying all of the text where a live subscriber decoded many.
+ *
+ * Every other chunk is a plain publish that nothing appends to, so it travels
+ * whole as the message `data`, an object, with no headers. A `user-message`
+ * carries the `UIMessage` a client publishes. A transient `data-*` part is
+ * published ephemeral, so it reaches subscribers and stays out of history.
  */
 
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { Codec, DecodedRow, EncodedRow, EventRow } from '../../core/codec/index.js';
+import type { Codec, DecodedRow, EventRow } from '../../core/codec/index.js';
 import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelEvent } from './events.js';
@@ -40,49 +42,31 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 /**
- * Rebuild a chunk from the headers a plain publish carried and the type the
- * builder matched. The spread headers carry a `type` of their own, since
- * encode spreads the whole chunk; the builder's is the one that picked the row,
- * so it is the one used.
+ * Rebuild an event from the body a plain publish carried and the type the
+ * builder matched. The body carries a `type` of its own, since encode sends
+ * the whole chunk; the builder's is the one that picked the row, so it is the
+ * one used.
  * @param body - The row body.
- * @param body.headers - The chunk's fields.
+ * @param body.data - The chunk, as the message body.
  * @param body.type - The type the builder matched.
- * @returns The chunk.
+ * @returns The event.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when the body is not an object.
  */
-const chunk = ({ headers, type }: DecodedRow): VercelEvent =>
-  // CAST: wire trust boundary. The headers were written by this codec's encode
-  // from the chunk itself, and the builder has already matched `type` to a row.
-  ({ ...headers, type }) as VercelEvent;
+const event = ({ data, type }: DecodedRow): VercelEvent => {
+  if (!isRecord(data)) {
+    throw new Ably.ErrorInfo(`unable to decode ${type}; data is not an object`, ErrorCode.InvalidArgument, 400);
+  }
+  // CAST: trust boundary of what was received on the wire. data is the chunk's own fields, and entire record is VercelEvent
+  return { ...data, type } as VercelEvent;
+};
 
 /**
- * A decode that restores one text field from `data`.
- * @param field - The chunk field the text travelled as `data` for.
- * @returns The decode.
- */
-const withText =
-  (field: string) =>
-  ({ data, headers, type }: DecodedRow): VercelEvent =>
-    // CAST: as `chunk`, with one field restored from `data`.
-    ({ ...headers, type, [field]: asString(data) }) as VercelEvent;
-
-/**
- * A decode that restores one payload field from `data`.
- * @param field - The chunk field the payload travelled as `data` for.
- * @returns The decode.
- */
-const withValue =
-  (field: string) =>
-  ({ data, headers, type }: DecodedRow): VercelEvent =>
-    // CAST: as `chunk`; the payload is the application's own and stays unconstrained.
-    ({ ...headers, type, [field]: data }) as VercelEvent;
-
-/**
- * The row of a chunk that travels whole in its headers.
+ * The row of a chunk that travels whole as the message body.
  * @returns The row.
  */
 const plain = <T extends VercelEvent['type']>(): Row<T> => ({
-  encode: (e) => ({ headers: { ...e } }),
-  decode: chunk,
+  encode: (e) => ({ data: e }),
+  decode: event,
 });
 
 /**
@@ -113,47 +97,52 @@ export const createVercelCodec = <
     typeOf: (e: VercelEvent) => e.type,
     events: {
       // Streams: the start is a plain publish, each delta appends its text as
-      // `data` under the key (the first one opening the message), and the end
-      // is a plain publish that ends the key.
+      // `data` under the key with the rest of the chunk as headers (the first
+      // one opening the message), and the end is a plain publish that ends
+      // the key.
       'text-start': plain(),
       'text-delta': {
         encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.id }),
-        decode: withText('delta'),
+        // CAST: trust boundary of what was received on the wire. delta is string data, and entire record is VercelEvent
+        decode: ({ data, headers, type }) => ({ ...headers, type, delta: asString(data) }) as VercelEvent,
       },
-      'text-end': { encode: (e) => ({ headers: { ...e }, ends: e.id }), decode: chunk },
+      'text-end': {
+        encode: (e) => ({ data: e, ends: e.id }),
+        decode: event,
+      },
       'reasoning-start': plain(),
       'reasoning-delta': {
         encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.id }),
-        decode: withText('delta'),
+        // CAST: trust boundary of what was received on the wire. delta is string data, and entire record is VercelEvent
+        decode: ({ data, headers, type }) => ({ ...headers, type, delta: asString(data) }) as VercelEvent,
       },
-      'reasoning-end': { encode: (e) => ({ headers: { ...e }, ends: e.id }), decode: chunk },
+      'reasoning-end': {
+        encode: (e) => ({ data: e, ends: e.id }),
+        decode: event,
+      },
       'tool-input-start': plain(),
       'tool-input-delta': {
         encode: ({ inputTextDelta, ...rest }) => ({ data: inputTextDelta, headers: rest, append: rest.toolCallId }),
-        decode: withText('inputTextDelta'),
+        // CAST: trust boundary of what was received on the wire. inputTextDelta is string data, and entire record is VercelEvent
+        decode: ({ data, headers, type }) => ({ ...headers, type, inputTextDelta: asString(data) }) as VercelEvent,
       },
       'tool-input-available': {
         // The SDK emits this with no start when a provider does not stream
         // tool input; it ends the key when one is live.
-        encode: (e) => ({ headers: { ...e }, ends: e.toolCallId }),
-        decode: chunk,
+        encode: (e) => ({ data: e, ends: e.toolCallId }),
+        decode: event,
       },
       'tool-input-error': {
-        encode: (e) => ({ headers: { ...e }, ends: e.toolCallId }),
-        decode: chunk,
+        encode: (e) => ({ data: e, ends: e.toolCallId }),
+        decode: event,
       },
 
-      // Content as the message data.
-      'tool-output-available': {
-        encode: ({ output, ...rest }) => ({ data: output, headers: rest }),
-        decode: withValue('output'),
-      },
+      // A data part travels whole like any other chunk; a transient one is
+      // published ephemeral.
+      'tool-output-available': plain(),
       'data-*': {
-        encode: ({ data, ...rest }) => {
-          const row: EncodedRow = { data, headers: rest };
-          return rest.transient === true ? { ...row, ephemeral: true } : row;
-        },
-        decode: withValue('data'),
+        encode: (e) => (e.transient === true ? { data: e, ephemeral: true } : { data: e }),
+        decode: event,
       },
       'user-message': {
         encode: (e) => ({ data: e.message }),

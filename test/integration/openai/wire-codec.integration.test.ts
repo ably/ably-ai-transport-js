@@ -17,7 +17,7 @@ import { createOpenAICodec, openai, type OpenAIEvent } from '../../../src/openai
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { streamOf } from '../../helper/test-codec.js';
-import { decodedOf, textResponse, toolCallResponse } from '../../openai/codec/fixtures.js';
+import { at, decodedOf, textResponse, toolCallResponse } from '../../openai/codec/fixtures.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
 const channelFor = (client: Ably.Realtime, name: string): Ably.RealtimeChannel =>
@@ -73,11 +73,16 @@ describe('OpenAI codec over Ably', () => {
     const inputDelivery = recorder.deliveries.find((d) => d.event?.type === 'input');
     expect(inputDelivery?.message.serial).toBe(sent.serial);
 
-    // The raw shape: an event's fields travel under extras.headers with no
-    // sequence number. Ably admits only a flat map of primitives there, so an
+    // The raw shape: a plain publish carries the whole event as the message
+    // body; a delta carries its text as the body and the rest of the event
+    // under extras.headers, since an append grows the body and carries
+    // nothing else. Ably admits only a flat map of primitives there, so an
     // array goes as JSON text and is listed under extras.ai.json beside the
     // type, and the transport's stream marker beside both on the deltas'
     // message.
+    const added = recorder.deliveries.find((d) => d.event?.type === 'response.output_item.added');
+    expect(added?.message.data).toEqual(at(toolCallResponse, 1));
+    expect(added?.message.extras).toEqual({ ai: { type: 'response.output_item.added' } });
     const delta = recorder.deliveries.find((d) => d.event?.type === 'response.output_text.delta');
     expect(delta?.message.data).toBe('It is 21°C');
     expect(delta?.message.extras).toEqual({
@@ -88,6 +93,7 @@ describe('OpenAI codec over Ably', () => {
         output_index: 0,
         content_index: 0,
         logprobs: '[]',
+        sequence_number: 3,
       },
     });
   });
@@ -97,13 +103,14 @@ describe('OpenAI codec over Ably', () => {
     await transportOn(name).pipe(streamOf(...textResponse));
 
     // Every event reads back as itself except the text deltas, which share
-    // one message and come back as one delta carrying the joined text.
+    // one message and come back as one delta carrying the joined text under
+    // the last delta's headers, since an append replaces the stored extras.
     const history = await drainHistory(transportOn(name));
     const expected = decodedOf(textResponse);
     expect(history.map((d) => d.event)).toStrictEqual([
       expected[0],
       expected[1],
-      { ...expected[2], delta: 'It is 21°C in London.' },
+      { ...expected[3], delta: 'It is 21°C in London.' },
       ...expected.slice(4),
     ]);
     expect(history[2]?.message.data).toBe('It is 21°C in London.');

@@ -33,22 +33,24 @@ describe('the Vercel codec', () => {
   describe('encode', () => {
     it('turns a turn into one operation per chunk, streaming the tool input and the text', () => {
       const encoded = encodeAll(codec, turn);
+      // A plain publish carries the whole chunk as the body; a delta carries
+      // its text, appended under the stream key.
       expect(
         encoded.map(({ message, ...ops }) => ({ name: message.name, data: message.data as unknown, ...ops })),
       ).toEqual([
-        { name: 'ai', data: '' },
-        { name: 'ai', data: '' },
-        { name: 'ai', data: '' },
+        { name: 'ai', data: turn[0] },
+        { name: 'ai', data: turn[1] },
+        { name: 'ai', data: turn[2] },
         { name: 'ai', data: '{"city":', append: 'call_1' },
         { name: 'ai', data: '"London"}', append: 'call_1' },
-        { name: 'ai', data: '', ends: 'call_1' },
-        { name: 'ai', data: { temp: 21 } },
-        { name: 'ai', data: '' },
+        { name: 'ai', data: turn[5], ends: 'call_1' },
+        { name: 'ai', data: turn[6] },
+        { name: 'ai', data: turn[7] },
         { name: 'ai', data: 'It is 21°C', append: 'txt_1' },
         { name: 'ai', data: ' in London.', append: 'txt_1' },
-        { name: 'ai', data: '', ends: 'txt_1' },
-        { name: 'ai', data: '' },
-        { name: 'ai', data: '' },
+        { name: 'ai', data: turn[10], ends: 'txt_1' },
+        { name: 'ai', data: turn[11] },
+        { name: 'ai', data: turn[12] },
       ]);
     });
 
@@ -66,36 +68,52 @@ describe('the Vercel codec', () => {
       }
     });
 
-    it('carries a chunk’s fields, its type included, under extras.headers and its type under extras.ai', () => {
-      expect(codec.encode({ type: 'finish', finishReason: 'stop' })[0]?.message.extras).toEqual({
-        ai: { type: 'finish' },
-        headers: { type: 'finish', finishReason: 'stop' },
+    it('carries a plain publish whole as the message body, with only its type under extras.ai', () => {
+      expect(codec.encode({ type: 'finish', finishReason: 'stop' })[0]?.message).toEqual({
+        name: 'ai',
+        data: { type: 'finish', finishReason: 'stop' },
+        extras: { ai: { type: 'finish' } },
       });
-      expect(codec.encode({ type: 'text-delta', id: 'txt_1', delta: 'hi' })[0]?.message.extras).toEqual({
-        ai: { type: 'text-delta' },
-        headers: { type: 'text-delta', id: 'txt_1' },
-      });
-      expect(codec.encode({ type: 'start-step' })[0]?.message.extras).toEqual({
-        ai: { type: 'start-step' },
-        headers: { type: 'start-step' },
+      expect(codec.encode({ type: 'start-step' })[0]?.message).toEqual({
+        name: 'ai',
+        data: { type: 'start-step' },
+        extras: { ai: { type: 'start-step' } },
       });
     });
 
-    it('carries a nested field as JSON text in extras.headers, listed under extras.ai.json', () => {
+    it('carries a delta’s text as the body and the rest of the chunk under extras.headers', () => {
+      expect(codec.encode({ type: 'text-delta', id: 'txt_1', delta: 'hi' })[0]?.message).toEqual({
+        name: 'ai',
+        data: 'hi',
+        extras: { ai: { type: 'text-delta' }, headers: { type: 'text-delta', id: 'txt_1' } },
+      });
+    });
+
+    it('carries a delta’s nested field as JSON text in extras.headers, listed under extras.ai.json', () => {
       const [encoded] = codec.encode({
+        type: 'text-delta',
+        id: 'txt_1',
+        delta: 'hi',
+        providerMetadata: { openai: { itemId: 'msg_1' } },
+      });
+      expect(encoded?.message.extras).toEqual({
+        ai: { type: 'text-delta', json: ['providerMetadata'] },
+        headers: { type: 'text-delta', id: 'txt_1', providerMetadata: '{"openai":{"itemId":"msg_1"}}' },
+      });
+    });
+
+    it('carries a plain publish’s nested field as an object in the body, with no extras.ai.json', () => {
+      const chunk: VercelEvent = {
         type: 'tool-input-available',
         toolCallId: 'call_1',
         toolName: 'weather',
         input: { city: 'London' },
-      });
-      expect(encoded?.message.extras).toEqual({
-        ai: { type: 'tool-input-available', json: ['input'] },
-        headers: {
-          type: 'tool-input-available',
-          toolCallId: 'call_1',
-          toolName: 'weather',
-          input: '{"city":"London"}',
-        },
+      };
+      const [encoded] = codec.encode(chunk);
+      expect(encoded?.message).toEqual({
+        name: 'ai',
+        data: chunk,
+        extras: { ai: { type: 'tool-input-available' } },
       });
     });
 
@@ -105,19 +123,18 @@ describe('the Vercel codec', () => {
       expect(encoded?.ends).toBe('call_9');
     });
 
-    it('publishes a data part with its payload as the message data, ephemeral when transient', () => {
+    it('publishes a data part whole as the message data, ephemeral when transient', () => {
       expect(codec.encode({ type: 'data-weather', id: 'w1', data: { temp: 21 } })).toEqual([
         {
           message: {
             name: 'ai',
-            data: { temp: 21 },
-            extras: { ai: { type: 'data-weather' }, headers: { type: 'data-weather', id: 'w1' } },
+            data: { type: 'data-weather', id: 'w1', data: { temp: 21 } },
+            extras: { ai: { type: 'data-weather' } },
           },
         },
       ]);
       expect(codec.encode({ type: 'data-progress', data: 0.5, transient: true })[0]?.message.extras).toEqual({
         ai: { type: 'data-progress' },
-        headers: { type: 'data-progress', transient: true },
         ephemeral: true,
       });
     });
@@ -182,12 +199,13 @@ describe('the Vercel codec', () => {
       ]);
     });
 
-    it('decodes a chunk from the builder’s type when the spread type header is missing', () => {
-      const [delivery] = deliveriesOf(encodeAll(codec, [{ type: 'finish', finishReason: 'stop' }]));
+    it('throws for a plain publish whose body is not an object', () => {
+      const [delivery] = deliveriesOf([{ message: { name: 'ai', data: 'nope', extras: { ai: { type: 'finish' } } } }]);
       if (delivery === undefined) throw new Error('fixture');
-      // CAST: a fixture inbound message whose headers lost their type copy.
-      const stripped = { ...delivery, extras: { ai: { type: 'finish' }, headers: { finishReason: 'stop' } } };
-      expect(codec.decode(stripped as typeof delivery)).toEqual([{ type: 'finish', finishReason: 'stop' }]);
+      expect(() => codec.decode(delivery)).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: 'unable to decode finish; data is not an object',
+      });
     });
 
     it('round-trips a user message', () => {

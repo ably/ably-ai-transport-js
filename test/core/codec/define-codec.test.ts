@@ -327,8 +327,8 @@ describe('defineCodec', () => {
     });
 
     it('hands the row extras.headers as delivered, the headers of the publishing call included', () => {
-      // A row that writes one header of its own; the transport lays a call's
-      // headers beneath it, and the wire cannot tell the two apart.
+      // A row that writes one header of its own; the transport adds a call's
+      // headers alongside it, and the wire cannot tell the two apart.
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
         typeOf: (e: { type: 'a' }) => e.type,
@@ -344,7 +344,7 @@ describe('defineCodec', () => {
       });
       const [encoded] = recording.encode({ type: 'a' });
       if (encoded === undefined) throw new Error('fixture');
-      // CAST: `extras` is typed `any`; the test lays a caller's header beside the row's.
+      // CAST: `extras` is typed `any`; the test adds a caller's header beside the row's.
       const extras = encoded.message.extras as { headers: Record<string, unknown> };
       const [delivery] = deliveriesOf([
         {

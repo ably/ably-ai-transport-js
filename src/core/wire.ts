@@ -1,23 +1,23 @@
 /**
- * The `extras` vocabulary: the `extras` key Ably reserves for this SDK, the
- * fields written under it, and the key Ably provides for a publisher's own
- * headers.
+ * The `extras` vocabulary: the two `extras` keys this SDK writes and the
+ * fields under them.
  *
- * Two layers write under `ai` and neither imports the other, so the names
- * live here. The codec builder writes `type`, which picks the row on decode,
- * and `fields`, a row's event fields that travel beside an appended body,
- * nested values as they are. The transport's pipe writer writes `stream`,
- * `true` on every write under a live key (the publish that opens the key, each
- * append and each update), and `ends`, the serial of the message a key's
- * closer ends. Ably stores the last write's extras on an appended message, so
- * `stream` is on a stream's message however it is read back, and the decoder
- * core reads both fields to know which messages to remember and when to
- * forget them.
+ * Two layers write there and neither imports the other, so the names live
+ * here. Under `ai`, the key Ably reserves for this SDK, the codec builder
+ * writes `type`, which picks the row on decode, and `fields`, a row's event
+ * fields that travel beside an appended body, nested values as they are. The
+ * transport's pipe writer writes `stream`, `true` on every write under a live
+ * key (the publish that opens the key, each append and each update), and
+ * `ends`, the serial of the message a key's closer ends. Ably stores the last
+ * write's extras on an appended message, so `stream` is on a stream's message
+ * however it is read back, and the decoder core reads both fields to know
+ * which messages to remember and when to forget them.
  *
- * `headers` is Ably's own key, the one its server-side filtering reads. Ably
- * admits only a flat map of string, number, boolean and null values under it
- * (error 40032 otherwise). The builder writes a row's `headers` there as
- * given.
+ * Under `headers`, the key Ably provides for a publisher's own fields and the
+ * one its server-side filtering reads, the builder writes a row's `headers`
+ * and the transport adds a `send` or `pipe` call's headers, preferring the
+ * row's where both name a key. Ably admits only a flat map of string, number,
+ * boolean and null values there (error 40032 otherwise).
  */
 
 import type * as Ably from 'ably';
@@ -37,11 +37,14 @@ export const STREAM_FIELD = 'stream';
 /** Transport: on the message that ends a key, the serial of the message it ends. */
 export const ENDS_FIELD = 'ends';
 
-/** The `extras` key Ably provides for a publisher's own fields, the one its filtering reads. A row's `headers` go under it. */
+/** The `extras` key Ably provides for a publisher's own fields, the one its filtering reads. A row's `headers` go under it, over the headers of the `send` or `pipe` call that published the message. */
 export const HEADERS_KEY = 'headers';
 
-/** A value Ably admits under `extras.headers`. */
+/** A value Ably admits under `extras.headers` as it is. */
 export type HeaderPrimitive = string | number | boolean | null;
+
+export const isHeaderPrimitive = (value: unknown): value is HeaderPrimitive =>
+  value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;

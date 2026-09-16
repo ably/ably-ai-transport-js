@@ -29,6 +29,9 @@
  * string, number, boolean and null values under it (error 40032 otherwise),
  * so a row's `headers` are typed to that and written as given; the builder
  * translates nothing. An `undefined` value in either map is dropped. The
+ * transport adds the headers of the publishing `send` or `pipe` call and
+ * prefers a row's where both name a key, so a row keeps a header it writes
+ * and its decode sees the merged map. The
  * builder hands the type it matched to a row's decode on the body. A row that
  * puts a `type` in its own fields sends it like any other field and gets it
  * back unchanged. A row never sees `extras`, and a hand-written codec may put
@@ -104,8 +107,10 @@ export interface RowMessage {
    * `undefined` value is dropped, and a row that gives none writes no key.
    * Survives a repair update untouched. A `type` key here is ordinary: the
    * builder neither reads it nor writes it. On decode, always present (empty
-   * when the message carries none) and exactly what encode wrote; the type
-   * the builder matched arrives as {@link DecodedRow.type}, not in here.
+   * when the message carries none) and exactly what encode wrote: a `send` or
+   * `pipe` call's headers never reach here, since they ride under
+   * `extras.headers`. The type the builder matched arrives as
+   * {@link DecodedRow.type}, not in here.
    */
   fields?: Record<string, unknown>;
   /**
@@ -136,7 +141,7 @@ export interface DecodedRow extends RowMessage {
   type: string;
   /** What `extras.ai.fields` carries; empty when the message carries none. */
   fields: Record<string, unknown>;
-  /** What `extras.headers` carries, as delivered; empty when the message carries none. */
+  /** What `extras.headers` carries, as delivered: the row's headers, plus any the publishing call attached, the row's preferred where both name a key. Empty when the message carries none. */
   headers: Record<string, HeaderPrimitive>;
 }
 
@@ -168,8 +173,9 @@ export interface EventRow<E, T extends string> {
   encode(event: RowEvent<E, T>): EncodedRow | undefined;
   /**
    * Rebuild the event from the body. `data` is what this delivery adds,
-   * `fields` is what encode wrote and nothing more, `headers` is
-   * `extras.headers` as delivered, and `type` is the type the builder matched.
+   * `fields` is what encode wrote and nothing more, `headers` is what encode
+   * wrote over the publishing call's headers, and `type` is the type the
+   * builder matched.
    * @param message - The body, after the decoder core.
    */
   decode(message: DecodedRow): E;
@@ -243,8 +249,9 @@ const readOwn = (message: Ably.InboundMessage): OwnFields | undefined => {
 };
 
 /**
- * The map under `extras.headers` as delivered, empty when the message
- * carries none or carries something that is not an object.
+ * The map under `extras.headers` as delivered, the row's headers over any the
+ * publishing call attached, and nothing the builder adds. Empty when the
+ * message carries none or carries something that is not an object.
  * @param message - The inbound message.
  * @returns The headers.
  */

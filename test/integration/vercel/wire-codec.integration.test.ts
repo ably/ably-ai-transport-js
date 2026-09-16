@@ -47,7 +47,7 @@ const turn: VercelEvent[] = [
   { type: 'tool-input-available', toolCallId: 'call_1', toolName: 'weather', input: { city: 'London' } },
   { type: 'tool-output-available', toolCallId: 'call_1', output: { temp: 21 } },
   { type: 'text-start', id: 'txt_1' },
-  { type: 'text-delta', id: 'txt_1', delta: 'It is 21°C' },
+  { type: 'text-delta', id: 'txt_1', delta: 'It is 21°C', providerMetadata: { openai: { itemId: 'msg_1' } } },
   { type: 'text-delta', id: 'txt_1', delta: ' in London.' },
   { type: 'text-end', id: 'txt_1' },
   { type: 'finish-step' },
@@ -81,10 +81,11 @@ describe('Vercel codec over Ably', () => {
     // The raw shape: a plain publish carries the whole chunk as the message
     // body, nested fields included, with only the type under extras.ai. A
     // delta carries its text as the body and the rest of the chunk under
-    // extras.headers, since an append grows the body and carries nothing
-    // else. The transport's own fields sit beside the type: the closer names
-    // the serial of the tool input's message, and the deltas' message carries
-    // the stream marker.
+    // extras.ai.fields, since an append grows the body and carries nothing
+    // else; a nested value such as the provider metadata travels as an
+    // object, and nothing goes under extras.headers. The transport's own
+    // fields sit beside the type: the closer names the serial of the tool
+    // input's message, and the deltas' message carries the stream marker.
     const toolInput = recorder.deliveries.find((d) => d.event?.type === 'tool-input-delta');
     const available = recorder.deliveries.find((d) => d.event?.type === 'tool-input-available');
     expect(available?.message.data).toEqual(turn[5]);
@@ -94,8 +95,11 @@ describe('Vercel codec over Ably', () => {
     const delta = recorder.deliveries.find((d) => d.event?.type === 'text-delta');
     expect(delta?.message.data).toBe('It is 21°C');
     expect(delta?.message.extras).toEqual({
-      ai: { type: 'text-delta', stream: true },
-      headers: { type: 'text-delta', id: 'txt_1' },
+      ai: {
+        type: 'text-delta',
+        stream: true,
+        fields: { type: 'text-delta', id: 'txt_1', providerMetadata: { openai: { itemId: 'msg_1' } } },
+      },
     });
 
     const message = await foldWithProviderReducer(recorder.events().filter(isChunk));

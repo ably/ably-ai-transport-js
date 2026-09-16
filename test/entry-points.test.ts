@@ -36,6 +36,7 @@ import type {
   EncodedRow,
   EventRow,
   EventRows,
+  HeaderPrimitive,
   HistoryOptions,
   HistoryPage,
   LogContext,
@@ -128,7 +129,9 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<EventRow<TestEvent, 'note'>>().toHaveProperty('encode');
     expectTypeOf<RowEvent<TestEvent, 'note'>>().toEqualTypeOf<{ type: 'note'; text: string }>();
     expectTypeOf<RowEventType<'data-*'>>().toEqualTypeOf<`data-${string}`>();
+    expectTypeOf<RowMessage>().toHaveProperty('fields');
     expectTypeOf<RowMessage>().toHaveProperty('headers');
+    expectTypeOf<HeaderPrimitive>().toEqualTypeOf<string | number | boolean | null>();
     expectTypeOf<EncodedRow>().toHaveProperty('publish');
     expectTypeOf<DecodedRow>().toHaveProperty('type');
     expectTypeOf<Stripped<{ a: string | undefined }>>().not.toBeNever();

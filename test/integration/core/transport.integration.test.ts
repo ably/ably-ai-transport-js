@@ -77,19 +77,18 @@ describe('transport over Ably', () => {
       'message.append',
       'message.create',
     ]);
-    // The raw shape: the codec's name, the row's data, the row's headers under
-    // extras.headers and the type under extras.ai, echoed as published, with
-    // the transport's stream marker on the deltas' writes and the serial the
-    // end message ends.
+    // The raw shape: the codec's name, the row's data, and the type and the
+    // row's fields under extras.ai, echoed as published, with the transport's
+    // stream marker on the deltas' writes and the serial the end message ends.
     // CAST: `data` and `extras` are typed `any`; the test compares them as values.
     expect(
       recorder.deliveries.map((d) => [d.message.name, d.message.data as unknown, d.message.extras as unknown]),
     ).toEqual([
       ['test', 'What is the weather?', { ai: { type: 'note' } }],
-      ['test', '', { ai: { type: 'text-start' }, headers: { id: 'm1' } }],
-      ['test', 'The weather', { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } }],
-      ['test', ' is mild.', { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } }],
-      ['test', '', { ai: { type: 'text-end', ends: recorder.deliveries[2]?.message.serial }, headers: { id: 'm1' } }],
+      ['test', '', { ai: { type: 'text-start', fields: { id: 'm1' } } }],
+      ['test', 'The weather', { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } }],
+      ['test', ' is mild.', { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } }],
+      ['test', '', { ai: { type: 'text-end', ends: recorder.deliveries[2]?.message.serial, fields: { id: 'm1' } } }],
     ]);
   });
 

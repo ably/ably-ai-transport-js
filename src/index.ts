@@ -30,6 +30,7 @@ export type {
   EncodedRow,
   EventRow,
   EventRows,
+  HeaderPrimitive,
   RowEvent,
   RowEventType,
   RowMessage,

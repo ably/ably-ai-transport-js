@@ -14,20 +14,20 @@ import { createTestCodec, neverEndingStream, streamOf, type TestEvent, textEvent
 const noop = (): void => {};
 
 /**
- * The `extras` the builder writes for a set of primitive fields: `type` under
- * `ai`, the rest under `headers` when there are any.
+ * The `extras` the builder writes for a set of fields: `type` under `ai`, the
+ * rest under `ai.fields` when there are any.
  * @param fields - The fields.
  * @param fields.type - The event type.
  * @returns The extras.
  */
-const extrasFor = ({ type, ...headers }: Record<string, unknown>): Record<string, unknown> =>
-  Object.keys(headers).length > 0 ? { ai: { type }, headers } : { ai: { type } };
+const extrasFor = ({ type, ...fields }: Record<string, unknown>): Record<string, unknown> =>
+  Object.keys(fields).length > 0 ? { ai: { type, fields } } : { ai: { type } };
 
 const inbound = (opts: {
   action?: Ably.InboundMessage['action'];
   serial: string;
   data?: unknown;
-  /** The builder's fields, all primitive: `type` goes under `extras.ai`, the rest under `extras.headers`. */
+  /** The builder's fields under `extras.ai`: `type` beside the rest under `fields`. */
   fields?: Record<string, unknown>;
   /** The whole `extras`, verbatim, for a message that is not the codec's. */
   extras?: unknown;
@@ -53,7 +53,7 @@ const noteMessage = (serial: string, text: string): Ably.InboundMessage =>
  * @returns The inbound message.
  */
 const deltaMessage = (serial: string, text: string): Ably.InboundMessage =>
-  inbound({ serial, data: text, extras: { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } } });
+  inbound({ serial, data: text, extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } } });
 
 describe('createTransport', () => {
   let channel: MockChannel & Ably.RealtimeChannel;

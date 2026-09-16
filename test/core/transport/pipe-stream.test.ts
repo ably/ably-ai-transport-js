@@ -84,9 +84,9 @@ describe('pipeStream', () => {
       // The deltas' writes carry the transport's stream marker and the end
       // names the message it ends; the start and the note carry neither.
       expect(channel.publishCalls.map((m) => m.extras as unknown)).toEqual([
-        { ai: { type: 'text-start' }, headers: { id: 'm1' } },
-        { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } },
-        { ai: { type: 'text-end', ends: 'serial-2' }, headers: { id: 'm1' } },
+        { ai: { type: 'text-start', fields: { id: 'm1' } } },
+        { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } },
+        { ai: { type: 'text-end', ends: 'serial-2', fields: { id: 'm1' } } },
         { ai: { type: 'note' } },
       ]);
       expect(channel.appendCalls).toEqual([
@@ -94,7 +94,7 @@ describe('pipeStream', () => {
           serial: 'serial-2',
           name: 'test',
           data: ' world',
-          extras: { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } },
+          extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } },
         },
       ]);
     });
@@ -143,7 +143,7 @@ describe('pipeStream', () => {
         {
           serial: 'serial-2',
           data: 'kept lost',
-          extras: { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } },
+          extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } },
         },
       ]);
     });
@@ -252,7 +252,7 @@ describe('pipeStream', () => {
       );
       // The second delta's append failed; the cancel still repairs the stream.
       expect(channel.updateCalls).toEqual([
-        { serial: 'serial-2', data: 'ab', extras: { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } } },
+        { serial: 'serial-2', data: 'ab', extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } } },
       ]);
     });
 
@@ -333,7 +333,7 @@ describe('pipeStream', () => {
       // message with the text so far under the last delta's extras.
       expect(channel.appendMessage).toHaveBeenCalledTimes(1);
       expect(channel.updateCalls).toEqual([
-        { serial: 'serial-2', data: 'ab', extras: { ai: { type: 'text-delta', stream: true }, headers: { id: 'm1' } } },
+        { serial: 'serial-2', data: 'ab', extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } } },
       ]);
     });
 

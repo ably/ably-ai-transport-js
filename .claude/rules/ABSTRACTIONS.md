@@ -217,27 +217,29 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
 7. **The SDK owns two wire fields, and the builder two more, all under
-   `extras.ai`.** A row speaks in `data` and `headers`: a plain publish
-   carries the event in `data`, and a message that is appended to carries the
-   appended text in `data` and the event's other fields in `headers`, since
-   an append grows `data` and carries nothing else. Where headers sit on the
-   wire is the builder's choice: it writes them under `extras.headers`, the extras key
-   Ably provides for a publisher's own fields, and its own `type` and `json`
-   under `extras.ai`, the key the platform reserves for this SDK, and reads
-   `extras.ai.type` back to pick the row. The transport's pipe writer stamps
-   `extras.ai.stream` on every write under a live key, so a stream's message
-   carries it however it is read back, and `extras.ai.ends`, the serial it
-   ends, on the message that ends one; the decoder core reads both to know
-   which messages to remember and when to forget them (`src/core/wire.ts`
-   holds the names). Ably admits
-   only a flat map of string, number, boolean and null values under
-   `extras.headers` (error 40032 otherwise), and a provider's events carry
-   nested objects and arrays, so the builder writes a nested value as JSON
-   text and lists its key under `extras.ai.json` to parse it back on decode.
-   `extras.headers` is the row's in both directions and the builder never
-   reads or writes a key in it: a `type` header travels like any other, and
-   the type the builder matched reaches a row's `decode` as `type` on the
-   body. A row never touches `extras`. A message
+   `extras.ai`.** A row speaks in `data`, `fields` and `headers`: a plain
+   publish carries the event in `data`, and a message that is appended to
+   carries the appended text in `data` and the event's other fields in
+   `fields`, since an append grows `data` and carries nothing else. The
+   builder writes `fields` under `extras.ai.fields`, nested objects and
+   arrays as they are, beside its own `type` under `extras.ai`, the key the
+   platform reserves for this SDK, and reads `extras.ai.type` back to pick
+   the row. The transport's pipe writer stamps `extras.ai.stream` on every
+   write under a live key, so a stream's message carries it however it is
+   read back, and `extras.ai.ends`, the serial it ends, on the message that
+   ends one; the decoder core reads both to know which messages to remember
+   and when to forget them (`src/core/wire.ts` holds the names). `headers`
+   is Ably's `extras.headers`, the key its server-side filtering reads, and a
+   row writes it only to expose a field there on purpose. Ably admits only a
+   flat map of string, number, boolean and null values under it (error 40032
+   otherwise), so the row property is typed to that and written as given; the
+   builder translates and checks nothing. A row's `decode` receives
+   `extras.headers` as delivered, any headers the publishing call attached
+   included, since the wire cannot tell them from the row's; the shipped
+   codecs rebuild events from `fields` and never spread `headers`. A `type`
+   key in `fields` travels like any other, and the type the builder matched
+   reaches a row's `decode` as `type` on the body. A row never touches
+   `extras`. A message
    without `extras.ai.type` is **foreign**: the transport shares its channel
    with the application, so `decode` returns `undefined` and the transport
    delivers it raw. Classify by that field, never by the wire `name`, which is

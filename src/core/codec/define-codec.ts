@@ -8,49 +8,48 @@
  * beside it (see {@link DecodedRow}). The builder derives nothing between the
  * two. A row produces at most one message and at most one event, and the built
  * codec wraps each into the zero- or one-element array the {@link Codec}
- * contract speaks. A row puts the message body in `data` and, for a message
- * that will be appended to, the fields that must stay out of the growing body
- * in `headers`. On every message it encodes the builder writes `data` as the
- * body, the row's `headers` under `extras.headers` and its own fields under
- * `extras.ai`, reads them back on
- * decode, applies a default message `name` to a message that names none, and
- * wraps `decode` with the decoder core so a late joiner's full-content update
- * reaches the row as the unseen tail and replays are dropped.
+ * contract speaks. A row speaks in three things: `data`, the message body;
+ * `fields`, the event fields that must stay out of a body that appends grow;
+ * and `headers`, the Ably headers a codec author sets on purpose. On every
+ * message it encodes the builder writes `data` as the body, the row's `fields`
+ * and its own `type` under `extras.ai`, and the row's `headers` under
+ * `extras.headers`, reads them back on decode, applies a default message
+ * `name` to a message that names none, and wraps `decode` with the decoder
+ * core so a late joiner's full-content update reaches the row as the unseen
+ * tail and replays are dropped.
  *
  * Ably accepts only known keys at the top of `extras` and rejects a publish
- * carrying any other. `headers` is the key Ably provides for a publisher's own
- * fields, so a row's `headers` go there. The platform admits only a flat map
- * of string, number, boolean and null values under it (error 40032 otherwise),
- * and a provider's events carry nested objects and arrays, so the builder
- * writes such a value as its JSON text and lists the key under `extras.ai.json`
- * so decode can parse it back; a primitive travels as it is, and an
- * `undefined` value is dropped. `ai` is the key the platform reserves for this
- * SDK. The builder writes two fields under it, the `type` that picks the row
- * and that list, and the transport writes two more on the messages that open
- * and end a key (see `src/core/wire.ts`); the builder reads its own two and
- * ignores the rest. The builder hands the type it matched to a row's decode
- * on the body. A row that puts a `type` in its own headers sends it like any
- * other header and gets it back unchanged. A row never sees `extras`, and a
- * hand-written codec may put its type anywhere Ably allows.
+ * carrying any other. `ai` is the key the platform reserves for this SDK, and
+ * a value under it travels as it is, nested objects and arrays included. The
+ * builder writes two fields there, the `type` that picks the row and the row's
+ * `fields`; the transport writes two more on the messages that open and end a
+ * key (see `src/core/wire.ts`); the builder reads its own two and ignores the
+ * rest. `headers` is the key Ably provides for a publisher's own fields and
+ * the one its server-side filtering reads. Ably admits only a flat map of
+ * string, number, boolean and null values under it (error 40032 otherwise),
+ * so a row's `headers` are typed to that and written as given; the builder
+ * translates nothing. An `undefined` value in either map is dropped. The
+ * builder hands the type it matched to a row's decode on the body. A row that
+ * puts a `type` in its own fields sends it like any other field and gets it
+ * back unchanged. A row never sees `extras`, and a hand-written codec may put
+ * its type anywhere Ably allows.
  */
 
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorMessage } from '../../utils.js';
-import { EXTRAS_KEY, isRecord, JSON_FIELD, readOwnExtras, TYPE_FIELD } from '../wire.js';
+import {
+  EXTRAS_KEY,
+  FIELDS_FIELD,
+  type HeaderPrimitive,
+  HEADERS_KEY,
+  isRecord,
+  readOwnExtras,
+  TYPE_FIELD,
+} from '../wire.js';
 import type { Codec, EncodedMessage } from './codec.js';
 import { createDecoderCore } from './decoder.js';
-
-/** The `extras` key Ably provides for a publisher's own fields; a row's `headers` go under it. */
-const HEADERS_KEY = 'headers';
-
-/** A value Ably admits under `extras.headers` as it is. */
-type HeaderPrimitive = string | number | boolean | null;
-
-const isPrimitive = (value: unknown): value is HeaderPrimitive =>
-  value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 
 /** The suffix that makes a row key match every type sharing its prefix (`data-*` matches `data-weather`). */
 const WILDCARD_SUFFIX = '-*';
@@ -77,8 +76,9 @@ export type RowEvent<E, T extends string> = [Extract<E, { type: RowEventType<T> 
  * The message body a row speaks in, in both directions. On encode a row
  * returns it with routing (see {@link EncodedRow}). On decode the builder
  * hands it back, assembled from the Ably message, with the type it matched
- * beside it (see {@link DecodedRow}): `data` is what this delivery adds, and
- * `headers` is what the row's encode wrote.
+ * beside it (see {@link DecodedRow}): `data` is what this delivery adds,
+ * `fields` is what the row's encode wrote, and `headers` is `extras.headers`
+ * as delivered.
  */
 export interface RowMessage {
   /**
@@ -98,17 +98,29 @@ export interface RowMessage {
    */
   data?: unknown;
   /**
-   * The fields that travel beside `data` when the message is appended to,
-   * since an append grows `data` and carries nothing else. Every other field
-   * the event carries, as JSON. Survives a repair update
-   * untouched. Where and how they sit on the wire is the builder's choice, not
-   * the row's: a nested value travels as JSON text and comes back parsed, and
-   * an `undefined` value is dropped. A `type` key here is ordinary: the
+   * The event fields that travel beside `data` when the message is appended
+   * to, since an append grows `data` and carries nothing else. Written under
+   * `extras.ai.fields` as given, nested objects and arrays included; an
+   * `undefined` value is dropped, and a row that gives none writes no key.
+   * Survives a repair update untouched. A `type` key here is ordinary: the
    * builder neither reads it nor writes it. On decode, always present (empty
    * when the message carries none) and exactly what encode wrote; the type
    * the builder matched arrives as {@link DecodedRow.type}, not in here.
    */
-  headers?: Record<string, unknown>;
+  fields?: Record<string, unknown>;
+  /**
+   * Ably headers, written under `extras.headers` as given. Ably's server-side
+   * filtering reads that key, so this is for a field a codec author wants
+   * exposed there on purpose; an event's own fields belong in `fields`. Ably
+   * admits only a flat map of string, number, boolean and null values (error
+   * 40032 otherwise), and the type admits the same; the builder checks
+   * nothing at runtime. An `undefined` value is dropped, and a row that gives
+   * none writes no key. On decode, `extras.headers` as delivered, which
+   * includes any headers the call that published the message attached beside
+   * the row's own: the wire cannot tell them apart, so a row that spreads
+   * this map onto an event takes the caller's headers with it.
+   */
+  headers?: Record<string, HeaderPrimitive | undefined>;
 }
 
 /**
@@ -122,8 +134,10 @@ export interface DecodedRow extends RowMessage {
    * key.
    */
   type: string;
-  /** What `extras.headers` carries, with the listed keys parsed back; empty when the message carries none. */
-  headers: Record<string, unknown>;
+  /** What `extras.ai.fields` carries; empty when the message carries none. */
+  fields: Record<string, unknown>;
+  /** What `extras.headers` carries, as delivered; empty when the message carries none. */
+  headers: Record<string, HeaderPrimitive>;
 }
 
 /** What a row's `encode` returns: the body, plus where the message goes. */
@@ -154,8 +168,8 @@ export interface EventRow<E, T extends string> {
   encode(event: RowEvent<E, T>): EncodedRow | undefined;
   /**
    * Rebuild the event from the body. `data` is what this delivery adds,
-   * `headers` is what encode wrote and nothing more, and `type` is the type
-   * the builder matched.
+   * `fields` is what encode wrote and nothing more, `headers` is
+   * `extras.headers` as delivered, and `type` is the type the builder matched.
    * @param message - The body, after the decoder core.
    */
   decode(message: DecodedRow): E;
@@ -206,14 +220,16 @@ export interface DefineCodecConfig<E, K extends string> {
 interface OwnFields {
   /** The event type. */
   type: string;
-  /** The header keys whose values travel as JSON text. */
-  json: string[];
+  /** The row's fields, empty when the message carries none. */
+  fields: Record<string, unknown>;
 }
 
 /**
  * Read the builder's own fields off an inbound message: the object under
  * `extras.ai`, when it has a string `type`. Anything else is not this
- * builder's message.
+ * builder's message. The type picks the row and is not copied into the
+ * fields; a row that wants it there wrote it there. A `fields` value that is
+ * not an object reads as empty.
  * @param message - The inbound message.
  * @returns The fields, or `undefined`.
  */
@@ -222,64 +238,39 @@ const readOwn = (message: Ably.InboundMessage): OwnFields | undefined => {
   if (own === undefined) return undefined;
   const type = own[TYPE_FIELD];
   if (typeof type !== 'string') return undefined;
-  const listed = own[JSON_FIELD];
-  const json = Array.isArray(listed) ? listed.filter((key): key is string => typeof key === 'string') : [];
-  return { type, json };
+  const fields = own[FIELDS_FIELD];
+  return { type, fields: isRecord(fields) ? fields : {} };
 };
 
 /**
- * Rebuild the row's headers from an inbound message: the map under
- * `extras.headers`, with each value listed under `extras.ai.json` parsed back
- * from its JSON text, and nothing added. The type under `extras.ai` picks the
- * row and is not copied in; a row that wants it in its headers wrote it there.
+ * The map under `extras.headers` as delivered, empty when the message
+ * carries none or carries something that is not an object.
  * @param message - The inbound message.
- * @param own - The builder's own fields.
- * @returns The headers, empty when the message carries none.
- * @throws {Ably.ErrorInfo} `InvalidArgument` when a listed value is not valid JSON.
+ * @returns The headers.
  */
-const readHeaders = (message: Ably.InboundMessage, own: OwnFields): Record<string, unknown> => {
+const readHeaders = (message: Ably.InboundMessage): Record<string, HeaderPrimitive> => {
   // CAST: Ably types `extras` as `any`; the guards below narrow it.
   const extras = message.extras as unknown;
   const raw = isRecord(extras) && isRecord(extras[HEADERS_KEY]) ? extras[HEADERS_KEY] : {};
-  const headers: Record<string, unknown> = { ...raw };
-  for (const key of own.json) {
-    const text = raw[key];
-    if (typeof text !== 'string') continue;
-    try {
-      headers[key] = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw new Ably.ErrorInfo(
-        `unable to decode message; header '${key}' of type '${own.type}' is not valid JSON: ${errorMessage(error)}`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-  }
-  return headers;
+  // CAST: wire trust boundary. Ably admits only string, number, boolean and
+  // null values under `extras.headers` and rejects a publish carrying any
+  // other, so what it delivers is that map.
+  return raw as Record<string, HeaderPrimitive>;
 };
 
 /**
- * Lay a row's headers out for the wire: primitives as they are, anything
- * nested as JSON text, `undefined` dropped. A `type` header travels like any
- * other; the builder's own copy under `extras.ai` is the one decode reads.
- * @param headers - The row's headers.
- * @returns The flat map, and the keys that were encoded.
+ * A copy of `record` without its `undefined` values, which JSON would drop
+ * anyway; `undefined` when nothing is left, so the caller writes no key.
+ * @param record - The row's map, or `undefined` for none.
+ * @returns The copy, or `undefined` when empty.
  */
-const flattenHeaders = (
-  headers: Record<string, unknown> | undefined,
-): { flat: Record<string, HeaderPrimitive>; json: string[] } => {
-  const flat: Record<string, HeaderPrimitive> = {};
-  const json: string[] = [];
-  for (const [key, value] of Object.entries(headers ?? {})) {
-    if (value === undefined) continue;
-    if (isPrimitive(value)) {
-      flat[key] = value;
-    } else {
-      flat[key] = JSON.stringify(value);
-      json.push(key);
-    }
+const withoutUndefined = <V>(record: Record<string, V> | undefined): Record<string, V> | undefined => {
+  if (record === undefined) return undefined;
+  const copy: Record<string, V> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== undefined) copy[key] = value;
   }
-  return { flat, json };
+  return Object.keys(copy).length > 0 ? copy : undefined;
 };
 
 /**
@@ -339,11 +330,12 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
         );
       }
 
-      const { flat, json } = flattenHeaders(produced.headers);
+      const fields = withoutUndefined(produced.fields);
+      const headers = withoutUndefined(produced.headers);
       const own: Record<string, unknown> = { [TYPE_FIELD]: type };
-      if (json.length > 0) own[JSON_FIELD] = json;
+      if (fields !== undefined) own[FIELDS_FIELD] = fields;
       const extras: Record<string, unknown> = { [EXTRAS_KEY]: own };
-      if (Object.keys(flat).length > 0) extras[HEADERS_KEY] = flat;
+      if (headers !== undefined) extras[HEADERS_KEY] = headers;
       if (produced.ephemeral === true) extras.ephemeral = true;
       const data: unknown = produced.data ?? '';
       // Every message carries a name: an append to a key not yet live is the
@@ -370,7 +362,12 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
           400,
         );
       }
-      const body: DecodedRow = { type: own.type, data: prepared.data as unknown, headers: readHeaders(prepared, own) };
+      const body: DecodedRow = {
+        type: own.type,
+        data: prepared.data as unknown,
+        fields: own.fields,
+        headers: readHeaders(prepared),
+      };
       if (prepared.name !== undefined) body.name = prepared.name;
       return [row.decode(body)];
     },

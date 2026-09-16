@@ -75,25 +75,27 @@ describe('OpenAI codec over Ably', () => {
 
     // The raw shape: a plain publish carries the whole event as the message
     // body; a delta carries its text as the body and the rest of the event
-    // under extras.headers, since an append grows the body and carries
-    // nothing else. Ably admits only a flat map of primitives there, so an
-    // array goes as JSON text and is listed under extras.ai.json beside the
-    // type, and the transport's stream marker beside both on the deltas'
-    // message.
+    // under extras.ai.fields, since an append grows the body and carries
+    // nothing else. A nested value travels as it is, so the logprobs array
+    // reads back as an array, with the transport's stream marker beside the
+    // type on the deltas' message and nothing under extras.headers.
     const added = recorder.deliveries.find((d) => d.event?.type === 'response.output_item.added');
     expect(added?.message.data).toEqual(at(toolCallResponse, 1));
     expect(added?.message.extras).toEqual({ ai: { type: 'response.output_item.added' } });
     const delta = recorder.deliveries.find((d) => d.event?.type === 'response.output_text.delta');
     expect(delta?.message.data).toBe('It is 21°C');
     expect(delta?.message.extras).toEqual({
-      ai: { type: 'response.output_text.delta', json: ['logprobs'], stream: true },
-      headers: {
+      ai: {
         type: 'response.output_text.delta',
-        item_id: 'msg_1',
-        output_index: 0,
-        content_index: 0,
-        logprobs: '[]',
-        sequence_number: 3,
+        stream: true,
+        fields: {
+          type: 'response.output_text.delta',
+          item_id: 'msg_1',
+          output_index: 0,
+          content_index: 0,
+          logprobs: [],
+          sequence_number: 3,
+        },
       },
     });
   });
@@ -104,7 +106,7 @@ describe('OpenAI codec over Ably', () => {
 
     // Every event reads back as itself except the text deltas, which share
     // one message and come back as one delta carrying the joined text under
-    // the last delta's headers, since an append replaces the stored extras.
+    // the last delta's fields, since an append replaces the stored extras.
     const history = await drainHistory(transportOn(name));
     const expected = decodedOf(textResponse);
     expect(history.map((d) => d.event)).toStrictEqual([

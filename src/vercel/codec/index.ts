@@ -5,7 +5,7 @@
  * Three chunk types stream: `text-delta`, `reasoning-delta` and
  * `tool-input-delta`. Their deltas are appended to a single message: each
  * delta carries its text as the message `data` and the rest of the chunk as
- * headers, the first delta publishes the message under the stream id or tool
+ * `fields`, the first delta publishes the message under the stream id or tool
  * call id, and the rest append to it. The start chunk before them and the
  * end chunk after them are plain publishes of their own, and the end chunk
  * ends the key. `tool-input-available` is the closer of a tool input stream;
@@ -14,14 +14,15 @@
  *
  * Ably's append replaces the stored `extras` with the extras from the last
  * append operation. So when history returns the message the deltas built, it
- * carries the last delta's headers and the whole text as its `data`, and a
+ * carries the last delta's fields and the whole text as its `data`, and a
  * subscriber that reads history, or that joins late, decodes one delta
  * carrying all of the text where a live subscriber decoded many.
  *
  * Every other chunk is a plain publish that nothing appends to, so it travels
- * whole as the message `data`, an object, with no headers. A `user-message`
+ * whole as the message `data`, an object, with no fields. A `user-message`
  * carries the `UIMessage` a client publishes. A transient `data-*` part is
  * published ephemeral, so it reaches subscribers and stays out of history.
+ * No row writes Ably `headers`: every field a chunk carries is a chunk field.
  */
 
 import * as Ably from 'ably';
@@ -97,14 +98,14 @@ export const createVercelCodec = <
     typeOf: (e: VercelEvent) => e.type,
     events: {
       // Streams: the start is a plain publish, each delta appends its text as
-      // `data` under the key with the rest of the chunk as headers (the first
+      // `data` under the key with the rest of the chunk as `fields` (the first
       // one opening the message), and the end is a plain publish that ends
       // the key.
       'text-start': plain(),
       'text-delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.id }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: rest.id }),
         // CAST: trust boundary of what was received on the wire. delta is string data, and entire record is VercelEvent
-        decode: ({ data, headers, type }) => ({ ...headers, type, delta: asString(data) }) as VercelEvent,
+        decode: ({ data, fields, type }) => ({ ...fields, type, delta: asString(data) }) as VercelEvent,
       },
       'text-end': {
         encode: (e) => ({ data: e, ends: e.id }),
@@ -112,9 +113,9 @@ export const createVercelCodec = <
       },
       'reasoning-start': plain(),
       'reasoning-delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.id }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: rest.id }),
         // CAST: trust boundary of what was received on the wire. delta is string data, and entire record is VercelEvent
-        decode: ({ data, headers, type }) => ({ ...headers, type, delta: asString(data) }) as VercelEvent,
+        decode: ({ data, fields, type }) => ({ ...fields, type, delta: asString(data) }) as VercelEvent,
       },
       'reasoning-end': {
         encode: (e) => ({ data: e, ends: e.id }),
@@ -122,9 +123,9 @@ export const createVercelCodec = <
       },
       'tool-input-start': plain(),
       'tool-input-delta': {
-        encode: ({ inputTextDelta, ...rest }) => ({ data: inputTextDelta, headers: rest, append: rest.toolCallId }),
+        encode: ({ inputTextDelta, ...rest }) => ({ data: inputTextDelta, fields: rest, append: rest.toolCallId }),
         // CAST: trust boundary of what was received on the wire. inputTextDelta is string data, and entire record is VercelEvent
-        decode: ({ data, headers, type }) => ({ ...headers, type, inputTextDelta: asString(data) }) as VercelEvent,
+        decode: ({ data, fields, type }) => ({ ...fields, type, inputTextDelta: asString(data) }) as VercelEvent,
       },
       'tool-input-available': {
         // The SDK emits this with no start when a provider does not stream

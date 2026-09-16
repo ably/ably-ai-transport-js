@@ -16,9 +16,9 @@
  *
  * Ably's append replaces the stored `extras` with the extras from the last
  * append operation. So when history returns the message the deltas built, it
- * carries the last delta's type and the whole text as its `data`. A
- * subscriber that reads history, or that joins late, decodes one delta event
- * carrying all of the text where a live subscriber decoded many.
+ * carries the last delta's type and fields and the whole text as its `data`.
+ * A subscriber that reads history, or that joins late, decodes one delta
+ * event carrying all of the text where a live subscriber decoded many.
  *
  * Text that streamed as deltas goes on the wire once. The Responses API
  * repeats it four more times: a stream's `*.done` carries the joined text,
@@ -40,10 +40,11 @@
  * `response.created`, `response.in_progress` and `response.queued` publish
  * nothing: they carry a response with no output yet. Every other event is a
  * plain publish that nothing appends to, so it travels whole as the message
- * `data`, an object, with no headers and with the repeats above sent empty
+ * `data`, an object, with no fields and with the repeats above sent empty
  * inside it. That includes the audio deltas, the audio transcript deltas and
  * a partial image: they name no item to key a stream on, and a base64 chunk
- * is not joined onto another, so each is its own message.
+ * is not joined onto another, so each is its own message. No row writes Ably
+ * `headers`: every field an event carries is an event field.
  */
 
 import * as Ably from 'ably';
@@ -84,16 +85,16 @@ const event = ({ data, type }: DecodedRow): OpenAIEvent => {
 
 /**
  * The decode every delta row shares: the text comes back from `data`, the rest
- * of the event from the headers. Every streaming event names its text `delta`.
+ * of the event from `fields`. Every streaming event names its text `delta`.
  * @param body - The row body.
  * @param body.data - The delta's text, as the appended message body.
- * @param body.headers - The event's other fields, as encode wrote them.
+ * @param body.fields - The event's other fields, as encode wrote them.
  * @param body.type - The type the builder matched.
  * @returns The event.
  */
-const deltaEvent = ({ data, headers, type }: DecodedRow): OpenAIEvent =>
+const deltaEvent = ({ data, fields, type }: DecodedRow): OpenAIEvent =>
   // CAST: trust boundary of what was received on the wire. delta is string data, and entire record is OpenAIEvent
-  ({ ...headers, type, delta: asString(data) }) as OpenAIEvent;
+  ({ ...fields, type, delta: asString(data) }) as OpenAIEvent;
 
 /**
  * The row of an event that travels whole as the message body.
@@ -253,7 +254,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
 
       // Output items. A function call's arguments stream under its item id;
       // the finished item travels with its repeated content emptied. A delta
-      // carries its text as `data` and the rest of the event as headers, since
+      // carries its text as `data` and the rest of the event as `fields`, since
       // an append grows `data` and carries nothing else; its closer publishes
       // the event whole with the field that repeats that text emptied.
       'response.output_item.added': plain(),
@@ -262,7 +263,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
         decode: event,
       },
       'response.function_call_arguments.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.item_id }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: rest.item_id }),
         decode: deltaEvent,
       },
       'response.function_call_arguments.done': {
@@ -277,7 +278,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
         decode: event,
       },
       'response.output_text.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: contentSlot(rest) }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: contentSlot(rest) }),
         decode: deltaEvent,
       },
       'response.output_text.done': {
@@ -285,7 +286,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
         decode: event,
       },
       'response.refusal.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: contentSlot(rest) }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: contentSlot(rest) }),
         decode: deltaEvent,
       },
       'response.refusal.done': {
@@ -293,7 +294,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
         decode: event,
       },
       'response.reasoning_text.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: contentSlot(rest) }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: contentSlot(rest) }),
         decode: deltaEvent,
       },
       'response.reasoning_text.done': {
@@ -309,7 +310,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
         decode: event,
       },
       'response.reasoning_summary_text.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: summarySlot(rest) }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: summarySlot(rest) }),
         decode: deltaEvent,
       },
       'response.reasoning_summary_text.done': {
@@ -320,7 +321,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
       // Hosted tools that stream: code, custom tool input and MCP arguments
       // are keyed by their item id, as a function call's arguments are.
       'response.code_interpreter_call_code.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.item_id }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: rest.item_id }),
         decode: deltaEvent,
       },
       'response.code_interpreter_call_code.done': {
@@ -328,7 +329,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
         decode: event,
       },
       'response.custom_tool_call_input.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.item_id }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: rest.item_id }),
         decode: deltaEvent,
       },
       'response.custom_tool_call_input.done': {
@@ -336,7 +337,7 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
         decode: event,
       },
       'response.mcp_call_arguments.delta': {
-        encode: ({ delta, ...rest }) => ({ data: delta, headers: rest, append: rest.item_id }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: rest.item_id }),
         decode: deltaEvent,
       },
       'response.mcp_call_arguments.done': {

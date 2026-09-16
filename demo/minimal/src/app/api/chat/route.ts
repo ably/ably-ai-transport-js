@@ -29,6 +29,10 @@ export async function POST(req: Request) {
   // from channel history. The model gets the conversation without the
   // placeholders, since a reply still in flight has nothing to say yet.
   const replyId = crypto.randomUUID();
+  // The prompt's own id tags every message of the turn: the client stamps it
+  // on the prompt, and the reply and any abort carry it too, so the page can
+  // tell one reply's chunks from another's.
+  const headers = { requestId: message.id };
   recordMessages(channelName, [message, { id: replyId, role: 'assistant', parts: [] }]);
   const messages = (loadConversation(channelName)?.messages ?? [message]).filter((m) => m.parts.length > 0);
   const apiKey = process.env.ABLY_API_KEY;
@@ -71,7 +75,7 @@ export async function POST(req: Request) {
             reply = responseMessage;
           },
         }),
-        { signal: req.signal },
+        { signal: req.signal, headers },
       );
       // The reply replaces its placeholder. `serial` is undefined only when
       // the pipe published nothing, and then there is no reply to record.
@@ -84,7 +88,7 @@ export async function POST(req: Request) {
         // reply has ended. Best effort: a tab that misses it reads the
         // channel on its next load.
         try {
-          await transport.send({ type: 'abort' });
+          await transport.send({ type: 'abort' }, { headers });
         } catch (sendError) {
           console.error('abort publish failed', sendError);
         }

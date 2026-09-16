@@ -127,8 +127,8 @@ export const textResponse: OpenAIEvent[] = [
 
 /**
  * The events a subscriber decodes for a response: everything but the opener,
- * without `sequence_number`, and with each repeat of streamed text emptied: a
- * closer's text field, a finished item's streamed fields, and the terminal
+ * with each repeat of streamed text emptied: a closer's text field, a
+ * finished part's text, a finished item's streamed fields, and the terminal
  * response's `output`.
  * @param events - The response's events.
  * @returns The expected decoded events.
@@ -136,32 +136,43 @@ export const textResponse: OpenAIEvent[] = [
 export const decodedOf = (events: OpenAIEvent[]): OpenAIEvent[] =>
   events
     .filter((e) => e.type !== 'response.created')
-    .map((e) => {
-      const fields = Object.fromEntries(Object.entries(e).filter(([key]) => key !== 'sequence_number'));
+    .map((e): OpenAIEvent => {
       switch (e.type) {
         case 'response.function_call_arguments.done': {
-          fields.arguments = '';
-          break;
+          return { ...e, arguments: '' };
         }
         case 'response.output_text.done': {
-          fields.text = '';
-          break;
+          return { ...e, text: '' };
+        }
+        case 'response.content_part.done': {
+          return { ...e, part: withoutPartText(e.part) };
+        }
+        case 'response.reasoning_summary_part.done': {
+          return { ...e, part: withoutPartText(e.part) };
         }
         case 'response.output_item.done': {
-          fields.item = withoutStreamedText(e.item);
-          break;
+          return { ...e, item: withoutStreamedText(e.item) };
         }
         case 'response.completed': {
-          fields.response = { ...e.response, output: [] };
-          break;
+          return { ...e, response: { ...e.response, output: [] } };
         }
         default: {
-          break;
+          return e;
         }
       }
-      // CAST: the same member as the fixture holds, with the fields the codec empties emptied.
-      return fields as OpenAIEvent;
     });
+
+/**
+ * A finished part as the codec carries it: its `text` or `refusal` emptied.
+ * @param part - The fixture's finished part.
+ * @returns The emptied part.
+ */
+const withoutPartText = <P extends { text?: string; refusal?: string }>(part: P): P => {
+  const copy = { ...part };
+  if (typeof copy.text === 'string') copy.text = '';
+  if (typeof copy.refusal === 'string') copy.refusal = '';
+  return copy;
+};
 
 /**
  * A finished item as the codec carries it: the fixtures' function call with

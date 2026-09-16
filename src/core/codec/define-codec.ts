@@ -8,8 +8,11 @@
  * beside it (see {@link DecodedRow}). The builder derives nothing between the
  * two. A row produces at most one message and at most one event, and the built
  * codec wraps each into the zero- or one-element array the {@link Codec}
- * contract speaks. On every message it encodes it writes the row's `headers` under
- * `extras.headers` and its own fields under `extras.ai`, reads both back on
+ * contract speaks. A row puts the message body in `data` and, for a message
+ * that will be appended to, the fields that must stay out of the growing body
+ * in `headers`. On every message it encodes the builder writes `data` as the
+ * body, the row's `headers` under `extras.headers` and its own fields under
+ * `extras.ai`, reads them back on
  * decode, applies a default message `name` to a message that names none, and
  * wraps `decode` with the decoder core so a late joiner's full-content update
  * reaches the row as the unseen tail and replays are dropped.
@@ -25,12 +28,10 @@
  * SDK. The builder writes two fields under it, the `type` that picks the row
  * and that list, and the transport writes two more on the messages that open
  * and end a key (see `src/core/wire.ts`); the builder reads its own two and
- * ignores the rest. The builder never reads `extras.headers.type` and never
- * writes it: a row whose headers carry a `type` of their own, as one that
- * spreads a whole event does, sends it like any other header and gets it back
- * unchanged, and a row that wants the type the builder matched reads it off
- * the decode body. A row never sees `extras`, and a hand-written codec may put
- * its type anywhere Ably allows.
+ * ignores the rest. The builder hands the type it matched to a row's decode
+ * on the body. A row that puts a `type` in its own headers sends it like any
+ * other header and gets it back unchanged. A row never sees `extras`, and a
+ * hand-written codec may put its type anywhere Ably allows.
  */
 
 import * as Ably from 'ably';
@@ -88,14 +89,18 @@ export interface RowMessage {
    */
   name?: string;
   /**
-   * The appendable value, Ably's `data`. On encode, the one field appends
-   * concatenate; defaults to an empty string. On decode, an append's fragment,
-   * or the unseen tail of a full-content update after the decoder core has
-   * reduced it.
+   * The message body, Ably's `data`. For a message that is appended to, the
+   * text this delivery adds, and the one field appends concatenate; for a
+   * plain publish, whatever the row puts there, an object included. Defaults
+   * to an empty string. On decode, an append's fragment, the unseen tail of a
+   * full-content update after the decoder core has reduced it, or a plain
+   * publish's body as delivered.
    */
   data?: unknown;
   /**
-   * Every other field the event carries, as JSON. Survives a repair update
+   * The fields that travel beside `data` when the message is appended to,
+   * since an append grows `data` and carries nothing else. Every other field
+   * the event carries, as JSON. Survives a repair update
    * untouched. Where and how they sit on the wire is the builder's choice, not
    * the row's: a nested value travels as JSON text and comes back parsed, and
    * an `undefined` value is dropped. A `type` key here is ordinary: the

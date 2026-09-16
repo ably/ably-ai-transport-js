@@ -10,7 +10,7 @@ export default defineConfig({
     coverage: {
       enabled: false,
       include: ['src/**/*'],
-      exclude: ['**/index.ts', '**/vite.config.ts'],
+      exclude: ['**/vite.config.ts'],
       reporter: ['text', 'html', 'json-summary', 'json'],
       reportOnFailure: true,
       provider: 'v8',

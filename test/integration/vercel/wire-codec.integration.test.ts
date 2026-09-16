@@ -78,21 +78,18 @@ describe('Vercel codec over Ably', () => {
     expect(result.serial).toBe(recorder.deliveries.at(-1)?.message.serial);
     expect(recorder.events()).toStrictEqual(turn);
 
-    // The raw shape: a chunk's fields travel under extras.headers, which Ably
-    // admits only as a flat map of primitives, so a nested one goes as JSON
-    // text and is listed under extras.ai.json beside the type. The transport's
-    // own fields sit beside them: the closer names the serial of the tool
-    // input's message, and the deltas' message carries the stream marker.
+    // The raw shape: a plain publish carries the whole chunk as the message
+    // body, nested fields included, with only the type under extras.ai. A
+    // delta carries its text as the body and the rest of the chunk under
+    // extras.headers, since an append grows the body and carries nothing
+    // else. The transport's own fields sit beside the type: the closer names
+    // the serial of the tool input's message, and the deltas' message carries
+    // the stream marker.
     const toolInput = recorder.deliveries.find((d) => d.event?.type === 'tool-input-delta');
     const available = recorder.deliveries.find((d) => d.event?.type === 'tool-input-available');
+    expect(available?.message.data).toEqual(turn[5]);
     expect(available?.message.extras).toEqual({
-      ai: { type: 'tool-input-available', json: ['input'], ends: toolInput?.message.serial },
-      headers: {
-        type: 'tool-input-available',
-        toolCallId: 'call_1',
-        toolName: 'weather',
-        input: '{"city":"London"}',
-      },
+      ai: { type: 'tool-input-available', ends: toolInput?.message.serial },
     });
     const delta = recorder.deliveries.find((d) => d.event?.type === 'text-delta');
     expect(delta?.message.data).toBe('It is 21°C');

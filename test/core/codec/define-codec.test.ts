@@ -12,7 +12,7 @@ import type {
 } from '../../../src/core/codec/index.js';
 import { defineCodec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { deliveriesOf, encodeAll, historyOf } from '../../helper/wire.js';
+import { deliveriesOf, encodeAll, historyOf, roundTrip } from '../../helper/wire.js';
 
 // ---------------------------------------------------------------------------
 // Fixture: a union discriminated on `type`, with a template member
@@ -27,6 +27,12 @@ type TestEvent =
   | { type: `data-${string}`; payload: unknown };
 
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
+
+/** A union whose rows carry an object body: one opens a key, the other replaces it. */
+type StateEvent = { type: 'state-open'; state: { n: number } } | { type: 'state-set'; state: { n: number } };
+
+const nOf = (data: unknown): number =>
+  typeof data === 'object' && data !== null && 'n' in data && typeof data.n === 'number' ? data.n : -1;
 
 /**
  * The fixture's rows. A function, so a test that needs a fresh decoder core
@@ -491,7 +497,7 @@ describe('defineCodec', () => {
       ).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello' }]);
     });
 
-    it('hands the row a full-content update as its unseen tail', () => {
+    it("decodes a stream's full-content update as its unseen tail", () => {
       const codec = defineCodec({ typeOf: (e: TestEvent) => e.type, events: testEvents() });
       codec.decode(inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } }));
       codec.decode(
@@ -509,11 +515,38 @@ describe('defineCodec', () => {
             serial: 's9',
             action: 'message.update',
             data: 'Hello world',
-            fields: { type: 'text-delta', id: 'msg_1' },
+            // The field the writer puts on a stream's writes, which is what
+            // the platform carries on a late joiner's first delivery.
+            extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'msg_1' } } },
             version: 's9:v3',
           }),
         ),
       ).toEqual([{ type: 'text-delta', id: 'msg_1', delta: ' world' }]);
+    });
+
+    it('round-trips a publish and the updates that replace it under one key', () => {
+      const codec = defineCodec({
+        name: 'state',
+        typeOf: (e: StateEvent) => e.type,
+        events: {
+          'state-open': {
+            encode: (e) => ({ data: e.state, publish: 'state' }),
+            decode: ({ data }) => ({ type: 'state-open', state: { n: nOf(data) } }),
+          },
+          'state-set': {
+            encode: (e) => ({ data: e.state, update: 'state' }),
+            decode: ({ data }) => ({ type: 'state-set', state: { n: nOf(data) } }),
+          },
+        },
+      });
+      const events: StateEvent[] = [
+        { type: 'state-open', state: { n: 1 } },
+        { type: 'state-set', state: { n: 2 } },
+        { type: 'state-set', state: { n: 3 } },
+      ];
+      // Each update replaces the message's content, so a subscriber decodes
+      // every one of them with the state `encode` wrote.
+      expect(roundTrip(codec, events)).toEqual(events);
     });
 
     it('drops a replay of a stream message the decoder core has already seen', () => {

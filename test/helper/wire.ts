@@ -22,10 +22,10 @@ export const encodeAll = <E>(codec: Codec<E>, events: E[]): EncodedMessage[] => 
  * messages: a publish, or an append to a key that is not live, becomes a
  * `message.create` with a fresh serial that is remembered under its key; an
  * append to a live key or an update becomes the matching action on the key's
- * serial with a fresh version; and `ends` forgets its key. Every write under a
- * live key carries the transport's `stream` marker and a closer carries `ends`
- * with the serial it ends, as the pipe writer stamps them. This mirrors the
- * pipe writer's key table.
+ * serial with a fresh version; and `ends` forgets its key. The publish that
+ * opens a key and every append carry the transport's `stream` field, an update
+ * goes without it, and a closer carries `ends` with the serial it ends, as the
+ * pipe writer writes them. This mirrors the pipe writer's key table.
  * @param encoded - The encoded messages, in order.
  * @returns The inbound messages, in order.
  */
@@ -56,7 +56,9 @@ export const deliveriesOf = (encoded: EncodedMessage[]): Ably.InboundMessage[] =
       versions += 1;
       const version = `${serial}:v${String(versions)}`;
       const action = append === undefined ? 'message.update' : 'message.append';
-      stamped = withOwnField(stamped, STREAM_FIELD, true);
+      // An append grows the stream, and an `update:` write replaces its
+      // content, so only the append carries `stream`.
+      if (append !== undefined) stamped = withOwnField(stamped, STREAM_FIELD, true);
       // CAST: as above.
       messages.push({ ...stamped, action, serial, version: { serial: version } } as Ably.InboundMessage);
     }

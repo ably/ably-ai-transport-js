@@ -410,6 +410,27 @@ describe('createTransport', () => {
       expect(deliveries.map((d) => d.event)).toEqual([{ type: 'text-delta', id: 'm1', delta: 'hello' }, undefined]);
     });
 
+    it('delivers an update: write as the whole text it replaced the message with', () => {
+      const deliveries: Delivery<TestEvent>[] = [];
+      transport.subscribe((d) => deliveries.push(d));
+      channel.listener?.(deltaMessage('s1', 'ab'));
+      // The writer leaves `stream` off an update: write, so the codec decodes
+      // all of 'abc'.
+      channel.listener?.(
+        inbound({
+          serial: 's1',
+          action: 'message.update',
+          data: 'abc',
+          fields: { type: 'text-replace', id: 'm1' },
+          version: 's1:v2',
+        }),
+      );
+      expect(deliveries.map((d) => d.event)).toEqual([
+        { type: 'text-delta', id: 'm1', delta: 'ab' },
+        { type: 'text-replace', id: 'm1', text: 'abc' },
+      ]);
+    });
+
     it('reports a discontinuity, and stops once its handler is removed', async () => {
       const gaps = vi.fn();
       const off = transport.on('discontinuity', gaps);

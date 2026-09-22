@@ -17,13 +17,16 @@
  * carrying the joined text, and the end, and the decoded sequence folds like
  * the live one.
  *
- * The writer stamps two fields of its own under `extras.ai`: `stream: true` on
- * every write under a live key (the publish that opens it, each append, each
- * update), and `ends` on the message that ends a key, carrying the serial the
- * key table holds for it. They tell a decoder which messages to remember and
- * when to forget them. Ably stores the last write's extras on an appended
- * message, so stamping every write keeps `stream` on the message however it is
- * read back. A plain publish with no key carries neither.
+ * The writer sets two fields of its own under `extras.ai`: `stream: true` on a
+ * write that streams (the publish that opens a key, each append, and the
+ * repair of a failed one), and `ends` on the message that ends a key, carrying
+ * the serial the key table holds for it. They tell a decoder which messages to
+ * remember, when to forget them, and which updates carry text a subscriber may
+ * already have. Ably stores the last write's extras on an appended message, so
+ * marking every write that streams keeps `stream` on the message however it is
+ * read back. An `update:` write replaces a message's content, so the writer
+ * leaves `stream` off it and a subscriber reads it whole. A plain publish with
+ * no key carries neither field.
  *
  * Appends are sent as they arrive and never awaited by the pipe loop, so a
  * token stream runs at the speed of the connection rather than one round trip
@@ -153,7 +156,9 @@ class DefaultPipeWriter implements PipeWriter {
     } else if (update === undefined) {
       serial = await this._publish(publish, publish === undefined ? closing : marked);
     } else {
-      await this._update(update, marked);
+      // An `update:` write replaces the message's content, so it goes without
+      // `stream` and a subscriber reads it whole.
+      await this._update(update, closing);
     }
 
     if (ends !== undefined) {
@@ -259,7 +264,11 @@ class DefaultPipeWriter implements PipeWriter {
       const stream = this._streams.get(key);
       if (stream === undefined) continue;
       try {
-        await this._channel.updateMessage({ serial: stream.serial, data: stream.accumulated, extras: stream.extras });
+        // A repair rewrites the text the appends built, so `stream` belongs on
+        // it. Set here, since `stream.extras` holds the extras of whichever
+        // write came last.
+        const repaired = withOwnField({ data: stream.accumulated, extras: stream.extras }, STREAM_FIELD, true);
+        await this._channel.updateMessage({ ...repaired, serial: stream.serial });
       } catch (error) {
         this._logger?.error('PipeWriter.flush(); repair failed', { key, error: errorMessage(error) });
         failures.push(error);

@@ -225,10 +225,14 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    arrays as they are, beside its own `type` under `extras.ai`, the key the
    platform reserves for this SDK, and reads `extras.ai.type` back to pick
    the row. The transport's pipe writer stamps `extras.ai.stream` on every
-   write under a live key, so a stream's message carries it however it is
+   write that streams, which is the publish that opens a key, each append and
+   the repair of a failed one, so a streamed message carries it however it is
    read back, and `extras.ai.ends`, the serial it ends, on the message that
-   ends one; the decoder core reads both to know which messages to remember
-   and when to forget them (`src/core/wire.ts` holds the names). `headers`
+   ends a key; the decoder core reads both to know which messages to
+   remember, when to forget them, and which updates carry text a subscriber
+   may already hold (`src/core/wire.ts` holds the names). A row's `update:`
+   replaces a message's content, so the writer leaves `stream` off it and the
+   decoder core reads it whole, of whatever type its body is. `headers`
    is Ably's `extras.headers`, the key its server-side filtering reads, and a
    row writes it only to expose a field there on purpose. Ably admits only a
    flat map of string, number, boolean and null values under it (error 40032

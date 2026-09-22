@@ -10,8 +10,8 @@
  * transport owns the channel, the per-pipe key table that turns a stream key
  * into the serial an append targets, and delivery. The SDK owns two
  * fields on the wire, both the transport's and both under `extras.ai`:
- * `stream`, on every write under a live key, and `ends`, on the message that
- * ends one, carrying the serial it ends. The transport also adds the headers
+ * `stream`, on each write that builds a streamed message, and `ends`, on the
+ * message that ends a key, carrying the serial it ends. The transport also adds the headers
  * of the `send` or `pipe` call under `extras.headers`, preferring the codec's
  * own where both name a key. Everything else in `name`, `data` and `extras` is
  * the codec's.
@@ -25,7 +25,7 @@ import type * as Ably from 'ably';
  * plain publish that nothing will append to.
  */
 export interface EncodedMessage {
-  /** The message the transport publishes, appends or updates. `name`, `data` and `extras` are the codec's; the transport adds its own two fields under `extras.ai` to a write under a key and to the message that ends one, and adds the call's headers under `extras.headers`, preferring the codec's. */
+  /** The message the transport publishes, appends or updates. `name`, `data` and `extras` are the codec's; the transport adds its own two fields under `extras.ai` to a write that builds a streamed message and to the message that ends a key, and adds the call's headers under `extras.headers`, preferring the codec's. */
   message: Ably.Message;
   /**
    * Publish `message` and remember the serial the ack returns under this key,

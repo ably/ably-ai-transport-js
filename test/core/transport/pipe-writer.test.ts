@@ -194,7 +194,7 @@ describe('createPipeWriter', () => {
   });
 
   describe('stream markers', () => {
-    it('marks every write under a key as a stream, and a plain publish as nothing', async () => {
+    it('marks the publish that opens a key and each append, and neither an update nor a plain publish', async () => {
       await writer.write(publish('k1', 'open', { type: 'a' }));
       await writer.write(append('k1', ' more', { type: 'd' }));
       await writer.write(update('k1', 'final', { type: 'u' }));
@@ -204,7 +204,9 @@ describe('createPipeWriter', () => {
         { type: 'p' },
       ]);
       expect(channel.appendCalls.map((m) => m.extras as unknown)).toEqual([{ type: 'd', ai: { stream: true } }]);
-      expect(channel.updateCalls.map((m) => m.extras as unknown)).toEqual([{ type: 'u', ai: { stream: true } }]);
+      // An `update:` write replaces the message's content, so a subscriber
+      // reads the whole body.
+      expect(channel.updateCalls.map((m) => m.extras as unknown)).toEqual([{ type: 'u' }]);
     });
 
     it('adds extras.ai to a message that carries none, without mutating the encoded message', async () => {
@@ -243,9 +245,24 @@ describe('createPipeWriter', () => {
     it('awaits the update and routes it to the key', async () => {
       await writer.write(publish('k1', 'draft'));
       await expect(writer.write(update('k1', 'final', { type: 'r' }))).resolves.toBeUndefined();
-      expect(channel.updateCalls).toEqual([
-        { serial: 'serial-1', data: 'final', extras: { type: 'r', ai: { stream: true } } },
-      ]);
+      expect(channel.updateCalls).toEqual([{ serial: 'serial-1', data: 'final', extras: { type: 'r' } }]);
+    });
+
+    it('carries an object body to the channel as it was written', async () => {
+      await writer.write(publish('k1', { n: 1 }));
+      await writer.write({ message: { data: { n: 2 }, extras: { type: 'r' } }, update: 'k1' });
+      expect(channel.updateCalls).toEqual([{ serial: 'serial-1', data: { n: 2 }, extras: { type: 'r' } }]);
+    });
+
+    it('sets stream on a repair that follows an update, so it still reads as a stream write', async () => {
+      await writer.write(append('k1', 'The', { type: 'd' }));
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await writer.write(append('k1', ' weather', { type: 'd' }));
+      // An `update:` write between the failed append and the repair leaves
+      // extras without `stream` behind, and the repair sets `stream` itself.
+      await writer.write(update('k1', 'replaced', { type: 'u' }));
+      await writer.write(end('k1', { type: 'end' }));
+      expect(channel.updateCalls.at(-1)?.extras).toEqual({ type: 'u', ai: { stream: true } });
     });
 
     it('throws for an update to a key that is not live', async () => {

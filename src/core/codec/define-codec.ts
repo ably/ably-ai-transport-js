@@ -16,15 +16,15 @@
  * `extras.headers`, reads them back on decode, applies a default message
  * `name` to a message that names none, and wraps `decode` with the decoder
  * core so a late joiner's full-content update reaches the row as the unseen
- * tail and replays are dropped.
+ * tail, a row's `update:` reaches it whole, and replays are dropped.
  *
  * Ably accepts only known keys at the top of `extras` and rejects a publish
  * carrying any other. `ai` is the key the platform reserves for this SDK, and
  * a value under it travels as it is, nested objects and arrays included. The
  * builder writes two fields there, the `type` that picks the row and the row's
- * `fields`; the transport writes two more on the messages that open and end a
- * key (see `src/core/wire.ts`); the builder reads its own two and ignores the
- * rest. `headers` is the key Ably provides for a publisher's own fields and
+ * `fields`; the transport writes two more on the messages that build a stream
+ * and on the message that ends a key (see `src/core/wire.ts`); the builder
+ * reads its own two and ignores the rest. `headers` is the key Ably provides for a publisher's own fields and
  * the one its server-side filtering reads. Ably admits only a flat map of
  * string, number, boolean and null values under it (error 40032 otherwise),
  * so a row's `headers` are typed to that and written as given; the builder
@@ -96,8 +96,9 @@ export interface RowMessage {
    * text this delivery adds, and the one field appends concatenate; for a
    * plain publish, whatever the row puts there, an object included. Defaults
    * to an empty string. On decode, an append's fragment, the unseen tail of a
-   * full-content update after the decoder core has reduced it, or a plain
-   * publish's body as delivered.
+   * stream's full-content update after the decoder core has reduced it, a
+   * plain publish's body as delivered, or the body a row's `update:` wrote,
+   * which replaces the message's content and reaches the row whole.
    */
   data?: unknown;
   /**

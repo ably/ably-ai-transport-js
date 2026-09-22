@@ -8,13 +8,17 @@
  * version it has reached. The core reduces all three to one shape before a
  * codec row's decode runs: `data` is what this delivery adds.
  *
+ * The `update:` verb is a fourth case. It replaces a message's content, so the
+ * pipe writer writes it without `extras.ai.stream`, and the core gives `decode`
+ * the whole body and takes it as the new baseline.
+ *
  * To do that it keeps, per serial, the text it has handed on and the highest
  * `version.serial` it has incorporated. The version guard drops a delivery the
  * decoder has already seen, which is what lets history overlap live delivery
  * without duplicates. The table holds only the messages that are streams: a
  * create the pipe writer marked with `extras.ai.stream`, which is on every
- * write under a live key and so on the message however it is read back, and
- * any serial first met through an append or an update. The message that ends
+ * write that builds a stream and so on the message however it is read back,
+ * and any serial first met through an append or an update. The message that ends
  * a key carries the serial it ends under `extras.ai.ends`, and the core
  * forgets that serial when it sees it; a delete forgets its serial too. A
  * plain publish is handed on and never remembered.
@@ -42,10 +46,12 @@ export interface DecoderCoreOptions {
 export interface DecoderCore {
   /**
    * Reduce one inbound message to what it adds. Returns the message to decode,
-   * with `data` replaced by the unseen tail where the delivery carried content
-   * the core had already handed on, or `undefined` when nothing should be
-   * decoded: a replay the core has already incorporated, an update that adds
-   * nothing, or a `message.delete`.
+   * with `data` replaced by the unseen tail where a streaming delivery carried
+   * content the core had already decoded. An update written without
+   * `extras.ai.stream` replaces the message's content, so it is returned whole.
+   * Returns `undefined` when nothing should be decoded: a replay the core has
+   * already incorporated, a streaming update that adds nothing, or a
+   * `message.delete`.
    * @param message - The inbound message, as the channel delivered it.
    * @returns The message to decode, or `undefined`.
    */
@@ -62,7 +68,9 @@ interface SerialState {
 const stringData = (message: Ably.InboundMessage): string => (typeof message.data === 'string' ? message.data : '');
 
 /**
- * Whether the pipe writer marked a message as a stream's.
+ * Whether the pipe writer marked this write as one that streams: the publish
+ * that opens a key, an append, or the repair of a failed one. An `update:`
+ * write carries no `extras.ai.stream`.
  * @param message - The delivery.
  * @returns True when `extras.ai.stream` is set.
  */
@@ -167,6 +175,15 @@ class DefaultDecoderCore implements DecoderCore {
     }
     if (this._alreadyIncorporated(state, message, serial)) return undefined;
 
+    if (!isStream(message)) {
+      // The `update:` verb replaces the message's content, so `decode`
+      // receives the whole body `encode` wrote, of whatever type. A stream's
+      // own updates carry `extras.ai.stream`, and only those reduce to a tail.
+      this._logger?.debug('DefaultDecoderCore.prepare(); plain update, replacing content', { serial });
+      state.accumulated = data;
+      return message;
+    }
+
     if (data.startsWith(state.accumulated)) {
       const tail = data.slice(state.accumulated.length);
       state.accumulated = data;
@@ -179,10 +196,10 @@ class DefaultDecoderCore implements DecoderCore {
       return { ...message, data: tail };
     }
 
-    // The content does not extend what was handed on: a deliberate replacement
-    // through the codec's `update` verb, or an update by another writer. The
-    // whole content is what this delivery adds, and the baseline moves to it.
-    this._logger?.debug('DefaultDecoderCore.prepare(); update replaces content', {
+    // A stream's own update whose content diverges from what the core has
+    // already decoded. The whole content is what this delivery adds, and the
+    // baseline moves to it.
+    this._logger?.debug('DefaultDecoderCore.prepare(); stream update diverged, taking all of it', {
       serial,
       priorLength: state.accumulated.length,
       length: data.length,

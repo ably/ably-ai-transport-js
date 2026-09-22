@@ -6,12 +6,15 @@
  * here. Under `ai`, the key Ably reserves for this SDK, the codec builder
  * writes `type`, which picks the row on decode, and `fields`, a row's event
  * fields that travel beside an appended body, nested values as they are. The
- * transport's pipe writer writes `stream`, `true` on every write under a live
- * key (the publish that opens the key, each append and each update), and
- * `ends`, the serial of the message a key's closer ends. Ably stores the last
- * write's extras on an appended message, so `stream` is on a stream's message
- * however it is read back, and the decoder core reads both fields to know
- * which messages to remember and when to forget them.
+ * transport's pipe writer writes `stream`, `true` on a write that streams (the
+ * publish that opens a key, each append, and the repair of a failed one), and
+ * `ends`, the serial of the message a key's closer ends. An `update:` write
+ * replaces a message's content, so the writer leaves `stream` off it and the
+ * decoder core reads it whole. Ably stores the last write's
+ * extras on an appended message, so `stream` is on a streamed message however
+ * it is read back, and the decoder core reads both fields to know which
+ * messages to remember, when to forget them, and which updates reduce to the
+ * text a subscriber has not seen.
  *
  * Under `headers`, the key Ably provides for a publisher's own fields and the
  * one its server-side filtering reads, the builder writes a row's `headers`
@@ -31,7 +34,7 @@ export const TYPE_FIELD = 'type';
 /** Builder: a row's event fields, nested values as they are. */
 export const FIELDS_FIELD = 'fields';
 
-/** Transport: `true` on every write under a live key, so a stream's message is marked however it is read back. */
+/** Transport: `true` on a write that streams, so a streamed message is marked however it is read back. An `update:` write goes without it. */
 export const STREAM_FIELD = 'stream';
 
 /** Transport: on the message that ends a key, the serial of the message it ends. */

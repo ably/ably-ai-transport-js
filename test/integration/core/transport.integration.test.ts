@@ -11,7 +11,14 @@
 import * as Ably from 'ably';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { channelAgent, createTransport, ErrorCode, type Transport } from '../../../src/index.js';
+import {
+  channelAgent,
+  type Codec,
+  createTransport,
+  defineCodec,
+  ErrorCode,
+  type Transport,
+} from '../../../src/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createTestCodec, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
@@ -37,6 +44,45 @@ const readerOn = (name: string): { transport: Transport<TestEvent>; channel: Abl
 
 const isTextEnd = (deliveries: { event?: TestEvent }[]): boolean =>
   deliveries.some((d) => d.event?.type === 'text-end');
+
+/** An event union whose rows carry an object body: one opens a keyed message, the other replaces its content. */
+type StateEvent = { type: 'state-open'; state: { n: number } } | { type: 'state-set'; state: { n: number } };
+
+const nOf = (data: unknown): number =>
+  typeof data === 'object' && data !== null && 'n' in data && typeof data.n === 'number' ? data.n : -1;
+
+/**
+ * A codec whose `update:` write replaces a keyed message with an object body,
+ * which no shipped codec does and the test codec's string body cannot show.
+ * @returns The codec.
+ */
+const createStateCodec = (): Codec<StateEvent> =>
+  defineCodec({
+    name: 'state',
+    adapterTag: 'state-test',
+    typeOf: (e: StateEvent) => e.type,
+    events: {
+      'state-open': {
+        encode: (e) => ({ data: e.state, publish: 'state' }),
+        decode: ({ data }) => ({ type: 'state-open', state: { n: nOf(data) } }),
+      },
+      'state-set': {
+        encode: (e) => ({ data: e.state, update: 'state' }),
+        decode: ({ data }) => ({ type: 'state-set', state: { n: nOf(data) } }),
+      },
+    },
+  });
+
+/**
+ * A transport over the state codec, with the channel it reads.
+ * @param name - The channel name.
+ * @returns The transport and its channel.
+ */
+const stateOn = (name: string): { transport: Transport<StateEvent>; channel: Ably.RealtimeChannel } => {
+  const stateCodec = createStateCodec();
+  const channel = ablyRealtimeClient().channels.get(name, { params: { agent: channelAgent(stateCodec) } });
+  return { transport: createTransport({ channel, codec: stateCodec }), channel };
+};
 
 describe('transport over Ably', () => {
   afterEach(() => {
@@ -363,6 +409,44 @@ describe('transport over Ably', () => {
       { type: 'text-end', id: 'm1' },
     ]);
     expect(history[1]?.message.data).toBe('The weather is mild.');
+  });
+
+  it('replaces a keyed message in place, so a subscriber decodes every replacement whole', async () => {
+    const name = uniqueChannelName();
+    const agent = stateOn(name).transport;
+    const { transport: reader, channel } = stateOn(name);
+    const recorder = createDeliveryRecorder<StateEvent>();
+    reader.subscribe(recorder.record);
+    await channel.whenState('attached');
+
+    await agent.pipe(
+      streamOf<StateEvent>(
+        { type: 'state-open', state: { n: 1 } },
+        { type: 'state-set', state: { n: 2 } },
+        { type: 'state-set', state: { n: 3 } },
+      ),
+    );
+    await recorder.waitFor((d) => d.length === 3);
+
+    // One message, replaced twice. The platform stores an object body on an
+    // update and echoes it, and the writer leaves `stream` off, so the codec
+    // decodes each whole replacement.
+    const serials = new Set(recorder.deliveries.map((d) => d.message.serial));
+    expect(serials.size).toBe(1);
+    expect(recorder.deliveries.map((d) => d.message.action)).toEqual([
+      'message.create',
+      'message.update',
+      'message.update',
+    ]);
+    expect(recorder.events()).toEqual([
+      { type: 'state-open', state: { n: 1 } },
+      { type: 'state-set', state: { n: 2 } },
+      { type: 'state-set', state: { n: 3 } },
+    ]);
+
+    // History holds the one message at its latest content.
+    const history = await drainHistory(stateOn(name).transport);
+    expect(history.map((d) => d.event)).toEqual([{ type: 'state-set', state: { n: 3 } }]);
   });
 
   it("carries a call's headers on a prompt and on every message of a repaired reply, read back from history", async () => {

@@ -35,6 +35,16 @@ const message = (opts: MessageOptions): Ably.InboundMessage =>
 const opener = (opts: Omit<MessageOptions, 'action' | 'ai'>): Ably.InboundMessage =>
   message({ ...opts, action: 'message.create', ai: { stream: true } });
 
+/**
+ * A stream's own update: the full content a late joiner receives, or the repair
+ * of a failed append. Both carry `extras.ai.stream`, which is what tells the
+ * core to reduce the content to the tail.
+ * @param opts - The serial, data and version.
+ * @returns The inbound message.
+ */
+const streamUpdate = (opts: Omit<MessageOptions, 'action' | 'ai'>): Ably.InboundMessage =>
+  message({ ...opts, action: 'message.update', ai: { stream: true } });
+
 const createMockLogger = (): { logger: Logger; debug: ReturnType<typeof vi.fn> } => {
   const debug = vi.fn();
   const logger: Logger = {
@@ -98,7 +108,7 @@ describe('createDecoderCore', () => {
       const append = message({ action: 'message.append', data: 'Hello', version: 's1:v2' });
       expect(core.prepare(append)).toBe(append);
       // The append's content is now the baseline, so an update extending it reduces to the tail.
-      const update = message({ action: 'message.update', data: 'Hello world', version: 's1:v3' });
+      const update = streamUpdate({ data: 'Hello world', version: 's1:v3' });
       expect(core.prepare(update)?.data).toBe(' world');
     });
 
@@ -115,16 +125,16 @@ describe('createDecoderCore', () => {
       core.prepare(opener({ data: '' }));
       core.prepare(message({ action: 'message.append', data: 'The weather', version: 's1:v2' }));
       core.prepare(message({ action: 'message.append', data: ' in London', version: 's1:v3' }));
-      const update = message({ action: 'message.update', data: 'The weather in London is mild.', version: 's1:v4' });
+      const update = streamUpdate({ data: 'The weather in London is mild.', version: 's1:v4' });
       expect(core.prepare(update)?.data).toBe(' is mild.');
     });
   });
 
   describe('message.update', () => {
-    it('reduces a full-content update to the unseen tail', () => {
+    it('reduces a stream update to the unseen tail', () => {
       const core = createDecoderCore();
       core.prepare(opener({ data: 'The weather' }));
-      const update = message({ action: 'message.update', data: 'The weather in London', version: 's1:v2' });
+      const update = streamUpdate({ data: 'The weather in London', version: 's1:v2' });
       const prepared = core.prepare(update);
       expect(prepared?.data).toBe(' in London');
       expect(prepared?.serial).toBe('s1');
@@ -132,27 +142,52 @@ describe('createDecoderCore', () => {
       expect(prepared?.extras).toEqual(update.extras);
     });
 
-    it('drops an update that adds nothing', () => {
+    it('drops a stream update that adds nothing', () => {
       const core = createDecoderCore();
       core.prepare(opener({ data: 'The weather' }));
-      expect(
-        core.prepare(message({ action: 'message.update', data: 'The weather', version: 's1:v2' })),
-      ).toBeUndefined();
+      expect(core.prepare(streamUpdate({ data: 'The weather', version: 's1:v2' }))).toBeUndefined();
     });
 
     it('hands a first-contact update on with its full content', () => {
       const core = createDecoderCore();
-      const update = message({ action: 'message.update', data: 'The weather in London', version: 's1:v3' });
+      const update = streamUpdate({ data: 'The weather in London', version: 's1:v3' });
       expect(core.prepare(update)).toBe(update);
     });
 
-    it('hands a replacement on with its full content and moves the baseline', () => {
+    it('returns the whole content of a stream update that diverged, and moves the baseline', () => {
       const core = createDecoderCore();
       core.prepare(opener({ data: 'The weather' }));
-      const replacement = message({ action: 'message.update', data: 'Sunny in London', version: 's1:v2' });
+      const replacement = streamUpdate({ data: 'Sunny in London', version: 's1:v2' });
       expect(core.prepare(replacement)).toBe(replacement);
-      const next = message({ action: 'message.update', data: 'Sunny in London today', version: 's1:v3' });
+      const next = streamUpdate({ data: 'Sunny in London today', version: 's1:v3' });
       expect(core.prepare(next)?.data).toBe(' today');
+    });
+
+    it('returns the whole body of an update written without stream, whatever its type', () => {
+      const core = createDecoderCore();
+      const open = opener({ data: { n: 1 } });
+      expect(core.prepare(open)).toBe(open);
+      // The `update:` verb replaces the message's content, so `decode`
+      // receives the whole body `encode` wrote.
+      const second = message({ action: 'message.update', data: { n: 2 }, version: 's1:v2' });
+      expect(core.prepare(second)).toBe(second);
+      const third = message({ action: 'message.update', data: { n: 3 }, version: 's1:v3' });
+      expect(core.prepare(third)).toBe(third);
+    });
+
+    it('returns all of an unmarked update even when its text extends what was decoded', () => {
+      const core = createDecoderCore();
+      core.prepare(opener({ data: '' }));
+      core.prepare(message({ action: 'message.append', data: 'ab', version: 's1:v2' }));
+      const replacement = message({ action: 'message.update', data: 'abc', version: 's1:v3' });
+      expect(core.prepare(replacement)?.data).toBe('abc');
+    });
+
+    it('takes an unmarked update as the baseline for a later stream update', () => {
+      const core = createDecoderCore();
+      core.prepare(opener({ data: 'one' }));
+      core.prepare(message({ action: 'message.update', data: 'two', version: 's1:v2' }));
+      expect(core.prepare(streamUpdate({ data: 'two and a bit', version: 's1:v3' }))?.data).toBe(' and a bit');
     });
 
     it('drops an update whose version is already incorporated', () => {
@@ -161,14 +196,21 @@ describe('createDecoderCore', () => {
       core.prepare(message({ action: 'message.append', data: 'Hello', version: 's1:v2' }));
       core.prepare(message({ action: 'message.append', data: ' world', version: 's1:v3' }));
       // A history read that caught the message at v2 arrives after live reached v3.
-      expect(core.prepare(message({ action: 'message.update', data: 'Hello', version: 's1:v2' }))).toBeUndefined();
+      expect(core.prepare(streamUpdate({ data: 'Hello', version: 's1:v2' }))).toBeUndefined();
+    });
+
+    it('drops an unmarked update whose version is already incorporated', () => {
+      const core = createDecoderCore();
+      core.prepare(opener({ data: '' }));
+      core.prepare(message({ action: 'message.append', data: 'Hello', version: 's1:v2' }));
+      expect(core.prepare(message({ action: 'message.update', data: { n: 1 }, version: 's1:v2' }))).toBeUndefined();
     });
 
     it('treats a history aggregate at the incorporated version as already seen', () => {
       const core = createDecoderCore();
       core.prepare(opener({ data: '' }));
       core.prepare(message({ action: 'message.append', data: 'Hello', version: 's1:v2' }));
-      expect(core.prepare(message({ action: 'message.update', data: 'Hello', version: 's1:v2' }))).toBeUndefined();
+      expect(core.prepare(streamUpdate({ data: 'Hello', version: 's1:v2' }))).toBeUndefined();
     });
   });
 

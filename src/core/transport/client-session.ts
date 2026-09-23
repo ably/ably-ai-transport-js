@@ -178,8 +178,14 @@ class DefaultClientSession<
   constructor(options: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>) {
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
-    // across sessions sharing one client.
-    const channelOptions: Ably.ChannelOptions = registerAgent(options.client, options.codec);
+    // across sessions sharing one client. The layer names the product tier,
+    // so every session reports `durable-sessions` whether or not a durable
+    // runtime drives it; the standalone transports are the streaming tier.
+    const channelOptions: Ably.ChannelOptions = registerAgent(
+      options.client,
+      { layer: 'durable-sessions' },
+      options.codec,
+    );
     // Spec: AIT-CT23 — request object modes etc. when channelModes opts in.
     const modes = resolveChannelModes(options.channelModes);
     if (modes) channelOptions.modes = modes;

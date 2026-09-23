@@ -115,7 +115,8 @@ export const ClientSessionProvider = <
 
   // Seed the ChannelProvider with this SDK's channel agent so ably-js's React
   // hooks append their agent (`channelOptionsForReactHooks`) rather than
-  // overwriting it. Memoised on the codec, which determines the agent string.
+  // overwriting it. Memoised on the codec, the only input to the agent string
+  // that can change here: a session is always on the `durable-sessions` layer.
   //
   // Spec: AIT-CT23 — resolve the channel modes through the same helper the
   // session uses so the provider and the session request an identical,
@@ -123,7 +124,9 @@ export const ClientSessionProvider = <
   // duplicate-sensitively, so matching arrays mean the provider's setOptions
   // never triggers a reattach and never silently reverts the session's modes.
   const channelOptions = useMemo<Ably.ChannelOptions>(() => {
-    const options: Ably.ChannelOptions = { params: { agent: channelAgent(sessionOptions.codec) } };
+    const options: Ably.ChannelOptions = {
+      params: { agent: channelAgent({ layer: 'durable-sessions' }, sessionOptions.codec) },
+    };
     const modes = resolveChannelModes(sessionOptions.channelModes);
     if (modes) options.modes = modes;
     return options;

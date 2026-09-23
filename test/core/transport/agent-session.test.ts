@@ -622,7 +622,7 @@ describe('AgentSession', () => {
       });
       // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
       expect(client.channels.get).toHaveBeenCalledWith('rewind-channel', {
-        params: { agent: `ai-transport-js/${VERSION}` },
+        params: { agent: `ai-transport-js/${VERSION} durable-sessions` },
       });
       await s.detach();
     });
@@ -652,6 +652,7 @@ describe('AgentSession', () => {
       expect(optionsRef.agents).toEqual({
         'some-other-sdk': '9.9.9',
         'ai-transport-js': VERSION,
+        'durable-sessions': VERSION,
       });
       await s1.detach();
       await s2.detach();

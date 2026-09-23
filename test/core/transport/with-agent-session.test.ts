@@ -1,7 +1,7 @@
 /**
  * `withAgentSession` unit tests.
  *
- * `createAgentSession` is mocked: everything this helper owns is orchestration
+ * `createAgentSessionWithIdentity` is mocked: everything this helper owns is orchestration
  * (create with the invocation's channel, connect, run the body, detach), so a
  * stub session makes each of those observable on its own. Real session
  * behaviour — including that `detach()` after `end()` is a no-op — belongs to
@@ -13,18 +13,19 @@ import '../../helper/expectations.js';
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createAgentSession } from '../../../src/core/transport/agent-session.js';
+import { createAgentSession, createAgentSessionWithIdentity } from '../../../src/core/transport/agent-session.js';
 import type { InvocationData } from '../../../src/core/transport/invocation.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { Codec } from '../../../src/core/transport/session-codec.js';
 import type { AgentSession } from '../../../src/core/transport/types.js';
-import { withAgentSession } from '../../../src/core/transport/with-agent-session.js';
+import { withAgentSession, withAgentSessionForRuntime } from '../../../src/core/transport/with-agent-session.js';
 import type { LogContext, Logger } from '../../../src/logger.js';
 import { createMockClient } from '../../helper/mock-client.js';
 import { flushMicrotasks } from '../../helper/streams.js';
 
 vi.mock('../../../src/core/transport/agent-session.js', () => ({
   createAgentSession: vi.fn(),
+  createAgentSessionWithIdentity: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -86,7 +87,7 @@ const createRecordingLogger = (): RecordingLogger => {
   return logger;
 };
 
-// CAST: the mocked `createAgentSession` never reads the codec; only pass-through
+// CAST: the mocked factory never reads the codec; only pass-through
 // to the factory is asserted.
 const codec = { adapterTag: 'test-codec' } as unknown as TestCodec;
 
@@ -111,8 +112,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   session = createStubSession();
   // CAST: the helper only calls connect/detach on the session it is handed.
-  vi.mocked(createAgentSession).mockReturnValue(session as unknown as TestSession);
-  // CAST: the channel is never resolved — `createAgentSession` is mocked.
+  vi.mocked(createAgentSessionWithIdentity).mockReturnValue(session as unknown as TestSession);
+  // CAST: the channel is never resolved — the session factory is mocked.
   client = createMockClient({} as Ably.RealtimeChannel);
   // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked needs the spy reference; the mock's close does not read `this`.
   clientClose = client.close;
@@ -122,7 +123,9 @@ describe('withAgentSession', () => {
   it('creates the session on the channel named by the invocation', async () => {
     await withAgentSession(options(), noopBody);
 
-    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ channelName: 'ai:room-7' }));
+    expect(createAgentSessionWithIdentity).toHaveBeenCalledWith(expect.objectContaining({ channelName: 'ai:room-7' }), {
+      layer: 'durable-sessions',
+    });
   });
 
   it('passes every other session option straight through', async () => {
@@ -138,17 +141,34 @@ describe('withAgentSession', () => {
       noopBody,
     );
 
-    expect(createAgentSession).toHaveBeenCalledWith({
-      client,
-      codec,
-      logger,
-      channelModes: ['OBJECT_SUBSCRIBE'],
-      historyPageSize: 25,
-      reorderWindowMs: 5_000,
-      channelName: 'ai:room-7',
-    });
+    expect(createAgentSessionWithIdentity).toHaveBeenCalledWith(
+      {
+        client,
+        codec,
+        logger,
+        channelModes: ['OBJECT_SUBSCRIBE'],
+        historyPageSize: 25,
+        reorderWindowMs: 5_000,
+        channelName: 'ai:room-7',
+      },
+      { layer: 'durable-sessions' },
+    );
     // `invocation` is consumed by the helper, not forwarded as a session option.
-    expect(vi.mocked(createAgentSession).mock.calls[0]?.[0]).not.toHaveProperty('invocation');
+    expect(vi.mocked(createAgentSessionWithIdentity).mock.calls[0]?.[0]).not.toHaveProperty('invocation');
+  });
+
+  it('reports the durable-sessions layer and names no runtime', async () => {
+    // The scaffold serves any durable framework, a consumer's own activities
+    // included, so nothing here can know which one it is under.
+    await withAgentSession(options(), noopBody);
+
+    expect(vi.mocked(createAgentSessionWithIdentity).mock.calls[0]?.[1]).toEqual({ layer: 'durable-sessions' });
+  });
+
+  it('does not route through the streaming factory', async () => {
+    await withAgentSession(options(), noopBody);
+
+    expect(createAgentSession).not.toHaveBeenCalled();
   });
 
   it('connects before running the body', async () => {
@@ -286,5 +306,27 @@ describe('withAgentSession', () => {
     const traceLines = logger.calls.filter((call) => call.level === 'trace');
     expect(traceLines).toHaveLength(1);
     expect(traceLines[0]?.context).toEqual({ sessionName: 'ai:room-7' });
+  });
+});
+
+describe('withAgentSessionForRuntime', () => {
+  it('names the runtime alongside the durable-sessions layer', async () => {
+    await withAgentSessionForRuntime(options(), 'temporal', noopBody);
+
+    expect(createAgentSessionWithIdentity).toHaveBeenCalledWith(expect.objectContaining({ channelName: 'ai:room-7' }), {
+      layer: 'durable-sessions',
+      runtime: 'temporal',
+    });
+  });
+
+  it('forwards session options exactly as the public helper does', async () => {
+    await withAgentSessionForRuntime({ ...options(), historyPageSize: 25 }, 'temporal', noopBody);
+
+    expect(vi.mocked(createAgentSessionWithIdentity).mock.calls[0]?.[0]).toEqual({
+      client,
+      codec,
+      historyPageSize: 25,
+      channelName: 'ai:room-7',
+    });
   });
 });

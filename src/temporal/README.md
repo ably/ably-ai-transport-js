@@ -46,7 +46,7 @@ nothing when the run already finished or is parked suspended.
 ```ts
 import { NativeConnection, Worker } from '@temporalio/worker';
 import { createAblyTransportPlugin } from '@ably/ai-transport/temporal';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageSessionCodec } from '@ably/ai-transport/vercel';
 
 import * as activities from './activities.js'; // YOUR inference and tool activities
 
@@ -57,7 +57,7 @@ const worker = await Worker.create({
   activities,
   plugins: [
     createAblyTransportPlugin({
-      codec: createUIMessageCodec(),
+      codec: createUIMessageSessionCodec(),
       createClient: () => new Ably.Realtime({ key: process.env.ABLY_API_KEY }),
     }),
   ],

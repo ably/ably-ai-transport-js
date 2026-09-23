@@ -72,7 +72,7 @@ export interface ClientSessionProviderProps<
  *
  * ```tsx
  * <AblyProvider client={ably}>
- *   <ClientSessionProvider channelName="ai:demo" codec={createUIMessageCodec()}>
+ *   <ClientSessionProvider channelName="ai:demo" codec={createUIMessageSessionCodec()}>
  *     <Chat />
  *   </ClientSessionProvider>
  * </AblyProvider>
@@ -84,8 +84,8 @@ export interface ClientSessionProviderProps<
  * For multiple sessions, nest providers with distinct channelNames:
  *
  * ```tsx
- * <ClientSessionProvider channelName="ai:main" codec={createUIMessageCodec()}>
- *   <ClientSessionProvider channelName="ai:aux" codec={createUIMessageCodec()}>
+ * <ClientSessionProvider channelName="ai:main" codec={createUIMessageSessionCodec()}>
+ *   <ClientSessionProvider channelName="ai:aux" codec={createUIMessageSessionCodec()}>
  *     <App />
  *   </ClientSessionProvider>
  * </ClientSessionProvider>

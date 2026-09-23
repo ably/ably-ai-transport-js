@@ -15,12 +15,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InvocationData } from '../../src/core/transport/invocation.js';
 import type { Codec } from '../../src/core/transport/session-codec.js';
 import type { RunIdentity } from '../../src/core/transport/types/transport.js';
-import { withAgentSession } from '../../src/core/transport/with-agent-session.js';
+import { withAgentSessionForRuntime } from '../../src/core/transport/with-agent-session.js';
 import { ErrorCode } from '../../src/errors.js';
 import { createFramingActivities } from '../../src/temporal/activities.js';
 
 vi.mock('../../src/core/transport/with-agent-session.js', () => ({
-  withAgentSession: vi.fn(),
+  withAgentSessionForRuntime: vi.fn(),
 }));
 
 vi.mock('@temporalio/activity', () => ({
@@ -111,10 +111,26 @@ beforeEach(() => {
   client = { close: vi.fn() };
   createClient = vi.fn(() => client);
   // Invoke the body with the stub session, mirroring the real helper.
-  vi.mocked(withAgentSession).mockImplementation(async (_options, body) =>
+  vi.mocked(withAgentSessionForRuntime).mockImplementation(async (_options, _runtime, body) =>
     // CAST: the stub implements only what the activities call.
     body({ session, invocation } as unknown as Parameters<typeof body>[0]),
   );
+});
+
+describe('agent identifier', () => {
+  it('names the temporal runtime, so the framing activities are attributable to it', async () => {
+    // Proves only what this suite can: the activities route through the
+    // runtime-naming variant. The durable layer itself belongs to the scaffold
+    // and is proven in with-agent-session.test.ts. A regression that swapped
+    // this for the public helper would drop the token silently.
+    await activities().openRun({ invocation, invocationId: 'wf-1' });
+
+    expect(withAgentSessionForRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ invocation, codec }),
+      'temporal',
+      expect.any(Function),
+    );
+  });
 });
 
 describe('openRun', () => {

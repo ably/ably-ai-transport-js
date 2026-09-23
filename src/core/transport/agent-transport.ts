@@ -36,9 +36,10 @@ import { EVENT_CANCEL, HEADER_EVENT_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
+import { registerAgent } from '../agent.js';
 import type { WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
-import { ConnectGuard, reportPage, subscribeAndAttach } from './channel-support.js';
+import { bestEffortDetach, ConnectGuard, reportPage, subscribeAndAttach } from './channel-support.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
@@ -135,11 +136,13 @@ interface RegisteredRun {
  * @template TOutput - The codec's output-event domain type.
  */
 export interface AgentTransportOptions<TInput, TOutput> {
-  /** The Ably channel to publish run/step lifecycle and output on, and to receive cancel and steering signals from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
-  channel: Ably.RealtimeChannel;
+  /** The Ably Realtime client. The caller owns its lifecycle; the transport's `close()` does not close it. */
+  client: Ably.Realtime;
+  /** The name of the channel to publish run/step lifecycle and output on, and to receive cancel and steering signals from. The transport owns this channel: it resolves it, subscribes its own listener on `connect()`, and detaches it on `close()`. */
+  channelName: string;
   /** The wire tier of the codec: its encoder serializes output and its decoder classifies the live receive stream, {@link AgentTransport.locateInput}, and {@link AgentTransport.history}. Any full `Codec` satisfies it. */
   codec: WireCodec<TInput, TOutput>;
-  /** The agent's Ably `clientId`, stamped as `run-client-id` on the run's lifecycle and output. The run manager stamps an empty string when omitted. */
+  /** Overrides the agent identity stamped as `run-client-id` on the run's lifecycle and output. Defaults to the client's own `auth.clientId`, read at publish time; the run manager stamps an empty string when neither resolves. */
   clientId?: string;
   /** Wire-message limit per channel-history page in {@link AgentTransport.locateInput} and {@link AgentTransport.history}. Defaults to 100. */
   historyPageSize?: number;
@@ -161,12 +164,35 @@ export interface AgentTransportOptions<TInput, TOutput> {
 export const createAgentTransport = <TInput, TOutput>(
   options: AgentTransportOptions<TInput, TOutput>,
 ): AgentTransport<TInput, TOutput> => {
-  const { channel, codec, clientId } = options;
+  const { codec } = options;
+  // Register this SDK on both the connection
+  // (options.agents) and channel-attach (params.agent) paths. Idempotent
+  // across transports sharing one client. The transports are the streaming
+  // tier: no Tree, no View, no history hydration.
+  const channelOptions: Ably.ChannelOptions = registerAgent(options.client, { layer: 'streaming' }, codec);
+  const channel = options.client.channels.get(options.channelName, channelOptions);
   const historyPageSize = options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
   const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
     component: 'AgentTransport',
   });
   const runManager = createRunManager(channel, options.logger);
+
+  /**
+   * The agent identity, the explicit override first and the client's own
+   * `auth.clientId` otherwise. Read lazily, never cached at construction:
+   * under token auth the client only learns its clientId once the connection
+   * reaches CONNECTED. A connection with no concrete identity (anonymous, or
+   * a wildcard `*` token) resolves to `undefined`.
+   * @returns The agent identity, or `undefined` if there is none.
+   */
+  const resolveClientId = (): string | undefined => {
+    if (options.clientId !== undefined) return options.clientId;
+    const id = options.client.auth.clientId;
+    return id && id !== '*' ? id : undefined;
+  };
+
+  /** Whether `connect()` attached the channel, so `close()` knows to detach. */
+  let attachAttempted = false;
 
   // The one decoder shared by the live fold and the history scan, so a stream
   // spanning the attach boundary is never double-decoded (locateInput's
@@ -393,11 +419,12 @@ export const createAgentTransport = <TInput, TOutput>(
       return Promise.reject(closedError('connect'));
     }
     logger.trace('AgentTransport.connect();');
-    return connectGuard.connect(async () =>
-      subscribeAndAttach(channel, onMessage, logger, 'AgentTransport', (error) => {
+    return connectGuard.connect(async () => {
+      attachAttempted = true;
+      await subscribeAndAttach(channel, onMessage, logger, 'AgentTransport', (error) => {
         receiver.emitError(error);
-      }),
-    );
+      });
+    });
   };
 
   const subscribe = (handler: (event: TransportEvent<TInput, TOutput>) => void): (() => void) =>
@@ -428,11 +455,15 @@ export const createAgentTransport = <TInput, TOutput>(
     }
   };
 
-  const close = (): void => {
+  const close = async (): Promise<void> => {
     if (closed) return;
     logger.info('AgentTransport.close();');
     closed = true;
     channel.unsubscribe(onMessage);
+    // The transport resolved this channel, so it owns the detach. Skipped when
+    // nothing ever attached it. `connect()` is the only attach path: every
+    // other method that reaches the channel goes through `requireOpen` first.
+    await bestEffortDetach(channel, attachAttempted, logger, 'AgentTransport');
   };
 
   // ---------------------------------------------------------------------------
@@ -656,10 +687,10 @@ export const createAgentTransport = <TInput, TOutput>(
         // output and terminals stamp the real run-client-id and close() aborts
         // the controller, but put nothing on the wire — the caller publishes
         // only what it means to publish.
-        runManager.registerRun(runId, clientId, controller);
+        runManager.registerRun(runId, resolveClientId(), controller);
         return;
       }
-      await runManager.startRun(runId, clientId, controller, {
+      await runManager.startRun(runId, resolveClientId(), controller, {
         parent: params.parent,
         forkOf: params.forkOf,
         regenerates: params.regenerates,
@@ -824,7 +855,7 @@ export const createAgentTransport = <TInput, TOutput>(
         // A pure re-entry signal: republish `ai-run-resume` under the same run-id
         // with no structure headers (continuation). The gate re-opens only once
         // the publish succeeds, so a failed resume leaves the run suspended.
-        await runManager.startRun(runId, clientId, controller, { invocationId, continuation: true });
+        await runManager.startRun(runId, resolveClientId(), controller, { invocationId, continuation: true });
         state = 'open';
       },
       end: async (params: RunEndParams): Promise<void> => {

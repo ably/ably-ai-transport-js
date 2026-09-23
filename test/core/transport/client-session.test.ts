@@ -37,6 +37,7 @@ import { createClientSession } from '../../../src/core/transport/client-session.
 import type { Codec, CodecEvent, CodecInputEvent, ReducerMeta } from '../../../src/core/transport/session-codec.js';
 import type { ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { VERSION } from '../../../src/version.js';
 import { createMockClient } from '../../helper/mock-client.js';
 
 // ---------------------------------------------------------------------------
@@ -518,6 +519,52 @@ describe('ClientSession', () => {
         codec: createMockCodec(),
       });
       expect(s.object).toBe(ch.object);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // agent identifier
+  // -------------------------------------------------------------------------
+
+  describe('agent identifier', () => {
+    it('stamps the SDK and durable-sessions layer on channel ATTACH', () => {
+      const client = createMockClient(createMockChannel());
+      createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+      const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+      expect(options?.params?.agent).toBe(`ai-transport-js/${VERSION} durable-sessions`);
+    });
+
+    it('registers the SDK and durable-sessions layer on the connection', () => {
+      const client = createMockClient(createMockChannel());
+      // CAST: options.agents is a private API on the Realtime client; the mock
+      // provides the same runtime shape the SDK writes to.
+      const optionsRef = (client as unknown as { options: { agents?: Record<string, string> } }).options;
+      createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+
+      expect(optionsRef.agents).toEqual({ 'ai-transport-js': VERSION, 'durable-sessions': VERSION });
+    });
+
+    it('does not report the streaming layer, which belongs to the standalone transports', () => {
+      const client = createMockClient(createMockChannel());
+      createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+      const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+      expect(options?.params?.agent).not.toContain(' streaming');
     });
   });
 

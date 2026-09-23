@@ -21,7 +21,7 @@ import * as Ably from 'ably';
 import { pageUntilLocated } from '../core/transport/page-until-located.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../core/transport/session-codec.js';
 import type { RunIdentity } from '../core/transport/types/transport.js';
-import { withAgentSession } from '../core/transport/with-agent-session.js';
+import { withAgentSessionForRuntime } from '../core/transport/with-agent-session.js';
 import { ErrorCode } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { withHeartbeat } from './heartbeat.js';
@@ -82,8 +82,13 @@ export const createFramingActivities = <
 
   /**
    * Run `body` against a connected session on its own client, closing the
-   * client afterwards. `withAgentSession` owns the session half, including
+   * client afterwards. The scaffold owns the session half, including
    * detaching rather than ending it.
+   *
+   * Sessions built here name the `temporal` runtime in the Ably-Agent
+   * identifier, because the SDK's own framing opened them. An application
+   * activity that drives the scaffold itself names no runtime: nothing in that
+   * path can know which framework it runs under.
    * @template T - The body's return type.
    * @param invocation - The invocation the session serves.
    * @param body - The work to run against the session.
@@ -91,12 +96,16 @@ export const createFramingActivities = <
    */
   const inSession = async <T>(
     invocation: OpenRunInput['invocation'],
-    body: Parameters<typeof withAgentSession<TInput, TOutput, TProjection, TMessage, T>>[1],
+    body: Parameters<typeof withAgentSessionForRuntime<TInput, TOutput, TProjection, TMessage, T>>[2],
   ): Promise<T> => {
     const client = createClient();
     try {
       return await withHeartbeat(heartbeat, async () =>
-        withAgentSession<TInput, TOutput, TProjection, TMessage, T>({ client, invocation, codec, logger }, body),
+        withAgentSessionForRuntime<TInput, TOutput, TProjection, TMessage, T>(
+          { client, invocation, codec, logger },
+          'temporal',
+          body,
+        ),
       );
     } finally {
       client.close();

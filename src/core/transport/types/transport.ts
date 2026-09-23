@@ -370,10 +370,12 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
    * Unsubscribe the transport's listener from the channel and stop all
    * delivery. Terminal: every subsequent `connect`, `publishInput`, `cancel`,
    * `steer`, or `history` call rejects; in-flight steer outcomes reject; and
-   * existing subscriptions simply receive nothing further. The channel itself
-   * is caller-owned and is not detached.
+   * existing subscriptions simply receive nothing further. The transport
+   * resolved the channel, so it detaches it; a failed detach is swallowed and
+   * logged at debug. The Ably client stays open, and is the caller's to close.
+   * @returns Resolves once the channel detach has settled.
    */
-  close(): void;
+  close(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -769,10 +771,12 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * Unsubscribe the transport's listener from the channel and stop all
    * delivery and cancel routing. Terminal: every subsequent call rejects.
    * Open runs are not aborted or ended — their write handles simply stop
-   * receiving signals. The channel itself is caller-owned and is not
-   * detached.
+   * receiving signals. The transport resolved the channel, so it detaches it;
+   * a failed detach is swallowed and logged at debug. The Ably client stays
+   * open, and is the caller's to close.
+   * @returns Resolves once the channel detach has settled.
    */
-  close(): void;
+  close(): Promise<void>;
 }
 
 /**

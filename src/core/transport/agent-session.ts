@@ -32,7 +32,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import { registerAgent } from '../agent.js';
+import { type AgentIdentity, registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import { createBaseRun } from './base-run.js';
 import { readCancelTarget } from './cancel-envelope.js';
@@ -246,12 +246,14 @@ class DefaultAgentSession<
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
-  constructor(options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>) {
+  constructor(options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>, identity: AgentIdentity) {
     this._codec = options.codec;
     // Spec: AIT-ST1a, AIT-ST1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
-    // across sessions sharing one client.
-    const registerOptions = registerAgent(options.client, options.codec);
+    // across sessions sharing one client. The identity comes from the factory
+    // that built this session, not from the caller's options, so a consumer
+    // cannot misreport which code path opened the channel.
+    const registerOptions = registerAgent(options.client, identity, options.codec);
     const channelOptions: Ably.ChannelOptions = { ...registerOptions };
     // Spec: AIT-ST16 — request object modes etc. when channelModes opts in.
     const modes = resolveChannelModes(options.channelModes);
@@ -1807,4 +1809,28 @@ export const createAgentSession = <
   TMessage,
 >(
   options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
-): AgentSession<TOutput, TProjection, TMessage> => new DefaultAgentSession(options);
+): AgentSession<TOutput, TProjection, TMessage> => new DefaultAgentSession(options, { layer: 'durable-sessions' });
+
+/**
+ * Create an agent session that reports the given {@link AgentIdentity} for usage
+ * attribution. Internal: no `index.ts` re-exports it, so the identity is never a
+ * knob a consumer can set. The durable scaffold in `with-agent-session.ts` uses
+ * it to report the durable layer, and {@link createAgentSession} is the public
+ * entry point that reports the streaming layer.
+ * @template TInput - The codec input event type.
+ * @template TOutput - The codec output event type.
+ * @template TProjection - The codec projection type.
+ * @template TMessage - The codec message type.
+ * @param options - Session configuration.
+ * @param identity - The code path and runtime opening the channel.
+ * @returns A new {@link AgentSession} instance.
+ */
+export const createAgentSessionWithIdentity = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(
+  options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
+  identity: AgentIdentity,
+): AgentSession<TOutput, TProjection, TMessage> => new DefaultAgentSession(options, identity);

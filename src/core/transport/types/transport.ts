@@ -360,7 +360,7 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
    * live stream's decoder, so a stream spanning the attach boundary is not
    * double-decoded; a single undecodable message is skipped and emitted on
    * `error`. Single-flight: concurrent calls serialise. Requires
-   * {@link connect}. Rejects with `HistoryFetchFailed` when a page fetch
+   * {@link connect}. Rejects with `SessionHistoryFetchFailed` when a page fetch
    * fails after retries.
    * @param opts - Optional batch bounds; see {@link TransportHistoryOptions}.
    * @returns The batch of events and whether history is exhausted.
@@ -762,7 +762,7 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * double-decoded ({@link locateInput}'s throwaway scans stay separate); a
    * single undecodable message is skipped and emitted on `error`.
    * Single-flight: concurrent calls serialise. Requires {@link connect}.
-   * Rejects with `HistoryFetchFailed` when a page fetch fails after retries.
+   * Rejects with `SessionHistoryFetchFailed` when a page fetch fails after retries.
    * @param opts - Optional batch bounds; see {@link TransportHistoryOptions}.
    * @returns The batch of events and whether history is exhausted.
    */

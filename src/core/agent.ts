@@ -27,9 +27,9 @@ const SDK_NAME = 'ai-transport-js';
  * Which SDK code path opened the channel. Unrelated to a run's status, which
  * also uses the word `streaming`.
  *
- * `streaming` covers the plain client and agent sessions. `durable-sessions`
- * covers any session built through the durable scaffold, whatever runtime
- * drives it.
+ * `streaming` covers the client and agent transports. `durable-sessions`
+ * covers every client and agent session, including those built through the
+ * durable scaffold, whatever runtime drives it.
  */
 export type AgentLayer = 'streaming' | 'durable-sessions';
 

@@ -1396,6 +1396,42 @@ describe('createAgentTransport channel ownership', () => {
 
     await expect(transport.close()).resolves.toBeUndefined();
   });
+
+  it('requests the resolved modes on the channel when channelModes is supplied', () => {
+    const client = createMockClient(createMockChannel());
+    createAgentTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'object-channel',
+      codec: createMockCodec(),
+      channelModes: ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'],
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.modes).toEqual([
+      'PUBLISH',
+      'SUBSCRIBE',
+      'PRESENCE',
+      'PRESENCE_SUBSCRIBE',
+      'OBJECT_PUBLISH',
+      'OBJECT_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
+    ]);
+    expect(options?.params?.agent).toBe(`ai-transport-js/${VERSION} streaming`);
+  });
+
+  it('sets no modes on the channel when channelModes is omitted', () => {
+    const client = createMockClient(createMockChannel());
+    createAgentTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.modes).toBeUndefined();
+  });
 });
 
 /**

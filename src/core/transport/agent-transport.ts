@@ -37,6 +37,7 @@ import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
+import { resolveChannelModes } from '../channel-options.js';
 import type { WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import { bestEffortDetach, ConnectGuard, reportPage, subscribeAndAttach } from './channel-support.js';
@@ -142,6 +143,16 @@ export interface AgentTransportOptions<TInput, TOutput> {
   channelName: string;
   /** The wire tier of the codec: its encoder serializes output and its decoder classifies the live receive stream, {@link AgentTransport.locateInput}, and {@link AgentTransport.history}. Any full `Codec` satisfies it. */
   codec: WireCodec<TInput, TOutput>;
+  /**
+   * Extra Ably channel modes to request on the transport's channel, on top of the
+   * modes AI Transport always needs. Omit to attach with the default mode set.
+   *
+   * The transport requests the union of these modes with the modes it always
+   * needs, so passing extra modes never drops the SDK's required modes. The
+   * connection's token/key capability must permit the requested operations,
+   * otherwise the server grants only the permitted subset.
+   */
+  channelModes?: readonly Ably.ChannelMode[];
   /** Overrides the agent identity stamped as `run-client-id` on the run's lifecycle and output. Defaults to the client's own `auth.clientId`, read at publish time; the run manager stamps an empty string when neither resolves. */
   clientId?: string;
   /** Wire-message limit per channel-history page in {@link AgentTransport.locateInput} and {@link AgentTransport.history}. Defaults to 100. */
@@ -170,6 +181,8 @@ export const createAgentTransport = <TInput, TOutput>(
   // across transports sharing one client. The transports are the streaming
   // tier: no Tree, no View, no history hydration.
   const channelOptions: Ably.ChannelOptions = registerAgent(options.client, { layer: 'streaming' }, codec);
+  const modes = resolveChannelModes(options.channelModes);
+  if (modes) channelOptions.modes = modes;
   const channel = options.client.channels.get(options.channelName, channelOptions);
   const historyPageSize = options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
   const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({

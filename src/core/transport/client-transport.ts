@@ -40,6 +40,7 @@ import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
+import { resolveChannelModes } from '../channel-options.js';
 import type { Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
 import {
@@ -85,6 +86,16 @@ export interface ClientTransportOptions<TInput, TOutput> {
   channelName: string;
   /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. Any full `Codec` satisfies it. */
   codec: WireCodec<TInput, TOutput>;
+  /**
+   * Extra Ably channel modes to request on the transport's channel, on top of the
+   * modes AI Transport always needs. Omit to attach with the default mode set.
+   *
+   * The transport requests the union of these modes with the modes it always
+   * needs, so passing extra modes never drops the SDK's required modes. The
+   * connection's token/key capability must permit the requested operations,
+   * otherwise the server grants only the permitted subset.
+   */
+  channelModes?: readonly Ably.ChannelMode[];
   /** Overrides the publishing identity stamped as `run-client-id` on inputs. Defaults to the client's own `auth.clientId`, read at publish time; a client with no concrete identity (anonymous, or a wildcard `*` token) stamps no header and the local echo's `clientId` is `undefined`. */
   clientId?: string;
   /** Wire-message limit per `channel.history()` round trip in {@link ClientTransport.history}. Defaults to 100. */
@@ -179,6 +190,8 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     // across transports sharing one client. The transports are the streaming
     // tier: no Tree, no View, no history hydration.
     const channelOptions: Ably.ChannelOptions = registerAgent(options.client, { layer: 'streaming' }, options.codec);
+    const modes = resolveChannelModes(options.channelModes);
+    if (modes) channelOptions.modes = modes;
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._client = options.client;
     this._codec = options.codec;

@@ -20,6 +20,7 @@ import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/transp
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ClientSessionProvider } from '../../../src/react/contexts/client-session-provider.js';
 import { useClientSession } from '../../../src/react/use-client-session.js';
+import { VERSION } from '../../../src/version.js';
 import { createMockSession } from '../helper/mock-session.js';
 
 // Capture the options the provider passes to ably-js's <ChannelProvider>.
@@ -309,5 +310,12 @@ describe('ClientSessionProvider', () => {
   it('sets no modes on <ChannelProvider> when channelModes is omitted', () => {
     renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
     expect(channelProviderCapture.options?.modes).toBeUndefined();
+  });
+
+  it('seeds <ChannelProvider> with the SDK agent so ably-js appends rather than replaces it', () => {
+    renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
+    // Asserted as a literal, not by calling channelAgent: a test that derives
+    // the expected string from the implementation agrees with it by construction.
+    expect(channelProviderCapture.options?.params?.agent).toBe(`ai-transport-js/${VERSION} durable-sessions`);
   });
 });

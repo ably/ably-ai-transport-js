@@ -6,10 +6,63 @@
  * discipline lives in one place.
  */
 
-import { createAgentSession } from './agent-session.js';
+import type { AgentRuntime } from '../agent.js';
+import { createAgentSessionWithIdentity } from './agent-session.js';
 import { Invocation } from './invocation.js';
 import type { CodecInputEvent, CodecOutputEvent } from './session-codec.js';
 import type { AgentSessionContext, WithAgentSessionOptions } from './types/agent.js';
+
+/**
+ * The shared implementation behind {@link withAgentSession} and
+ * {@link withAgentSessionForRuntime}. Both report the `durable-sessions` layer;
+ * they differ only in whether a runtime is named.
+ * @template TInput - The codec input event type.
+ * @template TOutput - The codec output event type.
+ * @template TProjection - The codec projection type.
+ * @template TMessage - The codec message type.
+ * @template T - The body's return type, passed through to the caller.
+ * @param options - Session configuration, including the invocation to serve.
+ * @param runtime - The durable runtime that framed this session, or `undefined`
+ *   when the caller drives the scaffold itself.
+ * @param body - The work to run against the connected session.
+ * @returns Whatever `body` returns.
+ */
+const runDurableSession = async <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+  T,
+>(
+  options: WithAgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
+  runtime: AgentRuntime | undefined,
+  body: (context: AgentSessionContext<TOutput, TProjection, TMessage>) => Promise<T>,
+): Promise<T> => {
+  const { invocation: invocationData, ...sessionOptions } = options;
+  const invocation = Invocation.fromJSON(invocationData);
+  const logger = options.logger?.withContext({ component: 'withAgentSession' });
+  logger?.trace('withAgentSession();', { sessionName: invocation.sessionName });
+
+  const session = createAgentSessionWithIdentity(
+    { ...sessionOptions, channelName: invocation.sessionName },
+    // Conditional spread so the identity carries no `runtime: undefined` key.
+    { layer: 'durable-sessions', ...(runtime && { runtime }) },
+  );
+  try {
+    await session.connect();
+    // `await` here, not a bare return: the finally must not run until the body
+    // settles, or the detach races the work still in flight.
+    return await body({ session, invocation });
+  } finally {
+    try {
+      await session.detach();
+    } catch (error) {
+      // Best-effort: detach publishes nothing, so a failure here cannot change
+      // what reached the channel.
+      logger?.debug('withAgentSession(); session detach failed', { error });
+    }
+  }
+};
 
 /**
  * Create a connected agent session for the given invocation, run `body` against
@@ -30,6 +83,12 @@ import type { AgentSessionContext, WithAgentSessionOptions } from './types/agent
  * nothing, so it cannot leave the wire inconsistent, and surfacing it would
  * either mask the body's own error or fail a unit of work whose output already
  * landed.
+ *
+ * Sessions built here report the `durable-sessions` layer in the Ably-Agent
+ * identifier. This scaffold is the durable marker because its
+ * detach-never-end contract only makes sense for work a later attempt can
+ * resume. No runtime token is named: the scaffold serves any durable
+ * framework, a consumer's own activities included.
  * @template TInput - The codec input event type.
  * @template TOutput - The codec output event type.
  * @template TProjection - The codec projection type.
@@ -51,25 +110,33 @@ export const withAgentSession = async <
 >(
   options: WithAgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
   body: (context: AgentSessionContext<TOutput, TProjection, TMessage>) => Promise<T>,
-): Promise<T> => {
-  const { invocation: invocationData, ...sessionOptions } = options;
-  const invocation = Invocation.fromJSON(invocationData);
-  const logger = options.logger?.withContext({ component: 'withAgentSession' });
-  logger?.trace('withAgentSession();', { sessionName: invocation.sessionName });
+): Promise<T> => runDurableSession(options, undefined, body);
 
-  const session = createAgentSession({ ...sessionOptions, channelName: invocation.sessionName });
-  try {
-    await session.connect();
-    // `await` here, not a bare return: the finally must not run until the body
-    // settles, or the detach races the work still in flight.
-    return await body({ session, invocation });
-  } finally {
-    try {
-      await session.detach();
-    } catch (error) {
-      // Best-effort: detach publishes nothing, so a failure here cannot change
-      // what reached the channel.
-      logger?.debug('withAgentSession(); session detach failed', { error });
-    }
-  }
-};
+/**
+ * {@link withAgentSession}, naming the durable runtime that framed the session.
+ *
+ * Internal: no `index.ts` re-exports it, so the runtime is fixed by the
+ * construction site rather than settable by a consumer. It takes a runtime and
+ * nothing else, so a caller cannot name a layer. The SDK's Temporal framing
+ * activities are its only caller.
+ * @template TInput - The codec input event type.
+ * @template TOutput - The codec output event type.
+ * @template TProjection - The codec projection type.
+ * @template TMessage - The codec message type.
+ * @template T - The body's return type, passed through to the caller.
+ * @param options - Session configuration, including the invocation to serve.
+ * @param runtime - The durable runtime that framed this session.
+ * @param body - The work to run against the connected session.
+ * @returns Whatever `body` returns.
+ */
+export const withAgentSessionForRuntime = async <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+  T,
+>(
+  options: WithAgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
+  runtime: AgentRuntime,
+  body: (context: AgentSessionContext<TOutput, TProjection, TMessage>) => Promise<T>,
+): Promise<T> => runDurableSession(options, runtime, body);

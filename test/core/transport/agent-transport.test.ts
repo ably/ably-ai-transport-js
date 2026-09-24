@@ -28,7 +28,7 @@
  */
 
 import * as Ably from 'ably';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
@@ -47,7 +47,9 @@ import type { CancelRequest, LocatedInput, TransportEvent } from '../../../src/c
 import { wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
+import { VERSION } from '../../../src/version.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import { createMockClient } from '../../helper/mock-client.js';
 import { createMockEncoder } from '../../helper/mock-encoder.js';
 import { flushMicrotasks, pausedStream, streamOf } from '../../helper/streams.js';
 import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
@@ -178,7 +180,8 @@ const setup = async (opts?: {
 }> => {
   const channel = createMockChannel(opts?.historyPages);
   const transport = createAgentTransport<TestInput, TestOutput>({
-    channel,
+    client: createMockClient(channel),
+    channelName: 'test-channel',
     codec: createMockCodec(opts?.decoded),
     clientId: opts?.clientId,
   });
@@ -793,7 +796,7 @@ describe('createAgentTransport', () => {
       const { transport, channel } = await setup();
 
       expect(channel.listener).toBeDefined();
-      transport.close();
+      await transport.close();
 
       expect(channel.listener).toBeUndefined();
     });
@@ -801,7 +804,7 @@ describe('createAgentTransport', () => {
     it('is terminal — connect, openRun, and history reject once closed', async () => {
       const { transport } = await setup();
 
-      transport.close();
+      await transport.close();
 
       await expect(transport.connect()).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
       expect(() => transport.openRun()).toThrowErrorInfo({ code: ErrorCode.SessionClosed });
@@ -1321,5 +1324,166 @@ describe('createAgentTransport', () => {
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent identifier and channel ownership
+// ---------------------------------------------------------------------------
+
+describe('createAgentTransport agent identifier', () => {
+  it('stamps the SDK and streaming layer on channel ATTACH', () => {
+    const client = createMockClient(createMockChannel());
+    createAgentTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.params?.agent).toBe(`ai-transport-js/${VERSION} streaming`);
+  });
+
+  it('registers the SDK and streaming layer on the connection', () => {
+    const client = createMockClient(createMockChannel());
+    // CAST: options.agents is a private API on the Realtime client; the mock
+    // provides the same runtime shape the SDK writes to.
+    const optionsRef = (client as unknown as { options: { agents?: Record<string, string> } }).options;
+    createAgentTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec(),
+    });
+
+    expect(optionsRef.agents).toEqual({ 'ai-transport-js': VERSION, streaming: VERSION });
+  });
+
+  it('does not report the durable-sessions layer, which belongs to the sessions', () => {
+    const client = createMockClient(createMockChannel());
+    createAgentTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.params?.agent).not.toContain('durable-sessions');
+  });
+});
+
+describe('createAgentTransport channel ownership', () => {
+  it('detaches the channel it resolved on close', async () => {
+    const { transport, channel } = await setup();
+
+    await transport.close();
+
+    expect(channel.detach).toHaveBeenCalled();
+  });
+
+  it('does not detach when nothing ever attached the channel', async () => {
+    const { transport, channel } = await setup({ connect: false });
+
+    await transport.close();
+
+    expect(channel.detach).not.toHaveBeenCalled();
+  });
+
+  it('swallows a detach failure, because detach publishes nothing', async () => {
+    const { transport, channel } = await setup();
+    channel.detach.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(transport.close()).resolves.toBeUndefined();
+  });
+
+  it('requests the resolved modes on the channel when channelModes is supplied', () => {
+    const client = createMockClient(createMockChannel());
+    createAgentTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'object-channel',
+      codec: createMockCodec(),
+      channelModes: ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'],
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.modes).toEqual([
+      'PUBLISH',
+      'SUBSCRIBE',
+      'PRESENCE',
+      'PRESENCE_SUBSCRIBE',
+      'OBJECT_PUBLISH',
+      'OBJECT_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
+    ]);
+    expect(options?.params?.agent).toBe(`ai-transport-js/${VERSION} streaming`);
+  });
+
+  it('sets no modes on the channel when channelModes is omitted', () => {
+    const client = createMockClient(createMockChannel());
+    createAgentTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.modes).toBeUndefined();
+  });
+});
+
+/**
+ * Open and end a run on a transport built from `client`, and report the
+ * `run-client-id` it stamped on the terminal.
+ * @param client - The Ably client the transport resolves its channel from.
+ * @param channel - The mock channel that client returns.
+ * @returns The stamped identity; the run manager stamps `''` when none resolves.
+ */
+const runClientIdAfterEnd = async (
+  client: Ably.Realtime,
+  channel: MockChannel & Ably.RealtimeChannel,
+): Promise<string | undefined> => {
+  const transport = createAgentTransport<TestInput, TestOutput>({
+    client,
+    channelName: 'test-channel',
+    codec: createMockCodec(),
+  });
+  await transport.connect();
+  await transport.adoptRun('run-adopted').end({ reason: 'error' });
+  const end = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+  if (!end) throw new Error('expected ai-run-end');
+  return getTransportHeaders(end as Ably.InboundMessage)['run-client-id'];
+};
+
+describe('createAgentTransport clientId', () => {
+  it('falls back to the client auth clientId when no override is given', async () => {
+    const channel = createMockChannel();
+
+    expect(await runClientIdAfterEnd(createMockClient(channel, 'agent-a'), channel)).toBe('agent-a');
+  });
+
+  it('treats a wildcard token identity as no identity', async () => {
+    const channel = createMockChannel();
+
+    // The run manager stamps an empty string when no identity resolves.
+    expect(await runClientIdAfterEnd(createMockClient(channel, '*'), channel)).toBe('');
+  });
+
+  it('prefers an explicit clientId over the client auth clientId', async () => {
+    const channel = createMockChannel();
+    const transport = createAgentTransport<TestInput, TestOutput>({
+      client: createMockClient(channel, 'agent-a'),
+      channelName: 'test-channel',
+      codec: createMockCodec(),
+      clientId: 'override',
+    });
+    await transport.connect();
+    await transport.adoptRun('run-adopted').end({ reason: 'error' });
+
+    const end = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+    if (!end) throw new Error('expected ai-run-end');
+    expect(getTransportHeaders(end as Ably.InboundMessage)['run-client-id']).toBe('override');
   });
 });

@@ -48,7 +48,9 @@ import { createClientTransport } from '../../../src/core/transport/client-transp
 import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
+import { VERSION } from '../../../src/version.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import { createMockClient } from '../../helper/mock-client.js';
 import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
 interface TestInput {
@@ -249,7 +251,8 @@ const setup = async (opts?: {
   const encoderCalls: EncoderCall[] = [];
   const stamped: Ably.Message[] = [];
   const transport = createClientTransport<TestInput, TestOutput>({
-    channel,
+    client: createMockClient(channel),
+    channelName: 'test-channel',
     codec: opts?.codec ?? createMockCodec(encoderCalls, stamped),
     clientId: opts?.clientId,
   });
@@ -504,7 +507,7 @@ describe('createClientTransport', () => {
       const fixture = await setup();
       const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });
 
-      fixture.transport.close();
+      await fixture.transport.close();
 
       await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
     });
@@ -654,7 +657,8 @@ describe('createClientTransport', () => {
       channel.state = 'initialized';
       const encoderCalls: EncoderCall[] = [];
       const transport = createClientTransport<TestInput, TestOutput>({
-        channel,
+        client: createMockClient(channel),
+        channelName: 'test-channel',
         codec: createMockCodec(encoderCalls, []),
       });
       await transport.connect();
@@ -762,7 +766,7 @@ describe('createClientTransport', () => {
       const { transport, channel, events } = await setup();
       const listener = channel.listener;
 
-      transport.close();
+      await transport.close();
 
       expect(channel.listener).toBeUndefined();
       // A straggler delivery after close is ignored even if the listener fires.
@@ -788,10 +792,178 @@ describe('createClientTransport', () => {
       channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
       await expect(result.published).resolves.toEqual({ serial: 's-echo' });
 
-      transport.close();
+      await transport.close();
 
       await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
       expect(channel.stateListeners.size).toBe(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent identifier and channel ownership
+// ---------------------------------------------------------------------------
+
+describe('createClientTransport agent identifier', () => {
+  it('stamps the SDK and streaming layer on channel ATTACH', () => {
+    const channel = createMockChannel();
+    const client = createMockClient(channel);
+    createClientTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec([], []),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.params?.agent).toBe(`ai-transport-js/${VERSION} streaming`);
+  });
+
+  it('registers the SDK and streaming layer on the connection', () => {
+    const channel = createMockChannel();
+    const client = createMockClient(channel);
+    // CAST: options.agents is a private API on the Realtime client; the mock
+    // provides the same runtime shape the SDK writes to.
+    const optionsRef = (client as unknown as { options: { agents?: Record<string, string> } }).options;
+    createClientTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec([], []),
+    });
+
+    expect(optionsRef.agents).toEqual({ 'ai-transport-js': VERSION, streaming: VERSION });
+  });
+
+  it('does not report the durable-sessions layer, which belongs to the sessions', () => {
+    const channel = createMockChannel();
+    const client = createMockClient(channel);
+    createClientTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec([], []),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.params?.agent).not.toContain('durable-sessions');
+  });
+});
+
+describe('createClientTransport channel ownership', () => {
+  it('detaches the channel it resolved on close', async () => {
+    const fixture = await setup();
+
+    await fixture.transport.close();
+
+    expect(fixture.channel.detach).toHaveBeenCalled();
+  });
+
+  it('does not detach when nothing ever attached the channel', async () => {
+    const fixture = await setup({ connect: false });
+
+    await fixture.transport.close();
+
+    expect(fixture.channel.detach).not.toHaveBeenCalled();
+  });
+
+  it('swallows a detach failure, because detach publishes nothing', async () => {
+    const fixture = await setup();
+    fixture.channel.detach.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(fixture.transport.close()).resolves.toBeUndefined();
+  });
+
+  it('requests the resolved modes on the channel when channelModes is supplied', () => {
+    const client = createMockClient(createMockChannel());
+    createClientTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'object-channel',
+      codec: createMockCodec([], []),
+      channelModes: ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'],
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.modes).toEqual([
+      'PUBLISH',
+      'SUBSCRIBE',
+      'PRESENCE',
+      'PRESENCE_SUBSCRIBE',
+      'OBJECT_PUBLISH',
+      'OBJECT_SUBSCRIBE',
+      'ANNOTATION_PUBLISH',
+    ]);
+    expect(options?.params?.agent).toBe(`ai-transport-js/${VERSION} streaming`);
+  });
+
+  it('sets no modes on the channel when channelModes is omitted', () => {
+    const client = createMockClient(createMockChannel());
+    createClientTransport<TestInput, TestOutput>({
+      client,
+      channelName: 'test-channel',
+      codec: createMockCodec([], []),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+    expect(options?.modes).toBeUndefined();
+  });
+});
+
+/**
+ * The `run-client-id` the transport stamped on the first published message.
+ * @param stamped - Messages the mock codec's encoder stamped, in order.
+ * @returns The stamped identity, or `undefined` when none was stamped.
+ */
+const stampedClientId = (stamped: Ably.Message[]): string | undefined => {
+  const [first] = stamped;
+  if (!first) throw new Error('nothing was stamped');
+  // CAST: the stamped message is an outbound Message; getTransportHeaders
+  // reads only `extras`, which both shapes carry.
+  return getTransportHeaders(first as Ably.InboundMessage)['run-client-id'];
+};
+
+describe('createClientTransport clientId', () => {
+  it('falls back to the client auth clientId when no override is given', async () => {
+    const channel = createMockChannel();
+    const stamped: Ably.Message[] = [];
+    const transport = createClientTransport<TestInput, TestOutput>({
+      client: createMockClient(channel, 'alice'),
+      channelName: 'test-channel',
+      codec: createMockCodec([], stamped),
+    });
+    await transport.connect();
+    await transport.publishInput({ kind: 'user-message', content: 'hi' });
+
+    expect(stampedClientId(stamped)).toBe('alice');
+  });
+
+  it('prefers an explicit clientId over the client auth clientId', async () => {
+    const channel = createMockChannel();
+    const stamped: Ably.Message[] = [];
+    const transport = createClientTransport<TestInput, TestOutput>({
+      client: createMockClient(channel, 'alice'),
+      channelName: 'test-channel',
+      codec: createMockCodec([], stamped),
+      clientId: 'override',
+    });
+    await transport.connect();
+    await transport.publishInput({ kind: 'user-message', content: 'hi' });
+
+    expect(stampedClientId(stamped)).toBe('override');
+  });
+
+  it('treats a wildcard token identity as no identity', async () => {
+    const channel = createMockChannel();
+    const stamped: Ably.Message[] = [];
+    const transport = createClientTransport<TestInput, TestOutput>({
+      client: createMockClient(channel, '*'),
+      channelName: 'test-channel',
+      codec: createMockCodec([], stamped),
+    });
+    await transport.connect();
+    await transport.publishInput({ kind: 'user-message', content: 'hi' });
+
+    expect(stampedClientId(stamped)).toBeUndefined();
   });
 });

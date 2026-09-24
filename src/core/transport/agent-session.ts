@@ -1815,8 +1815,8 @@ export const createAgentSession = <
  * Create an agent session that reports the given {@link AgentIdentity} for usage
  * attribution. Internal: no `index.ts` re-exports it, so the identity is never a
  * knob a consumer can set. The durable scaffold in `with-agent-session.ts` uses
- * it to report the durable layer, and {@link createAgentSession} is the public
- * entry point that reports the streaming layer.
+ * it to add the runtime where the SDK knows it, and {@link createAgentSession} is
+ * the public entry point that reports the durable-sessions layer.
  * @template TInput - The codec input event type.
  * @template TOutput - The codec output event type.
  * @template TProjection - The codec projection type.

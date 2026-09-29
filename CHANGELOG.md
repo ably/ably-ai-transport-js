@@ -2,6 +2,34 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.9.0](https://github.com/ably/ably-ai-transport-js/tree/0.9.0) (2026-09-29)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.8.0...0.9.0)
+
+This release lets you use the SDK without relying on the conversation being stored in the channel, through a new simplified **streaming** layer. The streaming layer gives you access to run and step framing, cancellation, and steering, while letting your application more easily own the message format and conversation store. All existing codecs work out of the box with it. **Durable sessions** now build on that same layer, and take a session codec, so an existing application needs that change to compile. The release also includes a number of other improvements; see the full details below.
+
+### Breaking Changes
+
+- **The sessions take a session codec.** `createUIMessageCodec()` and `ResponsesCodec` are now wire codecs for the streaming layer, so `createClientSession`, `createAgentSession`, `withAgentSession`, `ClientSessionProvider` and the Temporal plugin take `createUIMessageSessionCodec()` from `@ably/ai-transport/vercel` or `ResponsesSessionCodec` from `@ably/ai-transport/openai` instead. The two are not wire-compatible, so pick one per channel. [#307](https://github.com/ably/ably-ai-transport-js/pull/307)
+- **The core codec contract is wire-only.** `defineCodec` returns a `WireCodec<TInput, TOutput>` and no longer takes reducer or factory config, and `Codec`, `CodecEvent`, `CodecReducer`, `Reducer`, `ReducerMeta`, `Regenerate`, `UserMessage`, `ToolResult`, `ToolResultError`, `ToolApprovalResponse`, `WellKnownInputFactories`, `DefinedCodec` and `DefinedCodecFactories` are no longer exported. `CodecInputEvent`, `CodecMessage` and `CodecOutputEvent` remain. [#307](https://github.com/ably/ably-ai-transport-js/pull/307)
+- **`VercelInput` and `OpenAIInput` now describe the wire inputs.** `VercelInput` becomes a `message` / `chunk` / `approval` / `regenerate` union built from the provider's own types, and the session input is `VercelSessionInput`; `OpenAIInput` and `OpenAISessionInput` split the same way. [#307](https://github.com/ably/ably-ai-transport-js/pull/307)
+- **`RunHooks` is renamed `OpenRunHooks`** and carries `onError` alongside `onCancel` and `onSteer`, so a failing cancel handler routes to it. [#307](https://github.com/ably/ably-ai-transport-js/pull/307)
+- **Nine `ErrorCode` members are renamed** to match their entries in the Ably error registry: `EncoderRecoveryFailed` to `StreamedMessageFinalizeFailed`, `SessionSubscriptionError` to `SessionSubscriptionFailed`, `CancelListenerError` to `RunCancelHandlerFailed`, `RunLifecycleError` to `RunLifecycleEventPublishFailed`, `ChannelContinuityLost` to `SessionContinuityNotGuaranteed`, `ChannelNotReady` to `SessionChannelNotReady`, `StreamError` to `RunResponseStreamFailed`, `InputEventNotFound` to `AdoptedRunStartNotObserved`, and `HistoryFetchFailed` to `SessionHistoryFetchFailed`. The numeric values are unchanged. [#288](https://github.com/ably/ably-ai-transport-js/pull/288) [#304](https://github.com/ably/ably-ai-transport-js/pull/304)
+
+### New Features
+
+- **Standalone client and agent transports.** `createClientTransport` and `createAgentTransport` publish input and pipe an agent's output over one channel, with run and step framing, cancellation, steering and batched `history`, and no conversation state of their own. Events reach a subscriber in publish order and exactly as sent, so an existing reducer merges them into messages. [#279](https://github.com/ably/ably-ai-transport-js/pull/279) [#307](https://github.com/ably/ably-ai-transport-js/pull/307) [#342](https://github.com/ably/ably-ai-transport-js/pull/342)
+- **Wire codecs.** A `WireCodec<TInput, TOutput>` encodes and decodes events and nothing else, with both type parameters unconstrained; `createUIMessageCodec()`, `ResponsesCodec` and `defineCodec` all produce one. [#307](https://github.com/ably/ably-ai-transport-js/pull/307)
+- **Durable execution on the transports.** `openRun({ input })` opens or resumes a run from the located input's own headers, `adoptRun(runId)` attaches to an existing run without publishing a lifecycle event, and `TransportHistoryOptions.onPage` fires once per history page. [#307](https://github.com/ably/ably-ai-transport-js/pull/307)
+- **The `Ably-Agent` identifier reports the layer and runtime in use**, so usage is attributable per tier and per execution environment. [#342](https://github.com/ably/ably-ai-transport-js/pull/342)
+- **`channelModes` on both transports**, for a channel that needs modes beyond the defaults. [#342](https://github.com/ably/ably-ai-transport-js/pull/342)
+- **Three new `ErrorCode` members** separate failures that previously shared a code: `SessionMessageProcessingFailed` (104009), `RunSteerHandlerFailed` (104012) and `RunCancelRoutingFailed` (104013). [#288](https://github.com/ably/ably-ai-transport-js/pull/288)
+
+### Bug Fixes
+
+- A failed step-lifecycle publish now surfaces as `RunLifecycleEventPublishFailed` with the Ably error as its cause, the same as a failed run-lifecycle publish, instead of letting the raw Ably error propagate. [#288](https://github.com/ably/ably-ai-transport-js/pull/288)
+- A throwing `onPage` callback no longer aborts `pageUntilLocated`; the error is logged and paging continues. [#307](https://github.com/ably/ably-ai-transport-js/pull/307)
+
 ## [0.8.0](https://github.com/ably/ably-ai-transport-js/tree/0.8.0) (2026-08-14)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.7.0...0.8.0)

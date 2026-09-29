@@ -113,8 +113,13 @@ wrong the moment it lands.
 ## Step 8: Push and open the PR
 
 Push the branch and open the PR against `main`, titled `Release vNEW_VERSION`.
-Open it as a draft if the changelog documents a PR that has not merged yet —
-silently; the draft state is the signal, no explanatory note in the body.
+
+**Always open it as a draft** (`gh pr create --draft`). The release PR is the
+last point at which the changelog wording, the version, and the set of
+included PRs get read before they become the public record of the release,
+and that read belongs to a human. Marking it ready for review is how they say
+they are happy with it — never do it for them. The draft state is the signal on
+its own, so no note explaining it goes in the body.
 
 The body is short. Four paragraphs, in this order:
 
@@ -144,13 +149,14 @@ merge-order or rebase notes, no "worth your attention" section.
 Report the PR link, then this list, and stop. Do not summarise the diff back —
 not the version numbers, not the file list, not what validation ran.
 
-1. Merge the PR.
-2. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):
+1. Read the `CHANGELOG.md` entry, then mark the PR ready for review.
+2. Merge the PR.
+3. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):
    tag `NEW_VERSION` (no `v` prefix), title `vNEW_VERSION`, description from
    "Generate release notes".
-3. The npm (`release.yml`) and CDN (`publish.cdn.yml`) publish workflows fire
+4. The npm (`release.yml`) and CDN (`publish.cdn.yml`) publish workflows fire
    on release publication.
-4. Update the [Ably Changelog](https://changelog.ably.com/) via
+5. Update the [Ably Changelog](https://changelog.ably.com/) via
    [Headway](https://headwayapp.co/).
 
 ## Do not
@@ -161,6 +167,8 @@ not the version numbers, not the file list, not what validation ran.
 - **Do not touch lockfiles or `node_modules`** (see Step 5).
 - **Do not run the test suite, typecheck, or lint** for a release. `prettier`
   on the changelog is the only formatting that matters.
+- **Do not mark the release PR ready for review** — it opens as a draft and
+  stays one until a human has read the entry (see Step 8).
 - **Do not write memory entries about the release** — not the version, not the
   PR number, not which PRs still need to merge. A release is routine work with
   no durable lesson in it.

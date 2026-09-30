@@ -357,6 +357,17 @@ describe('createTransport', () => {
       ]);
     });
 
+    it('delivers a message whose row decodes to nothing with no event, and reports no error', () => {
+      const deliveries: unknown[] = [];
+      const errors: Ably.ErrorInfo[] = [];
+      transport.on('error', (e) => errors.push(e));
+      transport.subscribe((d) => deliveries.push(d));
+      const message = inbound({ serial: 's1', fields: { type: 'ping' } });
+      channel.listener?.(message);
+      expect(deliveries).toEqual([{ event: undefined, message }]);
+      expect(errors).toEqual([]);
+    });
+
     it('delivers a message whose decode threw with no event, and reports the error', () => {
       const deliveries: unknown[] = [];
       const errors: Ably.ErrorInfo[] = [];

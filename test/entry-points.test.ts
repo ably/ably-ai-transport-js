@@ -24,6 +24,8 @@
 import type * as Ably from 'ably';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
+import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
+import { agui, createAGUICodec } from '../src/ag-ui/index.js';
 import type {
   ChannelWriter,
   Codec,
@@ -190,5 +192,14 @@ describe('@ably/ai-transport/openai', () => {
     expectTypeOf<OpenAIEvent>().toHaveProperty('type');
     expectTypeOf<OpenAIInput>().toHaveProperty('items');
     expectTypeOf<OpenAIStreamEvent>().toHaveProperty('type');
+  });
+});
+
+describe('@ably/ai-transport/ag-ui', () => {
+  it('exports the codec, its factory and its event types', () => {
+    expect(typeof createAGUICodec).toBe('function');
+    expect(Object.keys(agui).toSorted()).toEqual(CODEC_KEYS);
+    expectTypeOf<AGUIEvent>().toHaveProperty('type');
+    expectTypeOf<AGUIRunInput>().toHaveProperty('input');
   });
 });

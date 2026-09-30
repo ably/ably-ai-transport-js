@@ -8,21 +8,22 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
-      exclude: ['react/**', 'vercel/**', 'openai/**', 'ag-ui/**'],
     }),
   ],
   build: {
-    outDir: '../dist',
+    outDir: '../../dist/ag-ui',
     lib: {
       entry: resolve(__dirname, 'index.ts'),
-      name: 'AblyAiTransport',
-      fileName: 'ably-ai-transport',
+      name: 'AblyAiTransportAGUI',
+      fileName: 'ably-ai-transport-ag-ui',
+      formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably'],
+      external: ['ably', '@ag-ui/core'],
       output: {
         globals: {
           ably: 'Ably',
+          '@ag-ui/core': 'AGUI',
         },
       },
     },

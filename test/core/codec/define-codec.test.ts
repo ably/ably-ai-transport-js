@@ -456,6 +456,15 @@ describe('defineCodec', () => {
       expect(codec.decode(inbound({ fields: { type: 42 } }))).toEqual([]);
     });
 
+    it('returns no event when the row decodes to nothing', () => {
+      const quiet = defineCodec({
+        typeOf: (e: { type: 'a' }) => e.type,
+        // eslint-disable-next-line unicorn/no-useless-undefined -- a row that decodes to nothing returns undefined
+        events: { a: { encode: () => ({}), decode: () => undefined } },
+      });
+      expect(quiet.decode(inbound({ fields: { type: 'a' } }))).toEqual([]);
+    });
+
     it('throws for a recognised type with no row', () => {
       expect(() => codec.decode(inbound({ fields: { type: 'rogue' } }))).toThrowErrorInfo({
         code: ErrorCode.InvalidArgument,
@@ -631,9 +640,9 @@ describe('defineCodec', () => {
       }>();
     });
 
-    it('keeps a row one-to-one while the codec it builds speaks arrays', () => {
+    it('keeps a row one-to-one, or to nothing, while the codec it builds speaks arrays', () => {
       expectTypeOf<EventRow<TestEvent, 'note'>['encode']>().returns.toEqualTypeOf<EncodedRow | undefined>();
-      expectTypeOf<EventRow<TestEvent, 'note'>['decode']>().returns.toEqualTypeOf<TestEvent>();
+      expectTypeOf<EventRow<TestEvent, 'note'>['decode']>().returns.toEqualTypeOf<TestEvent | undefined>();
       expectTypeOf<Codec<TestEvent>['encode']>().returns.toEqualTypeOf<EncodedMessage[]>();
       expectTypeOf<Codec<TestEvent>['decode']>().returns.toEqualTypeOf<TestEvent[]>();
     });

@@ -1,6 +1,7 @@
 /**
  * A small codec for transport tests: one streamed type, a discrete type, a
- * type that publishes nothing, and one that replaces a stream's content. It
+ * type that publishes nothing and decodes to nothing, and one that replaces a
+ * stream's content. It
  * belongs to no provider, so what a test asserts is the transport's behaviour
  * and nothing else.
  */
@@ -56,7 +57,8 @@ export const createTestCodec = (): Codec<TestEvent> =>
       ping: {
         // eslint-disable-next-line unicorn/no-useless-undefined -- a row that publishes nothing returns undefined
         encode: () => undefined,
-        decode: () => ({ type: 'ping' }),
+        // eslint-disable-next-line unicorn/no-useless-undefined -- a row that decodes to nothing returns undefined
+        decode: () => undefined,
       },
     },
   });

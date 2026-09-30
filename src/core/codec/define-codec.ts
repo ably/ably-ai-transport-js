@@ -175,10 +175,12 @@ export interface EventRow<E, T extends string> {
    * Rebuild the event from the body. `data` is what this delivery adds,
    * `fields` is what encode wrote and nothing more, `headers` is what encode
    * wrote over the publishing call's headers, and `type` is the type the
-   * builder matched.
+   * builder matched. Return `undefined` when the message carries no event for
+   * the application, as a codec does for a type it never publishes, and the
+   * message decodes to nothing, the way a foreign one does.
    * @param message - The body, after the decoder core.
    */
-  decode(message: DecodedRow): E;
+  decode(message: DecodedRow): E | undefined;
 }
 
 /**
@@ -376,7 +378,8 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
         headers: readHeaders(prepared),
       };
       if (prepared.name !== undefined) body.name = prepared.name;
-      return [row.decode(body)];
+      const decoded = row.decode(body);
+      return decoded === undefined ? [] : [decoded];
     },
   };
 

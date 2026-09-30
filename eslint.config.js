@@ -49,6 +49,7 @@ export default [
       'react/**',
       'vercel/**',
       'openai/**',
+      'ag-ui/**',
     ],
   },
   ...fixupConfigRules(

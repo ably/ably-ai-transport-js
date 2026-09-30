@@ -36,6 +36,7 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
+import { registerAgent } from '../agent.js';
 import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
 import {
@@ -215,7 +216,8 @@ interface TransportEvents<E> {
 }
 
 /**
- * Resolve the transport's channel off the client.
+ * Resolve the transport's channel off the client, and register the SDK's
+ * agent entries on the client so the connection it opens is attributed too.
  *
  * The options come from `transportChannelOptions`, the one place that builds
  * them, so the React provider's `<ChannelProvider>` can hand ably-js the same
@@ -238,6 +240,7 @@ const resolveChannel = <E>(options: TransportOptions<E>, logger: Logger): Ably.R
     );
   }
   const channelOptions = transportChannelOptions(options);
+  registerAgent(options.client, options.codec);
   try {
     const channel = options.client.channels.get(options.channelName, channelOptions);
     logger.debug('Transport(); resolved channel', { channel: channel.name, modes: channelOptions.modes });

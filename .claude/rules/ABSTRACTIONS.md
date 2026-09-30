@@ -255,7 +255,8 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 10. **Single shared channel, transport-resolved.** One Ably channel per
     transport, shared by all features. The transport resolves it by name off
     the client it is given and owns its options: it stamps `channelAgent(codec)`
-    as the channel's `params.agent`, funnels the caller's `channelModes`
+    as the channel's `params.agent` and registers the same entries on the
+    client's `options.agents` (`src/core/agent.ts`), funnels the caller's `channelModes`
     through `resolveChannelModes()` and turns the channel echo off when
     `echoMessages` opts out, all through `transportChannelOptions()`, the one
     function that builds them, so every transport on a channel requests the

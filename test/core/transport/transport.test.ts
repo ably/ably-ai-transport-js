@@ -1,7 +1,6 @@
 import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { channelAgent } from '../../../src/core/agent.js';
 import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
 import type { Delivery } from '../../../src/core/codec/index.js';
 import { defineCodec } from '../../../src/core/codec/index.js';
@@ -9,6 +8,7 @@ import type { MessageHeaders } from '../../../src/core/transport/headers.js';
 import type { Transport } from '../../../src/core/transport/transport.js';
 import { createTransport } from '../../../src/core/transport/transport.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { VERSION } from '../../../src/version.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createMockClient } from '../../helper/mock-client.js';
 import { createSplitCodec, type SplitEvent } from '../../helper/split-codec.js';
@@ -97,7 +97,21 @@ describe('createTransport', () => {
       const client = createMockClient(channel);
       const codec = createTestCodec();
       createTransport({ client, channelName: CHANNEL, codec });
-      expect(client.channels.get).toHaveBeenCalledWith(CHANNEL, { params: { agent: channelAgent(codec) } });
+      expect(client.channels.get).toHaveBeenCalledWith(CHANNEL, {
+        params: { agent: `ai-transport-js/${VERSION} streaming test-codec/${VERSION}` },
+      });
+    });
+
+    it('registers the SDK on the client, so the connection it opens is attributed too', () => {
+      const client = createMockClient(channel);
+      client.options.agents = { 'other-lib': '1.0.0' };
+      createTransport({ client, channelName: CHANNEL, codec: createTestCodec() });
+      expect(client.options.agents).toEqual({
+        'other-lib': '1.0.0',
+        'ai-transport-js': VERSION,
+        streaming: VERSION,
+        'test-codec': VERSION,
+      });
     });
 
     it('leaves the platform echo in place, so a publisher is delivered its own message', () => {

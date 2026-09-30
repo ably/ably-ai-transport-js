@@ -6,7 +6,7 @@
 
 Ably AI Transport carries an AI agent's output over an Ably channel. Your agent pipes LLM output to clients over Ably messages, and every client on the channel receives each event as it is produced, in realtime. A client that reconnects picks up where it left off, and a conversation is available on all the user's devices.
 
-The SDK is a transport and a set of codecs. A codec converts each event from the LLM output into one Ably message operation and back; the transport publishes, subscribes and pages history. Your application merges the event stream into its own messages. The SDK includes codecs for the Vercel AI SDK and the OpenAI Responses API. Or you can easily define your own codec using the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
+The SDK is a transport and a set of codecs. A codec converts each event from the LLM output into one Ably message operation and back; the transport publishes, subscribes and pages history. Your application merges the event stream into its own messages. The SDK includes codecs for the Vercel AI SDK, the OpenAI Responses API and AG-UI. Or you can easily define your own codec using the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
 > This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release.
@@ -41,8 +41,9 @@ This SDK supports the following platforms:
 | React         | Versions 18 and 19, through `@ably/ai-transport/react`.                                   |
 | Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                    |
 | OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                   |
+| AG-UI         | Version 1 events, through `@ably/ai-transport/ag-ui`.                                     |
 
-The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
+The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, `@ag-ui/core`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
 
 ---
 
@@ -218,6 +219,33 @@ transport.on('discontinuity', async () => {
 Both `send` and `pipe` take `headers`, a flat map of string, number, boolean or null values that the transport includes in `extras.headers` on every message published by that `send` or `pipe` call. Any headers returned by the codec are preferred to the headers set here, when there is a collision.
 
 You can read the headers from the raw Ably message in the subscribe handler, `message.extras.headers`, or in the `headers` field passed to `decode` in the codec builder.
+
+### AG-UI
+
+The AG-UI codec carries [AG-UI](https://docs.ag-ui.com) events. An agent pipes its event stream, and every client decodes the same events and can merge them with AG-UI's own reducer, such as an `AbstractAgent` from `@ag-ui/client`. A client can start a run by sending the codec's own `run-input` event, which carries a `RunAgentInput`.
+
+```typescript
+import { createAGUICodec } from '@ably/ai-transport/ag-ui';
+
+const transport = createTransport({ client: ably, channelName, codec: createAGUICodec() });
+
+// Client: send only the messages this run adds.
+await transport.send({ type: 'run-input', input: { threadId, runId, messages: [userMessage], tools, context } });
+
+// Agent: the runId header goes on every message of the run.
+await transport.pipe(events, { headers: { runId } });
+```
+
+The codec does not support `MESSAGES_SNAPSHOT`, and some events change on the wire:
+
+- The codec does not publish `MESSAGES_SNAPSHOT`, and an inbound one does not decode to an event. A snapshot holds the whole conversation and grows past the Ably message size limit. Your application can load the conversation from its own store, and join the channel at a run boundary.
+- `RUN_STARTED` travels with `input.messages` empty, for the same reason. Its other input fields travel as they are.
+- `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS` and `REASONING_MESSAGE_CONTENT` append to one message per stream. History and a client that joins late read one delta event per stream, with the text joined. That event carries the `timestamp` and `metadata` of the last delta only.
+- The codec strips `rawEvent` from every event. The field carries the provider event that the AG-UI event was translated from, so it repeats the event's content. AG-UI's reducer does not read it.
+- Every `*_CHUNK` event is its own message. A chunk stream does not have an end event, so the codec cannot hold the next message back until Ably has acknowledged the stream's appends. An agent that wants one message per stream in history can emit the START, CONTENT and END events.
+- Every other event travels whole. The codec does not check sizes, so a large `STATE_SNAPSHOT`, `ACTIVITY_SNAPSHOT`, `TOOL_CALL_RESULT` or `RUN_FINISHED` fails its publish, and `pipe` rejects.
+
+AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its state deltas patch the state the client already holds. So a client must join at a run boundary, with its messages and state loaded from your store. Your agent should pipe one run at a time to a channel.
 
 ### React client
 

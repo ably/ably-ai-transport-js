@@ -51,7 +51,7 @@ const testEvents = (): EventRows<TestEvent, TestEvent['type']> => ({
     decode: ({ data, fields }) => ({ type: 'note', text: asString(data), important: fields.important === true }),
   },
   ping: {
-    // eslint-disable-next-line unicorn/no-useless-undefined -- a row that publishes nothing returns undefined
+    // eslint-disable-next-line unicorn/no-useless-undefined -- a row that does not publish returns undefined
     encode: () => undefined,
     decode: () => ({ type: 'ping' }),
   },
@@ -456,6 +456,15 @@ describe('defineCodec', () => {
       expect(codec.decode(inbound({ fields: { type: 42 } }))).toEqual([]);
     });
 
+    it('does not return an event when the row returns undefined', () => {
+      const quiet = defineCodec({
+        typeOf: (e: { type: 'a' }) => e.type,
+        // eslint-disable-next-line unicorn/no-useless-undefined -- a row that does not decode to an event returns undefined
+        events: { a: { encode: () => ({}), decode: () => undefined } },
+      });
+      expect(quiet.decode(inbound({ fields: { type: 'a' } }))).toEqual([]);
+    });
+
     it('throws for a recognised type with no row', () => {
       expect(() => codec.decode(inbound({ fields: { type: 'rogue' } }))).toThrowErrorInfo({
         code: ErrorCode.InvalidArgument,
@@ -631,9 +640,9 @@ describe('defineCodec', () => {
       }>();
     });
 
-    it('keeps a row one-to-one while the codec it builds speaks arrays', () => {
+    it('keeps a row one-to-one, or to nothing, while the codec it builds speaks arrays', () => {
       expectTypeOf<EventRow<TestEvent, 'note'>['encode']>().returns.toEqualTypeOf<EncodedRow | undefined>();
-      expectTypeOf<EventRow<TestEvent, 'note'>['decode']>().returns.toEqualTypeOf<TestEvent>();
+      expectTypeOf<EventRow<TestEvent, 'note'>['decode']>().returns.toEqualTypeOf<TestEvent | undefined>();
       expectTypeOf<Codec<TestEvent>['encode']>().returns.toEqualTypeOf<EncodedMessage[]>();
       expectTypeOf<Codec<TestEvent>['decode']>().returns.toEqualTypeOf<TestEvent[]>();
     });

@@ -22,7 +22,7 @@ general guidance in the shared skill when writing the commit message:
   lowercase, imperative description. For example,
   `transport: drain pending appends before a publish or update`. The prefix
   names the area, not the file path.
-  - Primary areas: `codec:`, `transport:`, `react:`, `vercel:`, `openai:`,
+  - Primary areas: `codec:`, `transport:`, `react:`, `vercel:`, `openai:`, `ag-ui:`,
     `docs:`, `project:`.
   - For a change scoped to a single sub-component, name it directly instead
     of the broad area — e.g. `pipeWriter:`, `decoderCore:`, `catchUp:`,

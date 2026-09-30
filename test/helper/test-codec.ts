@@ -1,8 +1,8 @@
 /**
  * A small codec for transport tests: one streamed type, a discrete type, a
- * type that publishes nothing, and one that replaces a stream's content. It
- * belongs to no provider, so what a test asserts is the transport's behaviour
- * and nothing else.
+ * type that does not publish and does not decode to an event, and one that
+ * replaces a stream's content. It belongs to no provider, so what a test
+ * asserts is the transport's behaviour and nothing else.
  */
 
 import type { Codec } from '../../src/core/codec/index.js';
@@ -54,9 +54,10 @@ export const createTestCodec = (): Codec<TestEvent> =>
         decode: ({ data }) => ({ type: 'note', text: asString(data) }),
       },
       ping: {
-        // eslint-disable-next-line unicorn/no-useless-undefined -- a row that publishes nothing returns undefined
+        // eslint-disable-next-line unicorn/no-useless-undefined -- a row that does not publish returns undefined
         encode: () => undefined,
-        decode: () => ({ type: 'ping' }),
+        // eslint-disable-next-line unicorn/no-useless-undefined -- a row that does not decode to an event returns undefined
+        decode: () => undefined,
       },
     },
   });

@@ -9,18 +9,19 @@ its own provider SDK, never on another codec. The SDK's own identity, the
 channel option helpers, the errors, the logger and the event emitter sit at the
 top of `src/` and `src/core/`. Tests mirror `src/` under `test/`.
 
-The package ships four entry points, each with its own `index.ts` (see the
+The package ships five entry points, each with its own `index.ts` (see the
 table). That `index.ts` is the authoritative list of what is public: only
 types and functions it re-exports are public API. A new codec adds a new entry
-point rather than changing an existing one. Anthropic and AG-UI codecs are
-planned as further entry points.
+point rather than changing an existing one. An Anthropic codec is planned as
+a further entry point.
 
-| Entry point                 | Purpose                                                         | Peer deps        |
-| --------------------------- | --------------------------------------------------------------- | ---------------- |
-| `@ably/ai-transport`        | The transport, the codec contract and the `defineCodec` builder | `ably`           |
-| `@ably/ai-transport/react`  | A provider and hooks over the transport, for any codec          | `ably`, `react`  |
-| `@ably/ai-transport/vercel` | The Vercel AI SDK codec: one row per `UIMessageChunk` type      | `ably`, `ai`     |
-| `@ably/ai-transport/openai` | The OpenAI Responses codec: one row per stream event type       | `ably`, `openai` |
+| Entry point                 | Purpose                                                         | Peer deps             |
+| --------------------------- | --------------------------------------------------------------- | --------------------- |
+| `@ably/ai-transport`        | The transport, the codec contract and the `defineCodec` builder | `ably`                |
+| `@ably/ai-transport/react`  | A provider and hooks over the transport, for any codec          | `ably`, `react`       |
+| `@ably/ai-transport/vercel` | The Vercel AI SDK codec: one row per `UIMessageChunk` type      | `ably`, `ai`          |
+| `@ably/ai-transport/openai` | The OpenAI Responses codec: one row per stream event type       | `ably`, `openai`      |
+| `@ably/ai-transport/ag-ui`  | The AG-UI codec: one row per AG-UI event type                   | `ably`, `@ag-ui/core` |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.
@@ -76,14 +77,15 @@ prevent.
 
 **The builder is one-to-one; the contract admits more.** A row's `encode`
 maps an event to exactly one publish, append or update, or to nothing
-(`undefined`), and its `decode` maps one delivery to exactly one event, and
-the built codec wraps each into the zero- or one-element array the `Codec`
-contract speaks. The contract itself is `encode(event): EncodedMessage[]` and
+(`undefined`), and its `decode` maps one delivery to exactly one event, or to
+nothing (`undefined`) for a type the codec never publishes, and the built
+codec wraps each into the zero- or one-element array the `Codec` contract
+speaks. The contract itself is `encode(event): EncodedMessage[]` and
 `decode(message): E[]`, so a hand-written codec can split a payload that is
 too large for one message or fold one message into several events; the
 transport writes an event's messages in order and delivers one delivery per
 decoded event, with one `event: undefined` delivery for a message that decodes
-to nothing. Neither shipped codec uses that room.
+to nothing. No shipped codec uses that room.
 The places the wire departs from one-to-one are the platform's. A late joiner's
 first delivery of a stream is a full-content update, which the decoder core
 reduces to the tail the joiner has not seen; a repair after a failed append

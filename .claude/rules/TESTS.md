@@ -43,7 +43,7 @@ Prove the system works over real Ably. Don't duplicate unit-test edge cases. Eac
 
 Integration tests are written at two levels:
 
-- **Codec level** (`test/integration/vercel/`, `test/integration/openai/`): a provider's fixture stream piped through `createTransport` with that codec and decoded by a subscriber over a real channel. Where the provider has a reducer, the decoded sequence is folded with it, which is the proof the wire is one the provider accepts.
+- **Codec level** (`test/integration/vercel/`, `test/integration/openai/`, `test/integration/ag-ui/`): a provider's fixture stream piped through `createTransport` with that codec and decoded by a subscriber over a real channel. Where the provider has a reducer, the decoded sequence is folded with it, which is the proof the wire is one the provider accepts.
 - **Transport level** (`test/integration/core/`): send, pipe, subscribe, history, delete, abort, repair and close over a real channel, with the test codec so nothing on screen belongs to a provider.
 
 ### Environment
@@ -79,7 +79,7 @@ Each one has three jobs, and they matter equally: exercise only the public API (
 
 **Transport level**, in `test/integration/core/transport.integration.test.ts`: a whole turn from `send` to a streamed reply, a subscriber attaching mid-stream, a gap recovered by reading history back to the last serial seen, a foreign publish delivered raw with no event, a delete delivered with no event, a pipe aborted by its signal, a failed append repaired by one update, and `close()` during a pipe.
 
-**Codec level**, in `test/integration/vercel/wire-codec.integration.test.ts` and `test/integration/openai/wire-codec.integration.test.ts`: a tool-calling turn streamed event for event and folded by the AI SDK's own reducer, a user message under the serial `send` returned, a finished turn read from history as the events the agent produced with each stream's deltas joined into one, a transient data part flagged ephemeral on delivery, and the two Responses of a function call round-tripped with the call's output published as input.
+**Codec level**, in `test/integration/vercel/wire-codec.integration.test.ts`, `test/integration/openai/wire-codec.integration.test.ts` and `test/integration/ag-ui/wire-codec.integration.test.ts`: a tool-calling turn streamed event for event and folded by the AI SDK's own reducer, a user message under the serial `send` returned, a finished turn read from history as the events the agent produced with each stream's deltas joined into one, a transient data part flagged ephemeral on delivery, the two Responses of a function call round-tripped with the call's output published as input, and an AG-UI run's text, tool-call and chunk streams merged by AG-UI's own reducer from live deliveries and from history into the same messages, with a messages snapshot kept off the channel.
 
 Rather than list the scenarios here (the suite's own `it` titles are the authoritative list), this is what the tier is _for_, and what a new scenario should need to earn a place in it:
 

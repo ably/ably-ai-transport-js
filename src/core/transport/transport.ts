@@ -20,12 +20,18 @@
  * `event: undefined` when the codec has nothing for it (a foreign message, a
  * replay the codec's version guard dropped, a `message.delete`) or its decode
  * threw, so the application always sees the raw message and decides for
- * itself. A channel state change
- * that breaks continuity is reported as a discontinuity; the application
- * recovers by reading `history` back to the last serial it applied.
+ * itself. A subscribe that asks for `history` immediately buffers live
+ * messages for its handler, until the history replay is exhausted. A replay
+ * function reads the channel's history back to the point it chooses. The
+ * transport replays what the function returned, in channel order, then releases
+ * the buffered messages in arrival order, so the handler sees history before
+ * live, in channel order. The transport reports a channel state change that
+ * breaks continuity as a discontinuity, and the application recovers by
+ * subscribing again with `fromSerial` at the last position it applied.
  *
- * `history` opens a walk backwards from the attach point through the same
- * codec, so a message that history and live delivery both carry decodes once.
+ * `history` reads backwards from the attach point through the same codec, so
+ * a message that history and live delivery both carry decodes once. It
+ * returns the page a replay function receives.
  *
  * `close` stops every pipe in flight, unsubscribes the listener and settles.
  */
@@ -50,6 +56,14 @@ import { type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import { type HistoryOptions, type HistoryPage, openHistoryWalk } from './history-pager.js';
 import { type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
 import { createPipeWriter } from './pipe-writer.js';
+import {
+  positionOf,
+  type Replay,
+  type ReplayResult,
+  type SubscribeHistory,
+  type SubscribeOptions,
+  type Subscription,
+} from './replay.js';
 
 /**
  * Options for {@link createTransport}.
@@ -152,14 +166,25 @@ export interface Transport<E> {
    * attach is reported on `on('error')` and the next call retries it. Any
    * number of handlers may subscribe, and a handler that throws is logged and
    * does not stop the others.
+   *
+   * With `history`, the transport immediately buffers live messages for this
+   * handler, until the history replay is exhausted. It pages history back
+   * from the attach point and gives the newest page to `history.replay`. It
+   * delivers what the function returned to the handler first, in channel order,
+   * then the buffered messages in arrival order. From then on the handler is
+   * live. The transport does not buffer the other handlers. One history replay runs
+   * at a time on a transport, so a second subscribe with `history` waits for
+   * the first to finish. An unsubscribe during the history replay stops it and drops
+   * the buffered messages.
    * @param handler - Called with each delivery, in channel order.
-   * @returns The unsubscribe: stops delivering to this handler. The channel listener stays registered for the transport's other handlers until `close()`.
-   * @throws {Ably.ErrorInfo} `SessionClosed` after `close()`.
+   * @param options - The history to replay first; see {@link SubscribeOptions}.
+   * @returns The unsubscribe: stops delivering to this handler. The channel listener stays registered for the transport's other handlers until `close()`. Its `replayed` resolves with the history replay's result once the handler is live, and rejects when the replay failed; see {@link Subscription}.
+   * @throws {Ably.ErrorInfo} `SessionClosed` after `close()`; `InvalidArgument` when `history.pageSize` is less than one.
    */
-  subscribe(handler: (delivery: Delivery<E>) => void): () => void;
+  subscribe(handler: (delivery: Delivery<E>) => void, options?: SubscribeOptions<E>): Subscription;
   /**
    * Read channel history backwards from the attach point, decoded through the
-   * codec. Each call starts a new walk at the channel's current attach point
+   * codec. Each call pages again from the channel's current attach point
    * and resolves with its newest page; the older pages follow through the
    * page's `next()`. The channel is attached if nothing has yet. A message
    * both history and live delivery carry decodes once, so a message a
@@ -174,9 +199,10 @@ export interface Transport<E> {
    * may have been missed: FAILED, SUSPENDED, DETACHED, or ATTACHED with
    * `resumed: false`. Streams in flight heal on their own through the
    * full-content update that follows. To recover the rest, the application
-   * pages `history()` back to the last serial it applied and applies what it
-   * has not seen; the codec returns a message the handler already saw with no
-   * event.
+   * subscribes again with `history: { replay: fromSerial(position) }`, where
+   * `position` is the last one it applied (a result's `serial`, or the
+   * newest `version.serial ?? serial` its handler has seen); the codec returns
+   * a stream message the handler already saw with no event.
    * @param event - The event name.
    * @param handler - Called on each discontinuity, with nothing.
    * @returns The unsubscribe.
@@ -209,11 +235,68 @@ interface InFlightPipe {
   done: Promise<unknown>;
 }
 
-interface TransportEvents<E> {
-  delivery: Delivery<E>;
+/** One subscribed handler, with the state a history replay keeps for it. */
+interface HandlerEntry<E> {
+  handler: (delivery: Delivery<E>) => void;
+  /** The live deliveries buffered while history is replayed; `undefined` once the handler is live. */
+  buffered: Delivery<E>[] | undefined;
+  /** Fires on unsubscribe, to stop a history replay in flight. */
+  abort: AbortController;
+  /** The newest position the handler has been called with; see {@link positionOf}. */
+  position: string | undefined;
+}
+
+interface TransportEvents {
   discontinuity: undefined;
   error: Ably.ErrorInfo;
 }
+
+/** The result of a subscription without `history`. */
+const NO_REPLAY: ReplayResult = { replayed: 0, serial: undefined };
+
+/**
+ * The deliveries and verdict a replay function returned, whichever shape it
+ * chose.
+ * @param returned - The function's return value.
+ * @returns It as a {@link Replay}.
+ */
+const toReplay = <E>(returned: Delivery<E>[] | Replay<E>): Replay<E> =>
+  Array.isArray(returned) ? { deliveries: returned } : returned;
+
+/**
+ * Wrap a failure of a history replay. A page fetch and a replay builder already
+ * throw `Ably.ErrorInfo`. A replay function the application wrote may throw
+ * anything, and the transport reports that under the history code, with the
+ * thrown value's message in its own.
+ * @param error - The thrown value.
+ * @returns The error to report.
+ */
+const wrapReplayError = (error: unknown): Ably.ErrorInfo =>
+  error instanceof Ably.ErrorInfo
+    ? error
+    : new Ably.ErrorInfo(
+        `unable to replay history; replay function threw: ${errorMessage(error)}`,
+        ErrorCode.SessionHistoryFetchFailed,
+        500,
+      );
+
+/**
+ * The deliveries a replay function returned, in channel order. History holds
+ * messages in creation order, so a stable sort on the creation serial puts
+ * the deliveries back in that order whatever order the function returned
+ * them in, and the deliveries of one message keep the order the codec
+ * decoded them in.
+ * @param returned - What the function returned.
+ * @returns The same deliveries, oldest first.
+ */
+const inChannelOrder = <E>(returned: Delivery<E>[]): Delivery<E>[] =>
+  returned.toSorted((a, b) => {
+    const left = a.message.serial ?? '';
+    const right = b.message.serial ?? '';
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  });
 
 /**
  * Resolve the transport's channel off the client, and register the SDK's
@@ -284,11 +367,15 @@ class DefaultTransport<E> implements Transport<E> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<E>;
   private readonly _logger: Logger;
-  private readonly _emitter: EventEmitter<TransportEvents<E>>;
+  private readonly _emitter: EventEmitter<TransportEvents>;
   private readonly _pipes = new Set<InFlightPipe>();
+  /** The subscribed handlers, in registration order. */
+  private readonly _handlers = new Set<HandlerEntry<E>>();
   /** The channel listener, one bound reference so `close()` unsubscribes the same one. */
   private readonly _listener: (message: Ably.InboundMessage) => void;
   private readonly _continuity: ContinuityWatcher;
+  /** Tail of the chain of history replays run for subscriptions: a settled or in-flight void promise. */
+  private _readTail: Promise<void> = Promise.resolve();
   /** Whether the channel listener is registered and the attach is in flight or done. Cleared when the attach fails, so the next `subscribe` retries. */
   private _attached = false;
   /** Whether `subscribe` or `history` ever asked the channel to attach, so `close()` knows to detach it. */
@@ -301,7 +388,7 @@ class DefaultTransport<E> implements Transport<E> {
     });
     this._channel = resolveChannel(options, this._logger);
     this._codec = options.codec;
-    this._emitter = new EventEmitter<TransportEvents<E>>(this._logger);
+    this._emitter = new EventEmitter<TransportEvents>(this._logger);
     this._listener = (message: Ably.InboundMessage) => {
       if (!this._closed) this._deliverNow(message);
     };
@@ -378,20 +465,126 @@ class DefaultTransport<E> implements Transport<E> {
     }
   }
 
-  subscribe(handler: (delivery: Delivery<E>) => void): () => void {
-    this._logger.trace('Transport.subscribe();');
+  subscribe(handler: (delivery: Delivery<E>) => void, options?: SubscribeOptions<E>): Subscription {
+    const history = options?.history;
+    this._logger.trace('Transport.subscribe();', { history: history !== undefined, pageSize: history?.pageSize });
     if (this._closed) throw closedError('subscribe');
-    this._emitter.on('delivery', handler);
-    this._attach();
-    return () => {
-      this._emitter.off('delivery', handler);
+    if (history?.pageSize !== undefined && history.pageSize < 1) {
+      throw new Ably.ErrorInfo(
+        'unable to subscribe; history.pageSize must be at least 1',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    const entry: HandlerEntry<E> = {
+      handler,
+      buffered: history === undefined ? undefined : [],
+      abort: new AbortController(),
+      position: undefined,
     };
+    this._handlers.add(entry);
+    this._attach();
+    const replayed = history === undefined ? Promise.resolve(NO_REPLAY) : this._replayHistory(entry, history);
+    // A subscription nobody awaits must not surface a failed replay as an
+    // unhandled rejection. The same promise still rejects for a caller that
+    // awaits it, and `_replayHistory` has logged the failure.
+    replayed.catch(() => {
+      /* rejects for a caller that awaits it; logged in _replayHistory */
+    });
+    const unsubscribe = (): void => {
+      entry.abort.abort();
+      this._handlers.delete(entry);
+    };
+    return Object.assign(unsubscribe, { replayed });
+  }
+
+  /**
+   * Replay history to one handler, then release what arrived live meanwhile.
+   * One history replay runs at a time on the transport: this one links behind the
+   * tail, as a page's own `next()` calls do. The transport releases the
+   * buffered deliveries whether the replay succeeded or not, so a failed
+   * history replay leaves the handler live, with a gap.
+   * @param entry - The handler to replay history to.
+   * @param history - What to replay.
+   * @returns The result, once the handler is live.
+   * @throws {Ably.ErrorInfo} `SessionHistoryFetchFailed` when a page could not be fetched or the replay function threw; `OperationCancelled` when the subscription was removed, or the transport closed, during the replay.
+   */
+  private async _replayHistory(entry: HandlerEntry<E>, history: SubscribeHistory<E>): Promise<ReplayResult> {
+    const { signal } = entry.abort;
+    // `aborted()` reads the flag each time, because it flips across the awaits below.
+    const aborted = (): boolean => signal.aborted;
+    let replayed = 0;
+    let found: boolean | undefined;
+    let failure: Ably.ErrorInfo | undefined;
+    const prev = this._readTail;
+    const run = (async (): Promise<void> => {
+      await prev;
+      if (aborted()) return;
+      const first = await openHistoryWalk({
+        channel: this._channel,
+        limit: history.pageSize ?? 100,
+        toDeliveries: (message) => this._toDeliveries(message),
+        signal,
+        logger: this._logger,
+      });
+      const replay = toReplay(await history.replay(first));
+      found = replay.found;
+      if (aborted()) return;
+      const ordered = inChannelOrder(replay.deliveries);
+      for (const delivery of ordered) this._call(entry, delivery);
+      replayed = ordered.length;
+      this._logger.debug('Transport.subscribe(); history replayed', { replayed, found });
+    })();
+    this._readTail = (async (): Promise<void> => {
+      try {
+        await run;
+      } catch {
+        /* reported to the subscription through its replayed */
+      }
+    })();
+    try {
+      await run;
+    } catch (error) {
+      failure = wrapReplayError(error);
+      this._logger.error('Transport.subscribe(); history replay failed, handler is live with a gap', {
+        error: failure.message,
+      });
+    } finally {
+      const buffered = entry.buffered ?? [];
+      entry.buffered = undefined;
+      if (!aborted()) for (const delivery of buffered) this._call(entry, delivery);
+    }
+    if (aborted()) {
+      failure ??= new Ably.ErrorInfo(
+        'unable to replay history; unsubscribed during the replay',
+        ErrorCode.OperationCancelled,
+        400,
+      );
+    }
+    if (failure !== undefined) throw failure;
+    return { replayed, serial: entry.position, found };
+  }
+
+  /**
+   * Call one handler with one delivery, log a throw so the other handlers still
+   * run, and record the position the handler has reached.
+   * @param entry - The handler.
+   * @param delivery - The delivery.
+   */
+  private _call(entry: HandlerEntry<E>, delivery: Delivery<E>): void {
+    const position = positionOf(delivery);
+    if (entry.position === undefined || position > entry.position) entry.position = position;
+    try {
+      entry.handler(delivery);
+    } catch (error) {
+      this._logger.error('Transport; handler threw', { serial: delivery.message.serial, error: errorMessage(error) });
+    }
   }
 
   async history(options: HistoryOptions): Promise<HistoryPage<E>> {
     this._logger.trace('Transport.history();', { limit: options.limit });
     if (this._closed) throw closedError('history');
-    // The walk attaches the channel to find its attach point.
+    // `history()` attaches the channel to find its attach point.
     this._attachAttempted = true;
     return openHistoryWalk({
       channel: this._channel,
@@ -403,7 +596,7 @@ class DefaultTransport<E> implements Transport<E> {
 
   on(event: 'discontinuity', handler: () => void): () => void;
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
-  on<K extends 'discontinuity' | 'error'>(event: K, handler: (arg: TransportEvents<E>[K]) => void): () => void {
+  on<K extends 'discontinuity' | 'error'>(event: K, handler: (arg: TransportEvents[K]) => void): () => void {
     this._emitter.on(event, handler);
     return () => {
       this._emitter.off(event, handler);
@@ -417,6 +610,10 @@ class DefaultTransport<E> implements Transport<E> {
     this._continuity.dispose();
     this._channel.unsubscribe(this._listener);
     this._emitter.off();
+    // A history replay in flight stops at its next page; its `replayed`
+    // carries OperationCancelled.
+    for (const entry of this._handlers) entry.abort.abort();
+    this._handlers.clear();
     for (const pipe of this._pipes) pipe.controller.abort();
     // Each pipe rejects OperationCancelled to its own caller once it has
     // flushed and repaired; allSettled waits for that without rethrowing it here.
@@ -446,7 +643,15 @@ class DefaultTransport<E> implements Transport<E> {
   }
 
   private _deliverNow(message: Ably.InboundMessage): void {
-    for (const delivery of this._toDeliveries(message)) this._emitter.emit('delivery', delivery);
+    // Decoded once, then fanned out: a handler whose history is replaying buffers the
+    // deliveries, and the transport calls every other handler now.
+    const deliveries = this._toDeliveries(message);
+    for (const entry of this._handlers) {
+      for (const delivery of deliveries) {
+        if (entry.buffered === undefined) this._call(entry, delivery);
+        else entry.buffered.push(delivery);
+      }
+    }
   }
 
   /**

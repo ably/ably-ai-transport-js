@@ -83,10 +83,11 @@ export enum ErrorCode {
   SessionMessageProcessingFailed = 104009,
 
   /**
-   * Channel history pagination failed after bounded retry — either the initial
+   * The transport could not read channel history as asked. Either the initial
    * `channel.history()` call or a subsequent `page.next()` exhausted its
-   * retry budget. The original failure is preserved as `cause` where
-   * available.
+   * retry budget, with the original failure as `cause` where available; or a
+   * subscription's history replay failed: its replay function threw, or a replay
+   * builder set to `onExhausted: 'error'` ran out of pages before its point.
    */
   SessionHistoryFetchFailed = 104011,
 }

@@ -11,7 +11,7 @@
 import * as Ably from 'ably';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createTransport, ErrorCode, type Transport } from '../../../src/index.js';
+import { createTransport, ErrorCode, fromSerial, type Transport, untilEvent } from '../../../src/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createTestCodec, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
@@ -259,6 +259,94 @@ describe('transport over Ably', () => {
     // Live delivery carries on from the new attach point.
     await writer.send({ type: 'note', text: 'five' });
     await recorder.waitFor((d) => d.length === 3);
+    expect(recorder.events().at(-1)).toEqual({ type: 'note', text: 'five' });
+  });
+
+  it('replays history after a stored serial to a subscriber that asks for it, then what arrived live during the history replay', async () => {
+    const name = uniqueChannelName();
+    const writer = transportOn(name);
+    // The application holds the first message and the serial its ack returned;
+    // the two after it are the gap to replay.
+    const first = await writer.send({ type: 'note', text: 'one' });
+    const stored = first.serial ?? '';
+    await writer.send({ type: 'note', text: 'two' });
+    await writer.send({ type: 'note', text: 'three' });
+
+    // A witness on the same client shares the reader's channel, so a message
+    // it has received has reached the reader's listener too. The replay
+    // function keeps the history replay open until one has, so that message is buffered.
+    const client = ablyRealtimeClient();
+    const reader = createTransport({ client, channelName: name, codec: createTestCodec() });
+    const witness = createTransport({ client, channelName: name, codec: createTestCodec() });
+    const witnessed = createDeliveryRecorder<TestEvent>();
+    witness.subscribe(witnessed.record);
+    const recorder = createDeliveryRecorder<TestEvent>();
+    const subscription = reader.subscribe(recorder.record, {
+      history: {
+        replay: async (page) => {
+          const replay = await fromSerial<TestEvent>(stored)(page);
+          await writer.send({ type: 'note', text: 'four' });
+          await witnessed.waitFor((d) => d.some((x) => x.event?.type === 'note' && x.event.text === 'four'));
+          return replay;
+        },
+      },
+    });
+    const result = await subscription.replayed;
+    expect(recorder.events()).toEqual([
+      { type: 'note', text: 'two' },
+      { type: 'note', text: 'three' },
+      { type: 'note', text: 'four' },
+    ]);
+    expect(result).toMatchObject({ replayed: 2, found: true });
+
+    // Live from here, and the result's serial is where to resume from.
+    expect(result.serial).toBe(recorder.deliveries.at(-1)?.message.serial);
+    await writer.send({ type: 'note', text: 'five' });
+    await recorder.waitFor((d) => d.length === 4);
+    expect(recorder.events().at(-1)).toEqual({ type: 'note', text: 'five' });
+  });
+
+  it('replays history after the newest event a predicate picks, then what arrived live during the history replay', async () => {
+    const name = uniqueChannelName();
+    const writer = transportOn(name);
+    // The application holds no serial. It knows the last message it applied by
+    // a property of the event, here the note's text; the two after it are the
+    // gap to replay.
+    await writer.send({ type: 'note', text: 'one' });
+    await writer.send({ type: 'note', text: 'two' });
+    await writer.send({ type: 'note', text: 'three' });
+
+    // A witness on the same client shares the reader's channel, so a message
+    // it has received has reached the reader's listener too. The replay
+    // function keeps the history replay open until one has, so that message is buffered.
+    const client = ablyRealtimeClient();
+    const reader = createTransport({ client, channelName: name, codec: createTestCodec() });
+    const witness = createTransport({ client, channelName: name, codec: createTestCodec() });
+    const witnessed = createDeliveryRecorder<TestEvent>();
+    witness.subscribe(witnessed.record);
+    const recorder = createDeliveryRecorder<TestEvent>();
+    const subscription = reader.subscribe(recorder.record, {
+      history: {
+        replay: async (page) => {
+          const isApplied = (d: { event?: TestEvent }): boolean => d.event?.type === 'note' && d.event.text === 'one';
+          const replay = await untilEvent<TestEvent>(isApplied, { inclusive: false })(page);
+          await writer.send({ type: 'note', text: 'four' });
+          await witnessed.waitFor((d) => d.some((x) => x.event?.type === 'note' && x.event.text === 'four'));
+          return replay;
+        },
+      },
+    });
+    const result = await subscription.replayed;
+    expect(recorder.events()).toEqual([
+      { type: 'note', text: 'two' },
+      { type: 'note', text: 'three' },
+      { type: 'note', text: 'four' },
+    ]);
+    expect(result).toMatchObject({ replayed: 2, found: true });
+
+    // Live from here.
+    await writer.send({ type: 'note', text: 'five' });
+    await recorder.waitFor((d) => d.length === 4);
     expect(recorder.events().at(-1)).toEqual({ type: 'note', text: 'five' });
   });
 

@@ -117,9 +117,11 @@ const createFakeTransport = (): FakeTransport => {
     subscribe: (handler) => {
       handlers.add(handler);
       fake.subscribeCalls = (fake.subscribeCalls ?? 0) + 1;
-      return () => {
+      const unsubscribe = (): void => {
         handlers.delete(handler);
       };
+      // The hooks ask for no history, so the report is the empty one.
+      return Object.assign(unsubscribe, { replayed: Promise.resolve({ replayed: 0, serial: undefined }) });
     },
     // CAST: the fake narrows `on` to the two events the transport has.
     on: (event: 'discontinuity' | 'error', handler: (arg: never) => void) => {

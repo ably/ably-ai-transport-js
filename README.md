@@ -178,39 +178,57 @@ await fetch('/api/chat', {
 });
 ```
 
-To recover from a discontinuity, a channel state change after which messages may have been missed, page history back from the new attach point until you reach the last serial you applied, and apply what is newer. Serials sort as strings, so the comparison is a string comparison. Live delivery carries on during the walk, so the snippet parks what arrives in a buffer and releases it once the gap has been applied, which keeps everything in order. `demo/minimal/src/app/chat.tsx` does the same inside a component, and runs the same walk when the page loads, from the serial its server stored with the conversation.
+### Catching up from history
+
+A subscriber can join data from their database with a position on the channel, by replaying history messages from the last recorded position in their database. A replay will paginate backwards (newest -> oldest messages) until it finds the required message and buffer live messages while paginating. Once the required message is found, it will release the messages in-order (oldest -> newest) through the subscribe handler; starting with those found in history, then the live subscription buffer, then the ongoing live subscription messages.
 
 ```typescript
-let lastSeen: string | undefined;
-let held: Delivery<VercelEvent>[] | undefined; // the fuse: set while a recovery walk runs
+import { fromSerial, untilEvent } from '@ably/ai-transport';
 
-const apply = (delivery: Delivery<VercelEvent>) => {
-  handle(delivery);
-  lastSeen = delivery.message.serial; // after applying, so it never points past what the UI shows
-};
-
-transport.subscribe((delivery) => {
-  if (held) {
-    held.push(delivery); // parked until the walk has caught up
-    return;
-  }
-  apply(delivery);
+// From the serial your store holds, the one a publish ack returned. The
+// messages after it are replayed; `inclusive: true` replays the message at
+// the serial too.
+const subscription = transport.subscribe(handle, {
+  history: { replay: fromSerial(stored.serial), pageSize: 100 },
 });
+const { replayed, serial, found } = await subscription.replayed; // rejects when the replay failed
+subscription(); // calling it unsubscribes
 
-transport.on('discontinuity', async () => {
-  held = [];
-  const missed: Delivery<VercelEvent>[] = [];
-  let page = await transport.history({ limit: 100 });
-  for (;;) {
-    const newer = page.items.filter((d) => lastSeen === undefined || (d.message.serial ?? '') > lastSeen);
-    missed.unshift(...newer); // pages arrive newest first; keep the gap oldest first
-    if (newer.length < page.items.length || !page.hasNext) break; // reached what was already applied
-    page = await page.next();
-  }
-  for (const delivery of missed) apply(delivery);
-  const parked = held;
-  held = undefined; // close the fuse, then drain in arrival order
-  for (const delivery of parked) apply(delivery);
+// Another option, if you do not have a serial stored, is to find the last event to
+// replay from by a property of that event. Here, the most recent event whose
+// `type` is `finish`.
+transport.subscribe(handle, {
+  history: { replay: untilEvent((d) => d.event?.type === 'finish') },
+});
+```
+
+`replay` is a function over the page `transport.history()` returns: it receives the newest page, reads older ones through `next()` as far as it needs, and returns the deliveries to replay, in any order. The transport sorts them by their message serial, the order history holds them in, so the handler sees channel order and the function does no ordering of its own. `fromSerial` and `untilEvent` build the two usual ones, with `maxPages` to cap the pages read and `onExhausted` to say what happens when the pages run out first. You can write your own for anything else: filter, slice, stop on a header, or read every page.
+
+```typescript
+transport.subscribe(handle, {
+  history: {
+    pageSize: 200,
+    replay: async (historyPage) => {
+      const deliveries: Delivery<VercelEvent>[] = [];
+      let page = historyPage;
+      for (;;) {
+        deliveries.push(...page.items); // every delivery; the transport sorts them
+        if (!page.hasNext) return deliveries;
+        page = await page.next();
+      }
+    },
+  },
+});
+```
+
+To recover from a discontinuity, a channel state change after which messages may have been missed, you subscribe again with `fromSerial` at the last position you applied: a message's `version.serial`, or its `serial` for a message that was never appended to. A stream cut by the gap heals on its own: its next append arrives as a full-content update and the codec passes on the unseen tail. `demo/minimal/src/app/chat.tsx` does this inside a component, and makes the same subscribe call when the page loads, from the serial its server stored with the conversation.
+
+```typescript
+let subscription = transport.subscribe(apply, { history: { replay: fromSerial(stored.serial) } });
+
+transport.on('discontinuity', () => {
+  subscription();
+  subscription = transport.subscribe(apply, { history: { replay: fromSerial(lastSeen) } });
 });
 ```
 

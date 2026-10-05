@@ -164,7 +164,10 @@ export const TransportProvider = <E,>({
 
     // The context stores the transport with its event type erased; the hooks
     // re-apply the caller's type argument.
-    setSlot({ transport, error: undefined });
+    // CAST: the erasure is not a plain widening, since `subscribe` both takes
+    // and returns the event type through a replay function; the hook boundary
+    // narrows it back to `E`.
+    setSlot({ transport: transport as unknown as Transport<unknown>, error: undefined });
     return () => {
       // `close()` never rejects: it aborts the pipes in flight and waits for
       // each to settle; a pipe's own rejection is its caller's to observe.

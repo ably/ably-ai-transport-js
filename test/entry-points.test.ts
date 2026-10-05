@@ -38,6 +38,7 @@ import type {
   EncodedRow,
   EventRow,
   EventRows,
+  FromSerialOptions,
   HeaderPrimitive,
   HistoryOptions,
   HistoryPage,
@@ -48,13 +49,20 @@ import type {
   PipeOptions,
   PipeResult,
   PipeSource,
+  Replay,
+  ReplayFn,
+  ReplayResult,
   RowEvent,
   RowEventType,
   RowMessage,
   SendResult,
   Stripped,
+  SubscribeHistory,
+  SubscribeOptions,
+  Subscription,
   Transport,
   TransportOptions,
+  UntilEventOptions,
 } from '../src/index.js';
 import {
   consoleLogger,
@@ -64,10 +72,12 @@ import {
   ErrorCode,
   errorInfoIs,
   EventEmitter,
+  fromSerial,
   LogLevel,
   makeLogger,
   OBJECT_MODES,
   stripUndefined,
+  untilEvent,
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
 import { createOpenAICodec, openai } from '../src/openai/index.js';
@@ -92,6 +102,8 @@ const CODEC_KEYS = ['adapterTag', 'decode', 'encode'];
 describe('@ably/ai-transport', () => {
   it('exports the transport factory and the channel modes a transport can request', () => {
     expect(typeof createTransport).toBe('function');
+    expect(typeof fromSerial).toBe('function');
+    expect(typeof untilEvent).toBe('function');
     expect(Array.isArray(OBJECT_MODES)).toBe(true);
   });
 
@@ -125,7 +137,15 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<PipeOptions>().toHaveProperty('signal');
     expectTypeOf<PipeResult>().toHaveProperty('serial');
     expectTypeOf<PipeSource<TestEvent>>().not.toBeNever();
-    expectTypeOf<Transport<TestEvent>['subscribe']>().returns.toEqualTypeOf<() => void>();
+    expectTypeOf<Transport<TestEvent>['subscribe']>().returns.toEqualTypeOf<Subscription>();
+    expectTypeOf<Subscription>().toHaveProperty('replayed');
+    expectTypeOf<SubscribeOptions<TestEvent>>().toHaveProperty('history');
+    expectTypeOf<SubscribeHistory<TestEvent>>().toHaveProperty('replay');
+    expectTypeOf<ReplayFn<TestEvent>>().parameter(0).toEqualTypeOf<HistoryPage<TestEvent>>();
+    expectTypeOf<Replay<TestEvent>>().toHaveProperty('deliveries');
+    expectTypeOf<ReplayResult>().toHaveProperty('serial');
+    expectTypeOf<FromSerialOptions>().toHaveProperty('maxPages');
+    expectTypeOf<UntilEventOptions>().toHaveProperty('inclusive');
     expectTypeOf<HistoryOptions>().toHaveProperty('limit');
     expectTypeOf<HistoryPage<TestEvent>>().toHaveProperty('next');
     expectTypeOf<ChannelWriter>().toHaveProperty('appendMessage');

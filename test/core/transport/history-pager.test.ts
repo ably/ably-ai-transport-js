@@ -35,6 +35,14 @@ const toDeliveries = (message: Ably.InboundMessage): Delivery<string>[] => {
 const events = (page: { items: Delivery<string>[] }): (string | undefined)[] => page.items.map((d) => d.event);
 
 describe('openHistoryWalk', () => {
+  it('rejects OperationCancelled when its signal has fired, and reads nothing', async () => {
+    const channel = createMockChannel([[wire('s1')]]);
+    await expect(
+      openHistoryWalk({ channel, limit: 1, toDeliveries, signal: AbortSignal.abort() }),
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    expect(channel.history).not.toHaveBeenCalled();
+  });
+
   it('reads the newest page, oldest first within it, and leads to the older pages through next()', async () => {
     const channel = createMockChannel([
       [wire('s6'), wire('s5')],

@@ -50,6 +50,8 @@ export interface HistoryWalkOptions<E> {
    * stream the same way a live one does.
    */
   toDeliveries: (message: Ably.InboundMessage) => Delivery<E>[];
+  /** Checked between pages: a page read after it fires rejects `OperationCancelled`. */
+  signal?: AbortSignal;
   /** Logger for diagnostics. */
   logger?: Logger;
 }
@@ -111,11 +113,16 @@ class HistoryWalk<E> {
  * first page.
  * @param options - See {@link HistoryWalkOptions}.
  * @returns The newest page, leading to the older ones through `next()`.
- * @throws {Ably.ErrorInfo} `SessionHistoryFetchFailed` when the first page cannot be fetched after retries.
+ * @throws {Ably.ErrorInfo} `SessionHistoryFetchFailed` when the first page cannot be fetched after retries; `OperationCancelled` when `signal` has fired.
  */
 export const openHistoryWalk = async <E>(options: HistoryWalkOptions<E>): Promise<HistoryPage<E>> => {
   const logger = options.logger?.withContext({ component: 'HistoryWalk' });
   logger?.trace('openHistoryWalk();', { limit: options.limit });
-  const cursor = await loadHistoryPages(options.channel, { pageLimit: options.limit, untilAttach: true, logger });
+  const cursor = await loadHistoryPages(options.channel, {
+    pageLimit: options.limit,
+    untilAttach: true,
+    signal: options.signal,
+    logger,
+  });
   return new HistoryWalk(cursor, options.toDeliveries, logger).next();
 };

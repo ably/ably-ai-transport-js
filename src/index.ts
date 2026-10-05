@@ -1,18 +1,26 @@
 // The transport
 export type {
   ChannelWriter,
+  FromSerialOptions,
   HistoryOptions,
   HistoryPage,
   MessageHeaders,
   PipeOptions,
   PipeResult,
   PipeSource,
+  Replay,
+  ReplayFn,
+  ReplayResult,
   SendOptions,
   SendResult,
+  SubscribeHistory,
+  SubscribeOptions,
+  Subscription,
   Transport,
   TransportOptions,
+  UntilEventOptions,
 } from './core/transport/index.js';
-export { createTransport } from './core/transport/index.js';
+export { createTransport, fromSerial, untilEvent } from './core/transport/index.js';
 
 // The extra channel modes a transport can request, as its `channelModes`.
 export { OBJECT_MODES } from './core/channel-options.js';

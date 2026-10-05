@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
 import type { Delivery } from '../../../src/core/codec/index.js';
 import { defineCodec } from '../../../src/core/codec/index.js';
+import { fromSerial } from '../../../src/core/transport/from-serial.js';
 import type { MessageHeaders } from '../../../src/core/transport/headers.js';
 import type { Transport } from '../../../src/core/transport/transport.js';
 import { createTransport } from '../../../src/core/transport/transport.js';
@@ -83,6 +84,28 @@ const noteMessage = (serial: string, text: string): Ably.InboundMessage =>
 const deltaMessage = (serial: string, text: string): Ably.InboundMessage =>
   inbound({ serial, data: text, extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } } });
 
+/**
+ * A promise the test settles, so a replay function can keep a history replay
+ * open while live deliveries arrive.
+ * @returns The promise and its resolver.
+ */
+const gate = (): { opened: Promise<void>; open: () => void } => {
+  let open = noop;
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { opened, open };
+};
+
+/**
+ * A handler that records the serial of each delivery it is called with.
+ * @returns The record and the handler.
+ */
+const serialsSeen = (): { seen: string[]; handler: (d: Delivery<TestEvent>) => void } => {
+  const seen: string[] = [];
+  return { seen, handler: (d) => seen.push(d.message.serial ?? '') };
+};
+
 describe('createTransport', () => {
   let channel: MockChannel & Ably.RealtimeChannel;
   let transport: Transport<TestEvent>;
@@ -91,6 +114,20 @@ describe('createTransport', () => {
     channel = createMockChannel();
     transport = createTransport({ client: createMockClient(channel), channelName: CHANNEL, codec: createTestCodec() });
   });
+
+  /**
+   * Rebuild the channel and the transport over history pages, for a scenario
+   * that reads them.
+   * @param pages - The pages the channel serves, newest first.
+   */
+  const withPages = (pages: Ably.InboundMessage[][]): void => {
+    channel = createMockChannel(pages);
+    transport = createTransport({
+      client: createMockClient(channel),
+      channelName: CHANNEL,
+      codec: createTestCodec(),
+    });
+  };
 
   describe('channel resolution', () => {
     it('resolves the channel by name, attributed to the SDK and the codec', () => {
@@ -656,6 +693,277 @@ describe('createTransport', () => {
     it('throws once closed', async () => {
       await transport.close();
       await expect(transport.history({ limit: 1 })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+    });
+  });
+
+  describe('subscribe with history', () => {
+    it('replays what the function returns, then the live deliveries buffered during the history replay, in order', async () => {
+      withPages([[noteMessage('s2', 'two'), noteMessage('s1', 'one')]]);
+      const { seen, handler } = serialsSeen();
+      const hold = gate();
+      const sub = transport.subscribe(handler, {
+        history: {
+          replay: async (page) => {
+            await hold.opened;
+            return page.items;
+          },
+        },
+      });
+      await flushMicrotasks();
+      // A live delivery during the history replay is buffered for this handler.
+      channel.listener?.(noteMessage('s3', 'three'));
+      expect(seen).toEqual([]);
+      hold.open();
+      const report = await sub.replayed;
+      expect(seen).toEqual(['s1', 's2', 's3']);
+      expect(report).toEqual({ replayed: 2, serial: 's3', found: undefined });
+      // Live from here.
+      channel.listener?.(noteMessage('s4', 'four'));
+      expect(seen).toEqual(['s1', 's2', 's3', 's4']);
+    });
+
+    it('pages history from the attach point with the page size asked for, 100 by default', async () => {
+      withPages([[noteMessage('s1', 'one')]]);
+      await transport.subscribe(noop, { history: { replay: (page) => page.items, pageSize: 5 } }).replayed;
+      expect(channel.history).toHaveBeenLastCalledWith({ limit: 5, untilAttach: true });
+      await transport.subscribe(noop, { history: { replay: (page) => page.items } }).replayed;
+      expect(channel.history).toHaveBeenLastCalledWith({ limit: 100, untilAttach: true });
+    });
+
+    it('reads every page the function asks for and reports the position reached', async () => {
+      withPages([[noteMessage('s3', 'three')], [noteMessage('s2', 'two')], [noteMessage('s1', 'one')]]);
+      const { seen, handler } = serialsSeen();
+      const report = await transport.subscribe(handler, {
+        history: {
+          replay: async (first) => {
+            const out: Delivery<TestEvent>[] = [];
+            let page = first;
+            for (;;) {
+              out.push(...page.items);
+              if (!page.hasNext) return out;
+              page = await page.next();
+            }
+          },
+          pageSize: 1,
+        },
+      }).replayed;
+      expect(seen).toEqual(['s1', 's2', 's3']);
+      expect(report).toMatchObject({ replayed: 3, serial: 's3' });
+    });
+
+    it('delivers what the function returned in channel order, whatever order it returned it in', async () => {
+      withPages([[noteMessage('s3', 'three')], [noteMessage('s2', 'two')], [noteMessage('s1', 'one')]]);
+      const { seen, handler } = serialsSeen();
+      const report = await transport.subscribe(handler, {
+        history: {
+          pageSize: 1,
+          replay: async (first) => {
+            const second = await first.next();
+            const third = await second.next();
+            return [...first.items, ...third.items, ...second.items];
+          },
+        },
+      }).replayed;
+      expect(seen).toEqual(['s1', 's2', 's3']);
+      expect(report).toMatchObject({ replayed: 3, serial: 's3' });
+    });
+
+    it('keeps the deliveries of one message in the order the codec decoded them', async () => {
+      // CAST: a fixture inbound message with the name the split codec reads.
+      const twin = {
+        ...inbound({ serial: 's1', data: 'x|y', extras: undefined }),
+        name: 'split',
+      } as Ably.InboundMessage;
+      channel = createMockChannel([[twin]]);
+      const split = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createSplitCodec(),
+      });
+      const seen: unknown[] = [];
+      await split.subscribe((d) => seen.push(d.event), { history: { replay: (page) => page.items } }).replayed;
+      expect(seen).toEqual([
+        { type: 'half', text: 'x' },
+        { type: 'half', text: 'y' },
+      ]);
+    });
+
+    it('reports a builder verdict', async () => {
+      withPages([[noteMessage('s3', 'three'), noteMessage('s2', 'two'), noteMessage('s1', 'one')]]);
+      const { seen, handler } = serialsSeen();
+      const report = await transport.subscribe(handler, { history: { replay: fromSerial('s2', { inclusive: true }) } })
+        .replayed;
+      expect(seen).toEqual(['s2', 's3']);
+      expect(report).toMatchObject({ replayed: 2, found: true });
+    });
+
+    it('buffers only the handler that asked for history', async () => {
+      withPages([[noteMessage('s1', 'one')]]);
+      const caught = serialsSeen();
+      const plain = serialsSeen();
+      const hold = gate();
+      const sub = transport.subscribe(caught.handler, {
+        history: {
+          replay: async (page) => {
+            await hold.opened;
+            return page.items;
+          },
+        },
+      });
+      transport.subscribe(plain.handler);
+      await flushMicrotasks();
+      channel.listener?.(noteMessage('s2', 'two'));
+      expect(plain.seen).toEqual(['s2']);
+      expect(caught.seen).toEqual([]);
+      hold.open();
+      await sub.replayed;
+      expect(caught.seen).toEqual(['s1', 's2']);
+      expect(plain.seen).toEqual(['s2']);
+    });
+
+    it('keeps replaying when the handler throws on one delivery', async () => {
+      withPages([[noteMessage('s2', 'two'), noteMessage('s1', 'one')]]);
+      const seen: string[] = [];
+      const report = await transport.subscribe(
+        (d) => {
+          if (d.message.serial === 's1') throw new Error('handler bug');
+          seen.push(d.message.serial ?? '');
+        },
+        { history: { replay: (page) => page.items } },
+      ).replayed;
+      expect(seen).toEqual(['s2']);
+      expect(report).toMatchObject({ replayed: 2 });
+    });
+
+    it('releases the handler with a gap and rejects when the function throws', async () => {
+      withPages([[noteMessage('s1', 'one')]]);
+      const { seen, handler } = serialsSeen();
+      const hold = gate();
+      const sub = transport.subscribe(handler, {
+        history: {
+          replay: async () => {
+            await hold.opened;
+            throw new Error('replay bug');
+          },
+        },
+      });
+      await flushMicrotasks();
+      channel.listener?.(noteMessage('s2', 'two'));
+      hold.open();
+      await expect(sub.replayed).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionHistoryFetchFailed,
+        message: 'unable to replay history; replay function threw: replay bug',
+      });
+      // Live from here, with a gap.
+      expect(seen).toEqual(['s2']);
+      channel.listener?.(noteMessage('s3', 'three'));
+      expect(seen).toEqual(['s2', 's3']);
+    });
+
+    it('rejects with an ErrorInfo the function throws, as it is', async () => {
+      withPages([[noteMessage('s2', 'two')]]);
+      const sub = transport.subscribe(noop, { history: { replay: fromSerial('s1', { onExhausted: 'error' }) } });
+      await expect(sub.replayed).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionHistoryFetchFailed,
+        message: 'unable to replay from serial; history ran out before the serial was reached',
+      });
+    });
+
+    it('does not surface a failed replay as an unhandled rejection when nobody awaits it', async () => {
+      withPages([[noteMessage('s1', 'one')]]);
+      const unhandled = vi.fn();
+      process.on('unhandledRejection', unhandled);
+      try {
+        transport.subscribe(noop, {
+          history: {
+            replay: () => {
+              throw new Error('replay bug');
+            },
+          },
+        });
+        await flushMicrotasks();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off('unhandledRejection', unhandled);
+      }
+    });
+
+    it('stops the history replay and drops the buffered deliveries on unsubscribe, rejecting OperationCancelled', async () => {
+      withPages([[noteMessage('s1', 'one')]]);
+      const { seen, handler } = serialsSeen();
+      const hold = gate();
+      const sub = transport.subscribe(handler, {
+        history: {
+          replay: async (page) => {
+            await hold.opened;
+            return page.items;
+          },
+        },
+      });
+      await flushMicrotasks();
+      channel.listener?.(noteMessage('s2', 'two'));
+      sub();
+      hold.open();
+      await expect(sub.replayed).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      expect(seen).toEqual([]);
+      channel.listener?.(noteMessage('s3', 'three'));
+      expect(seen).toEqual([]);
+    });
+
+    it('runs one history replay at a time, so a second subscribe with history waits for the first', async () => {
+      withPages([[noteMessage('s1', 'one')]]);
+      const first = serialsSeen();
+      const second = serialsSeen();
+      const hold = gate();
+      const firstSub = transport.subscribe(first.handler, {
+        history: {
+          replay: async (page) => {
+            await hold.opened;
+            return page.items;
+          },
+        },
+      });
+      const secondSub = transport.subscribe(second.handler, { history: { replay: (page) => page.items } });
+      await flushMicrotasks();
+      expect(channel.history).toHaveBeenCalledTimes(1);
+      expect(second.seen).toEqual([]);
+      hold.open();
+      await firstSub.replayed;
+      await secondSub.replayed;
+      expect(channel.history).toHaveBeenCalledTimes(2);
+      expect(first.seen).toEqual(['s1']);
+      expect(second.seen).toEqual(['s1']);
+    });
+
+    it('resolves the report at once with nothing replayed for a subscription without history', async () => {
+      await expect(transport.subscribe(noop).replayed).resolves.toEqual({ replayed: 0, serial: undefined });
+    });
+
+    it('throws InvalidArgument for a page size below one, registering nothing', () => {
+      expect(() =>
+        transport.subscribe(noop, { history: { replay: (page) => page.items, pageSize: 0 } }),
+      ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+      expect(channel.subscribe).not.toHaveBeenCalled();
+    });
+
+    it('stops a history replay in flight on close and rejects OperationCancelled', async () => {
+      withPages([[noteMessage('s1', 'one')]]);
+      const { seen, handler } = serialsSeen();
+      const hold = gate();
+      const sub = transport.subscribe(handler, {
+        history: {
+          replay: async (page) => {
+            await hold.opened;
+            return page.items;
+          },
+        },
+      });
+      await flushMicrotasks();
+      await transport.close();
+      hold.open();
+      await expect(sub.replayed).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      expect(seen).toEqual([]);
     });
   });
 

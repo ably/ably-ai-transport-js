@@ -148,7 +148,7 @@
     "prettier": "^3.5.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "rxjs": "7.8.1",
+    "rxjs": "7.8.2",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.13",
     "typedoc-plugin-no-inherit": "^1.5.0",

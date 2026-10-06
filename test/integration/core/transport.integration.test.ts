@@ -131,6 +131,35 @@ describe('transport over Ably', () => {
     ]);
   });
 
+  it('resolves a pipe with the create serial of its last publish, untouched by the appends after it', async () => {
+    const name = uniqueChannelName();
+    const agent = transportOn(name);
+    const { transport: client, channel: clientChannel } = readerOn(name);
+    const recorder = createDeliveryRecorder<TestEvent>();
+    client.subscribe(recorder.record);
+    await clientChannel.whenState('attached');
+
+    // Two streams, neither closed. The first delta of each opens a message
+    // and the rest append to it, so the second stream's opener is the last
+    // publish in the pipe.
+    const result = await agent.pipe(
+      streamOf<TestEvent>(
+        { type: 'text-delta', id: 'a', delta: 'x' },
+        { type: 'text-delta', id: 'a', delta: 'y' },
+        { type: 'text-delta', id: 'b', delta: 'p' },
+        { type: 'text-delta', id: 'b', delta: 'q' },
+        { type: 'text-delta', id: 'b', delta: 'r' },
+      ),
+    );
+    await recorder.waitFor((d) => d.length === 5);
+
+    const [first, second] = recorder.deliveries
+      .filter((d) => d.message.action === 'message.create')
+      .map((d) => d.message.serial);
+    expect(first).not.toBe(second);
+    expect(result.serial).toBe(second);
+  });
+
   it('gives a subscriber that attaches mid-stream the content so far as one delta', async () => {
     const name = uniqueChannelName();
     const agent = transportOn(name);

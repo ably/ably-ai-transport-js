@@ -40,12 +40,19 @@ describe('fromSerial', () => {
     expect(replay.found).toBe(true);
   });
 
-  it('compares on the version, so it returns a message created before the serial and appended to after it', async () => {
-    // s1 was created before s2 and grew to version s4 after it.
-    const first = pagesOf([[deliveryAt('s1', 's4'), deliveryAt('s2'), deliveryAt('s3')]]);
+  it('compares on the creation serial and ignores the version', async () => {
+    // s1 and s2 were created at or before the point and grew to versions s4
+    // and s5 after it: neither is returned, s2 ends the walk on the first
+    // page, and the message created after the point is returned.
+    const reads = { pages: 0 };
+    const first = pagesOf(
+      [[deliveryAt('s1', 's4'), deliveryAt('s2', 's5'), deliveryAt('s3')], [deliveryAt('s0')]],
+      reads,
+    );
     const replay = asReplay(await fromSerial<string>('s2')(first));
-    expect(eventsOf(replay)).toEqual(['s1', 's3']);
+    expect(eventsOf(replay)).toEqual(['s3']);
     expect(replay.found).toBe(true);
+    expect(reads.pages).toBe(1);
   });
 
   it('treats a page with nothing at or before the serial as not yet reached, and reads on', async () => {

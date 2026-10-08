@@ -28,8 +28,8 @@ const initial: TransportStatusHandle = { discontinuity: false, error: undefined 
  * subscription of its own, so it never keeps a handler on the channel. Whether
  * the channel is attached is the channel's own state, readable through
  * ably-js's `useChannelStateListener` under the provider's `ChannelProvider`.
- * An application recovering from a discontinuity reads history back to the
- * last serial it applied, through `useHistory` or `transport.history()`.
+ * Recovering from a discontinuity is the application's job, by reading
+ * history through `useHistory` or `transport.history()`.
  * @param options - The provider to read; see {@link UseTransportStatusOptions}.
  * @returns The status; see {@link TransportStatusHandle}.
  * @throws {Ably.ErrorInfo} `InvalidArgument` when no matching provider encloses the caller.

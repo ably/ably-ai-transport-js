@@ -64,8 +64,6 @@ export interface SubscribeOptions<E> {
 export interface ReplayResult {
   /** Deliveries replayed from history. Zero for a subscription that asked for none. */
   replayed: number;
-  /** The newest position the handler has been called with once the buffered deliveries are out: a message's `version.serial`, or its `serial` for a message that was never appended to. The value for `fromSerial` after a discontinuity. `undefined` until the first delivery. */
-  serial: string | undefined;
   /** The replay function's verdict, when it returned one; see {@link Replay.found}. */
   found?: boolean;
 }
@@ -88,13 +86,3 @@ export type Subscription = (() => void) & {
    */
   replayed: Promise<ReplayResult>;
 };
-
-/**
- * A delivery's position on the channel: the message's `version.serial`, which
- * an append or update allocates, or its `serial` when it has never been
- * mutated. Positions sort as strings.
- * @param delivery - The delivery.
- * @returns Its position, or the empty string for a message with no serial.
- */
-export const positionOf = <E>(delivery: Delivery<E>): string =>
-  delivery.message.version.serial ?? delivery.message.serial ?? '';

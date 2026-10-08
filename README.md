@@ -191,7 +191,7 @@ import { fromSerial, untilEvent } from '@ably/ai-transport';
 const subscription = transport.subscribe(handle, {
   history: { replay: fromSerial(stored.serial), pageSize: 100 },
 });
-const { replayed, serial, found } = await subscription.replayed; // rejects when the replay failed
+const { replayed, found } = await subscription.replayed; // rejects when the replay failed
 subscription(); // calling it unsubscribes
 
 // Another option, if you do not have a serial stored, is to find the last event to
@@ -221,16 +221,7 @@ transport.subscribe(handle, {
 });
 ```
 
-To recover from a discontinuity, a channel state change after which messages may have been missed, you subscribe again with `fromSerial` at the last position you applied: a message's `version.serial`, or its `serial` for a message that was never appended to. A stream cut by the gap heals on its own: its next append arrives as a full-content update and the codec passes on the unseen tail. `demo/minimal/src/app/chat.tsx` does this inside a component, and makes the same subscribe call when the page loads, from the serial its server stored with the conversation.
-
-```typescript
-let subscription = transport.subscribe(apply, { history: { replay: fromSerial(stored.serial) } });
-
-transport.on('discontinuity', () => {
-  subscription();
-  subscription = transport.subscribe(apply, { history: { replay: fromSerial(lastSeen) } });
-});
-```
+`demo/minimal/src/app/chat.tsx` makes this subscribe call inside a component when the page loads, from the serial its server stored with the conversation.
 
 ### Tagging a turn
 
@@ -323,7 +314,7 @@ function Chat() {
 }
 ```
 
-`useHistory({ limit })` reads the channel's history one page at a time, `useTransportStatus()` reports a discontinuity and the transport's errors, and the channel's own state is ably-js's `useChannelStateListener` under the provider. Nesting providers with distinct channel names holds more than one conversation at once; pass `channelName` to any hook to pick which one it reads.
+`useHistory({ limit })` reads the channel's history one page at a time, `useTransportStatus()` reports the transport's errors, and the channel's own state is ably-js's `useChannelStateListener` under the provider. Nesting providers with distinct channel names holds more than one conversation at once; pass `channelName` to any hook to pick which one it reads.
 
 ---
 

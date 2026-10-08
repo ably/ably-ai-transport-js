@@ -57,7 +57,6 @@ import { type HistoryOptions, type HistoryPage, openHistoryWalk } from './histor
 import { type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
 import { createPipeWriter } from './pipe-writer.js';
 import {
-  positionOf,
   type Replay,
   type ReplayResult,
   type SubscribeHistory,
@@ -198,11 +197,8 @@ export interface Transport<E> {
    * Listen for a discontinuity, a channel state change after which messages
    * may have been missed: FAILED, SUSPENDED, DETACHED, or ATTACHED with
    * `resumed: false`. Streams in flight heal on their own through the
-   * full-content update that follows. To recover the rest, the application
-   * subscribes again with `history: { replay: fromSerial(position) }`, where
-   * `position` is the last one it applied (a result's `serial`, or the
-   * newest `version.serial ?? serial` its handler has seen); the codec returns
-   * a stream message the handler already saw with no event.
+   * full-content update that follows. Recovering the rest is the
+   * application's job, by reading history.
    * @param event - The event name.
    * @param handler - Called on each discontinuity, with nothing.
    * @returns The unsubscribe.
@@ -242,8 +238,6 @@ interface HandlerEntry<E> {
   buffered: Delivery<E>[] | undefined;
   /** Fires on unsubscribe, to stop a history replay in flight. */
   abort: AbortController;
-  /** The newest position the handler has been called with; see {@link positionOf}. */
-  position: string | undefined;
 }
 
 interface TransportEvents {
@@ -252,7 +246,7 @@ interface TransportEvents {
 }
 
 /** The result of a subscription without `history`. */
-const NO_REPLAY: ReplayResult = { replayed: 0, serial: undefined };
+const NO_REPLAY: ReplayResult = { replayed: 0 };
 
 /**
  * The deliveries and verdict a replay function returned, whichever shape it
@@ -480,7 +474,6 @@ class DefaultTransport<E> implements Transport<E> {
       handler,
       buffered: history === undefined ? undefined : [],
       abort: new AbortController(),
-      position: undefined,
     };
     this._handlers.add(entry);
     this._attach();
@@ -562,18 +555,16 @@ class DefaultTransport<E> implements Transport<E> {
       );
     }
     if (failure !== undefined) throw failure;
-    return { replayed, serial: entry.position, found };
+    return { replayed, found };
   }
 
   /**
-   * Call one handler with one delivery, log a throw so the other handlers still
-   * run, and record the position the handler has reached.
+   * Call one handler with one delivery, and log a throw so the other handlers
+   * still run.
    * @param entry - The handler.
    * @param delivery - The delivery.
    */
   private _call(entry: HandlerEntry<E>, delivery: Delivery<E>): void {
-    const position = positionOf(delivery);
-    if (entry.position === undefined || position > entry.position) entry.position = position;
     try {
       entry.handler(delivery);
     } catch (error) {

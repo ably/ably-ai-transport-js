@@ -299,8 +299,7 @@ describe('transport over Ably', () => {
     ]);
     expect(result).toMatchObject({ replayed: 2, found: true });
 
-    // Live from here, and the result's serial is where to resume from.
-    expect(result.serial).toBe(recorder.deliveries.at(-1)?.message.serial);
+    // Live from here.
     await writer.send({ type: 'note', text: 'five' });
     await recorder.waitFor((d) => d.length === 4);
     expect(recorder.events().at(-1)).toEqual({ type: 'note', text: 'five' });

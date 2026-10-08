@@ -35,15 +35,6 @@ const requestIdOf = (message: Delivery<VercelEvent>['message']): string | undefi
   return typeof requestId === 'string' ? requestId : undefined;
 };
 
-/**
- * A delivery's position on the channel: the version an append allocated, or
- * the serial of a message never appended to. Positions sort as strings.
- * @param delivery - The delivery.
- * @returns Its position.
- */
-const positionOf = (delivery: Delivery<VercelEvent>): string =>
-  delivery.message.version.serial ?? delivery.message.serial ?? '';
-
 export function Chat({ channelName }: { channelName: string }) {
   const { transport } = useTransport<VercelEvent>();
   const [messages, setMessages] = useState<UIMessage[]>([]);
@@ -99,20 +90,12 @@ export function Chat({ channelName }: { channelName: string }) {
   // replay, for the composer lock.
   const subscription = useRef<Subscription | undefined>(undefined);
   const replaying = useRef(false);
-  // The newest position applied, the point to subscribe from again after a
-  // discontinuity. A position is the message's version serial when it has one, so a
-  // delta on an older message arriving after a newer publish does not move it
-  // backwards.
-  const lastSeen = useRef<string | undefined>(undefined);
-  const [status, setStatus] = useState<'loading' | 'recovering' | undefined>('loading');
+  const [status, setStatus] = useState<'loading' | undefined>('loading');
 
   const apply = useCallback(
     (delivery: Delivery<VercelEvent>) => {
       // The second tab shows every delivery as the pair the handler received.
       setDeliveries((prev) => [...prev, delivery]);
-      // Recorded after applying, so it never points past what the page shows.
-      const position = positionOf(delivery);
-      if (lastSeen.current === undefined || position > lastSeen.current) lastSeen.current = position;
       const { event, message } = delivery;
       if (event === undefined) return;
       // The user's own message comes back as an ordinary channel delivery, so
@@ -148,20 +131,18 @@ export function Chat({ channelName }: { channelName: string }) {
     [merge, upsert],
   );
 
-  // Subscribes with the history after `after` replayed first: the stored
-  // conversation's serial on load, the last position applied after a
-  // discontinuity. The transport buffers this handler's live deliveries until
-  // the replay is done, so the page shows history before live, in channel
-  // order. A stream cut by the gap heals on its own: its next append arrives
-  // as a full-content update and the codec passes on the unseen tail. Without
-  // `after` the server has nothing stored, so the channel holds nothing to
-  // replay and the page subscribes to live delivery alone.
+  // Subscribes with the history after `after` replayed first, the stored
+  // conversation's serial on load. The transport buffers this handler's live
+  // deliveries until the replay is done, so the page shows history before
+  // live, in channel order. Without `after` the server has nothing stored, so
+  // the channel holds nothing to replay and the page subscribes to live
+  // delivery alone.
   const subscribeFrom = useCallback(
-    (after: string | undefined, why: 'loading' | 'recovering') => {
+    (after: string | undefined) => {
       if (transport === undefined) return;
       subscription.current?.();
       replaying.current = true;
-      setStatus(why);
+      setStatus('loading');
       const sub = transport.subscribe(apply, after === undefined ? undefined : { history: { replay: fromSerial(after) } });
       subscription.current = sub;
       void (async () => {
@@ -177,7 +158,7 @@ export function Chat({ channelName }: { channelName: string }) {
         if (subscription.current !== sub) return;
         replaying.current = false;
         setStatus(undefined);
-        if (failure !== undefined) console.error(`${why} failed`, failure);
+        if (failure !== undefined) console.error('loading failed', failure);
       })();
     },
     [transport, apply],
@@ -197,8 +178,7 @@ export function Chat({ channelName }: { channelName: string }) {
         const stored = (await res.json()) as StoredConversation;
         if (cancelled) return;
         setMessages(stored.messages);
-        lastSeen.current = stored.serial;
-        subscribeFrom(stored.serial, 'loading');
+        subscribeFrom(stored.serial);
       } catch (error) {
         if (!cancelled) console.error('load failed', error);
       }
@@ -209,18 +189,6 @@ export function Chat({ channelName }: { channelName: string }) {
       subscription.current = undefined;
     };
   }, [transport, channelName, subscribeFrom]);
-
-  useEffect(() => {
-    if (transport === undefined) return;
-    return transport.on('discontinuity', () => {
-      // Closing the client detaches the channel, which the transport reports
-      // as a discontinuity. There is nothing to recover then, and a history
-      // read on a closing connection would only fail.
-      const { state } = client.connection;
-      if (state === 'closing' || state === 'closed') return;
-      subscribeFrom(lastSeen.current, 'recovering');
-    });
-  }, [transport, subscribeFrom, client]);
 
   const send = async (e: FormEvent) => {
     e.preventDefault();

@@ -716,7 +716,7 @@ describe('createTransport', () => {
       hold.open();
       const report = await sub.replayed;
       expect(seen).toEqual(['s1', 's2', 's3']);
-      expect(report).toEqual({ replayed: 2, serial: 's3', found: undefined });
+      expect(report).toEqual({ replayed: 2, found: undefined });
       // Live from here.
       channel.listener?.(noteMessage('s4', 'four'));
       expect(seen).toEqual(['s1', 's2', 's3', 's4']);
@@ -730,7 +730,7 @@ describe('createTransport', () => {
       expect(channel.history).toHaveBeenLastCalledWith({ limit: 100, untilAttach: true });
     });
 
-    it('reads every page the function asks for and reports the position reached', async () => {
+    it('reads every page the function asks for', async () => {
       withPages([[noteMessage('s3', 'three')], [noteMessage('s2', 'two')], [noteMessage('s1', 'one')]]);
       const { seen, handler } = serialsSeen();
       const report = await transport.subscribe(handler, {
@@ -748,7 +748,7 @@ describe('createTransport', () => {
         },
       }).replayed;
       expect(seen).toEqual(['s1', 's2', 's3']);
-      expect(report).toMatchObject({ replayed: 3, serial: 's3' });
+      expect(report).toMatchObject({ replayed: 3 });
     });
 
     it('delivers what the function returned in channel order, whatever order it returned it in', async () => {
@@ -765,7 +765,7 @@ describe('createTransport', () => {
         },
       }).replayed;
       expect(seen).toEqual(['s1', 's2', 's3']);
-      expect(report).toMatchObject({ replayed: 3, serial: 's3' });
+      expect(report).toMatchObject({ replayed: 3 });
     });
 
     it('keeps the deliveries of one message in the order the codec decoded them', async () => {
@@ -937,7 +937,7 @@ describe('createTransport', () => {
     });
 
     it('resolves the report at once with nothing replayed for a subscription without history', async () => {
-      await expect(transport.subscribe(noop).replayed).resolves.toEqual({ replayed: 0, serial: undefined });
+      await expect(transport.subscribe(noop).replayed).resolves.toEqual({ replayed: 0 });
     });
 
     it('throws InvalidArgument for a page size below one, registering nothing', () => {

@@ -143,7 +143,7 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<SubscribeHistory<TestEvent>>().toHaveProperty('replay');
     expectTypeOf<ReplayFn<TestEvent>>().parameter(0).toEqualTypeOf<HistoryPage<TestEvent>>();
     expectTypeOf<Replay<TestEvent>>().toHaveProperty('deliveries');
-    expectTypeOf<ReplayResult>().toHaveProperty('serial');
+    expectTypeOf<ReplayResult>().toHaveProperty('replayed');
     expectTypeOf<FromSerialOptions>().toHaveProperty('maxPages');
     expectTypeOf<UntilEventOptions>().toHaveProperty('inclusive');
     expectTypeOf<HistoryOptions>().toHaveProperty('limit');

@@ -2,6 +2,26 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.10.0](https://github.com/ably/ably-ai-transport-js/tree/0.10.0) (2026-10-09)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.9.0...0.10.0)
+
+This release turns the SDK into a transport and a set of wire codecs. Your agent pipes its event stream to an Ably channel, and every subscribed client receives the same events. Each client merges those events into messages with the provider's own reducer, such as the AI SDK's `readUIMessageStream` or AG-UI's, and your application stores the conversation. A client can now resume from a serial it saved. The new AG-UI codec carries AG-UI events, and the React hooks work with any codec. Every 0.9.0 application has to change to upgrade, and the [breaking changes](#breaking-changes) below list what to change.
+
+### Breaking Changes
+
+- **The sessions and the run layer are removed.** `createClientSession`, `createAgentSession`, `withAgentSession`, `ClientSessionProvider`, `createClientTransport`, `createAgentTransport`, and run, step and steer framing are gone, and so are the `@ably/ai-transport/temporal`, `@ably/ai-transport/temporal/workflow` and `@ably/ai-transport/vercel/react` entry points. Build on `createTransport` and the hooks in `@ably/ai-transport/react` instead. [#349](https://github.com/ably/ably-ai-transport-js/pull/349)
+- **The codecs and the wire format are new.** Use `vercel` or `createVercelCodec()` from `@ably/ai-transport/vercel` and `openai` or `createOpenAICodec()` from `@ably/ai-transport/openai` in place of the 0.9.0 codecs. Messages that 0.9.0 published do not decode with 0.10.0. [#349](https://github.com/ably/ably-ai-transport-js/pull/349)
+- **`ErrorCode` drops the session and run members.** `RunResponseStreamFailed` (104008) is now `PipeFailed`, and the other run, steer and session-channel codes are removed. [#349](https://github.com/ably/ably-ai-transport-js/pull/349)
+
+### New Features
+
+- **Stream an agent to every client over one channel.** `createTransport({ client, channelName, codec })` gives you `send` for a user's message, `pipe` for the agent's reply, `subscribe` for every event on the channel and `history` to page back. A client that joins mid-reply, or reads history later, gets the events the agent produced. Your own messages on the same channel reach subscribers raw, beside the decoded events. [#349](https://github.com/ably/ably-ai-transport-js/pull/349)
+- **Resume a client from where it left off.** Save the serial that `send` or `pipe` resolves with, then call `subscribe(handler, { history: { replay: fromSerial(serial) } })`. The handler gets what history holds after that serial, then what arrived live in the meantime, then live events, all in channel order. `untilEvent` replays back to an event you choose, and `replay` accepts any function over the history page. [#357](https://github.com/ably/ably-ai-transport-js/pull/357)
+- **AG-UI agents.** The `@ably/ai-transport/ag-ui` entry point carries AG-UI events, so clients fold them with AG-UI's own reducer. [#348](https://github.com/ably/ably-ai-transport-js/pull/348)
+- **React for any codec.** `TransportProvider` with `useTransport`, `useDeliveries`, `useHistory` and `useTransportStatus` renders a channel's events and its connection state. [#349](https://github.com/ably/ably-ai-transport-js/pull/349)
+- **Tag messages with headers.** Pass `headers` to `send` or `pipe` and every message the call publishes carries them, so you can group events by a conversation id or filter on it in an Ably subscription filter. [#349](https://github.com/ably/ably-ai-transport-js/pull/349)
+
 ## [0.9.0](https://github.com/ably/ably-ai-transport-js/tree/0.9.0) (2026-09-29)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.8.0...0.9.0)

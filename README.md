@@ -9,7 +9,7 @@ Ably AI Transport carries an AI agent's output over an Ably channel. Your agent 
 The SDK is a transport and a set of codecs. A codec converts each event from the LLM output into one Ably message operation and back; the transport publishes, subscribes and pages history. Your application merges the event stream into its own messages. The SDK includes codecs for the Vercel AI SDK, the OpenAI Responses API and AG-UI. Or you can easily define your own codec using the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
-> This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release.
+> This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the [0.9.0 to 0.10.0 migration guide](./docs/migrations/0.9.0-to-0.10.0.md) walks through the move to 0.10.0.
 
 Find out more:
 

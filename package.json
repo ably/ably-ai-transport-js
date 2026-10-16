@@ -121,8 +121,8 @@
     }
   },
   "devDependencies": {
-    "@ag-ui/client": "1.0.0",
-    "@ag-ui/core": "1.0.0",
+    "@ag-ui/client": "1.0.2",
+    "@ag-ui/core": "1.0.2",
     "@eslint/compat": "^2.0.5",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^10.0.1",
@@ -148,7 +148,7 @@
     "prettier": "^3.5.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "rxjs": "7.8.1",
+    "rxjs": "7.8.2",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.13",
     "typedoc-plugin-no-inherit": "^1.5.0",

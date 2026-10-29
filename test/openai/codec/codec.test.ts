@@ -34,8 +34,9 @@ describe('the OpenAI codec', () => {
       const [done] = codec.encode(at(textResponse, 5));
       expect(done?.ends).toBe('msg_1:0');
       expect(done?.message).toEqual({
+        name: 'ai',
         data: { ...at(textResponse, 5), text: '' },
-        extras: { ai: { type: 'response.output_text.done' } },
+        extras: { ai: { codec: 'openai-responses', type: 'response.output_text.done' } },
       });
       const [args] = codec.encode(at(toolCallResponse, 4));
       expect(args?.message.data).toMatchObject({ arguments: '', name: 'weather' });
@@ -185,9 +186,11 @@ describe('the OpenAI codec', () => {
 
     it('carries a delta’s other fields under extras.ai.fields, arrays as they are, with no headers', () => {
       expect(codec.encode(at(textResponse, 3))[0]?.message).toEqual({
+        name: 'ai',
         data: 'It is 21°C',
         extras: {
           ai: {
+            codec: 'openai-responses',
             type: 'response.output_text.delta',
             fields: {
               type: 'response.output_text.delta',
@@ -214,13 +217,15 @@ describe('the OpenAI codec', () => {
       const [encoded] = codec.encode(at(textResponse, 1));
       expect(encoded?.publish).toBeUndefined();
       expect(encoded?.message.data).toEqual(at(textResponse, 1));
-      expect(encoded?.message.extras).toEqual({ ai: { type: 'response.output_item.added' } });
+      expect(encoded?.message.extras).toEqual({
+        ai: { codec: 'openai-responses', type: 'response.output_item.added' },
+      });
     });
 
     it('publishes input items as the message data', () => {
       const items: Responses.ResponseInputItem[] = [{ role: 'user', content: 'What is the weather?' }];
       expect(codec.encode({ type: 'input', items })).toEqual([
-        { message: { data: items, extras: { ai: { type: 'input' } } } },
+        { message: { name: 'ai', data: items, extras: { ai: { codec: 'openai-responses', type: 'input' } } } },
       ]);
     });
 
@@ -349,8 +354,9 @@ describe('the OpenAI codec', () => {
       const [done] = codec.encode(at(textResponse, 6));
       expect(done?.ends).toBeUndefined();
       expect(done?.message).toEqual({
+        name: 'ai',
         data: { ...at(textResponse, 6), part: { type: 'output_text', text: '', annotations: [] } },
-        extras: { ai: { type: 'response.content_part.done' } },
+        extras: { ai: { codec: 'openai-responses', type: 'response.content_part.done' } },
       });
     });
 
@@ -384,7 +390,13 @@ describe('the OpenAI codec', () => {
 
     it('throws for a plain publish whose body is not an object', () => {
       const [delivery] = deliveriesOf([
-        { message: { name: 'ai', data: 'nope', extras: { ai: { type: 'response.output_item.added' } } } },
+        {
+          message: {
+            name: 'ai',
+            data: 'nope',
+            extras: { ai: { codec: 'openai-responses', type: 'response.output_item.added' } },
+          },
+        },
       ]);
       if (delivery === undefined) throw new Error('fixture');
       expect(() => codec.decode(delivery)).toThrowErrorInfo({
@@ -422,7 +434,9 @@ describe('the OpenAI codec', () => {
     });
 
     it('throws for input whose data is not a list of items', () => {
-      const [delivery] = deliveriesOf([{ message: { name: 'ai', data: 'nope', extras: { ai: { type: 'input' } } } }]);
+      const [delivery] = deliveriesOf([
+        { message: { name: 'ai', data: 'nope', extras: { ai: { codec: 'openai-responses', type: 'input' } } } },
+      ]);
       if (delivery === undefined) throw new Error('fixture');
       expect(() => codec.decode(delivery)).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
@@ -436,6 +450,6 @@ describe('the OpenAI codec', () => {
 
   it('exports a prebuilt codec carrying its id', () => {
     expect(openai.id).toBe('openai-responses');
-    expect(Object.keys(openai).toSorted()).toEqual(['decode', 'encode', 'id']);
+    expect(Object.keys(openai).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });
 });

@@ -135,6 +135,7 @@ describe('createDecoder', () => {
     it('returns a message whose decode threw with no event, and reports the error', () => {
       const failing: Codec<TestEvent> = {
         id: 'test-codec',
+        name: 'ai',
         encode: () => [],
         decode: () => {
           throw new Ably.ErrorInfo('bad row', ErrorCode.InvalidArgument, 400);
@@ -197,6 +198,7 @@ describe('createDecoder', () => {
     it('stops reporting errors to a handler once unsubscribed', () => {
       const failing: Codec<TestEvent> = {
         id: 'test-codec',
+        name: 'ai',
         encode: () => [],
         decode: () => {
           throw new Error('bad row');

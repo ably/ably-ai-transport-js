@@ -21,11 +21,12 @@
  * carrying any other. `ai` is the key the platform reserves for this SDK, and
  * a value under it travels as it is, nested objects and arrays included. The
  * builder writes two fields there, the `type` that picks the row and the row's
- * `fields`; the transport writes the codec's id on every message, and two more
- * fields on the messages that open and end a key (see `src/core/wire.ts`); the
- * builder reads its own two and ignores the rest. The message name is the
- * transport's too: it names every message `ai`. `headers` is the key Ably provides for a publisher's own fields and
- * the one its server-side filtering reads. Ably admits only a flat map of
+ * `fields`, and on every message the codec's `id` as `codec` and the codec's
+ * `name` as the message name, which the decoder filters on; the transport
+ * writes two more fields on the messages that open and end a key (see
+ * `src/core/wire.ts`); the builder reads its own two and ignores the rest.
+ * `headers` is the key Ably provides for a publisher's own fields and the one
+ * its server-side filtering reads. Ably admits only a flat map of
  * string, number, boolean and null values under it (error 40032 otherwise),
  * so a row's `headers` are typed to that and written as given; the builder
  * translates nothing. An `undefined` value in either map is dropped. The
@@ -42,11 +43,13 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import {
+  CODEC_FIELD,
   EXTRAS_KEY,
   FIELDS_FIELD,
   type HeaderPrimitive,
   HEADERS_KEY,
   isRecord,
+  MESSAGE_NAME,
   readOwnExtras,
   TYPE_FIELD,
 } from '../wire.js';
@@ -199,6 +202,8 @@ export type EventRows<E, K extends string> = { [T in K]: EventRow<E, T> };
 export interface DefineCodecConfig<E, K extends string> {
   /** The codec's identity. See {@link Codec.id}. */
   id: string;
+  /** The name of every message the codec encodes. Defaults to `ai`. See {@link Codec.name}. */
+  name?: string;
   /**
    * Read an event's type. Its return type is the union of row keys, so the
    * table is checked against it. Annotate the parameter with the event union:
@@ -280,6 +285,7 @@ const withoutUndefined = <V>(record: Record<string, V> | undefined): Record<stri
 export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>): Codec<E> => {
   // CAST: the table is typed per key for the author; the dispatcher reads it
   // by string, and invokes each row only with the member its key selects.
+  const name = config.name ?? MESSAGE_NAME;
   const rows = config.events as unknown as Record<string, EventRow<E, string>>;
   const wildcards = Object.keys(rows)
     .filter((key) => key.endsWith(WILDCARD_SUFFIX))
@@ -304,6 +310,7 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
 
   return {
     id: config.id,
+    name,
     encode: (event) => {
       const type = config.typeOf(event);
       const row = findRow(type);
@@ -326,13 +333,16 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
 
       const fields = withoutUndefined(produced.fields);
       const headers = withoutUndefined(produced.headers);
-      const own: Record<string, unknown> = { [TYPE_FIELD]: type };
+      const own: Record<string, unknown> = { [CODEC_FIELD]: config.id, [TYPE_FIELD]: type };
       if (fields !== undefined) own[FIELDS_FIELD] = fields;
       const extras: Record<string, unknown> = { [EXTRAS_KEY]: own };
       if (headers !== undefined) extras[HEADERS_KEY] = headers;
       if (produced.ephemeral === true) extras.ephemeral = true;
       const data: unknown = produced.data ?? '';
-      const message: Ably.Message = { data, extras };
+      // Every message carries the name and the id, appends included: Ably
+      // keeps the name and extras of an append, and the first append of a
+      // stream may be the publish that opens it.
+      const message: Ably.Message = { name, data, extras };
 
       const encoded: EncodedMessage = { message };
       if (produced.publish !== undefined) encoded.publish = produced.publish;

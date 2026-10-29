@@ -2,11 +2,21 @@
  * A hand-written codec that uses the room the codec contract leaves beyond
  * the builder: one event may encode to several messages, and one message may
  * decode to several events. It has no decoder core, so every decode is a pure
- * function of its input. It names no message: the transport names every one
- * `ai` and writes the codec's id beside it.
+ * function of its input. It names its own messages `split` and writes its id,
+ * as every codec must.
  */
 
+import type * as Ably from 'ably';
+
 import type { Codec } from '../../src/core/codec/index.js';
+
+/**
+ * A message as the split codec writes it: its own name, and its id under
+ * `extras.ai.codec`, as the contract asks of every codec.
+ * @param data - The message body.
+ * @returns The message.
+ */
+const splitMessage = (data: string): Ably.Message => ({ name: 'split', data, extras: { ai: { codec: 'split' } } });
 
 export type SplitEvent =
   /** One message, one event. */
@@ -18,22 +28,23 @@ export type SplitEvent =
 
 /**
  * Build the split codec. A message decodes to one `half` per `|`-separated
- * piece of its data. The decoder hands it only the messages the transport
- * wrote for it.
+ * piece of its data. The decoder hands it only messages named `split` that
+ * carry its id.
  * @returns The codec.
  */
 export const createSplitCodec = (): Codec<SplitEvent> => ({
   id: 'split',
+  name: 'split',
   encode: (event) => {
     switch (event.type) {
       case 'half': {
-        return [{ message: { data: event.text } }];
+        return [{ message: splitMessage(event.text) }];
       }
       case 'both': {
-        return [{ message: { data: event.a } }, { message: { data: event.b } }];
+        return [{ message: splitMessage(event.a) }, { message: splitMessage(event.b) }];
       }
       case 'mixed': {
-        return [{ message: { data: event.text } }, { message: { data: '+' }, append: 'k' }];
+        return [{ message: splitMessage(event.text) }, { message: splitMessage('+'), append: 'k' }];
       }
     }
   },

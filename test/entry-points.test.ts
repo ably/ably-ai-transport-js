@@ -12,7 +12,7 @@
  * `pnpm test`.
  *
  * The codec assertion is an exact key set rather than a deny-list. A codec
- * exposes encode, decode and its id and nothing else; anything more
+ * exposes encode, decode, its id and its name and nothing else; anything more
  * means message assembly moved back inside the SDK, which is the boundary this
  * design exists to hold.
  *
@@ -97,7 +97,7 @@ import { createVercelCodec, vercel, vercelDecoder } from '../src/vercel/index.js
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
 /** The only keys a built codec may carry. */
-const CODEC_KEYS = ['decode', 'encode', 'id'];
+const CODEC_KEYS = ['decode', 'encode', 'id', 'name'];
 
 describe('@ably/ai-transport', () => {
   it('exports the transport factory and the channel modes a transport can request', () => {
@@ -112,7 +112,7 @@ describe('@ably/ai-transport', () => {
     expect(typeof createDecoder).toBe('function');
   });
 
-  it('builds a codec that carries encode, decode and its id and nothing else', () => {
+  it('builds a codec that carries encode, decode, its id and its name and nothing else', () => {
     const codec = createTestCodec();
     expect(Object.keys(codec).toSorted()).toEqual(CODEC_KEYS);
   });

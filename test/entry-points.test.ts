@@ -25,7 +25,7 @@ import type * as Ably from 'ably';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
-import { agui, createAGUICodec } from '../src/ag-ui/index.js';
+import { agui, agUiDecoder, createAGUICodec } from '../src/ag-ui/index.js';
 import type {
   ChannelWriter,
   Codec,
@@ -80,7 +80,7 @@ import {
   untilEvent,
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
-import { createOpenAICodec, openai } from '../src/openai/index.js';
+import { createOpenAICodec, openai, openaiDecoder } from '../src/openai/index.js';
 import type {
   HistoryHandle,
   TransportHandle,
@@ -93,7 +93,7 @@ import type {
 } from '../src/react/index.js';
 import { TransportProvider, useDeliveries, useHistory, useTransport, useTransportStatus } from '../src/react/index.js';
 import type { VercelCrossMajorChunk, VercelEvent, VercelUserMessage } from '../src/vercel/index.js';
-import { createVercelCodec, vercel } from '../src/vercel/index.js';
+import { createVercelCodec, vercel, vercelDecoder } from '../src/vercel/index.js';
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
 /** The only keys a built codec may carry. */
@@ -177,6 +177,11 @@ describe('@ably/ai-transport', () => {
 });
 
 describe('@ably/ai-transport/vercel', () => {
+  it('exports a decoder factory', () => {
+    expect(typeof vercelDecoder().receive).toBe('function');
+    expect(typeof vercelDecoder().decode).toBe('function');
+  });
+
   it('exports the codec, its factory and its event types', () => {
     expect(typeof createVercelCodec).toBe('function');
     expect(Object.keys(vercel).toSorted()).toEqual(CODEC_KEYS);
@@ -206,6 +211,11 @@ describe('@ably/ai-transport/react', () => {
 });
 
 describe('@ably/ai-transport/openai', () => {
+  it('exports a decoder factory', () => {
+    expect(typeof openaiDecoder().receive).toBe('function');
+    expect(typeof openaiDecoder().decode).toBe('function');
+  });
+
   it('exports the codec, its factory and its event types', () => {
     expect(typeof createOpenAICodec).toBe('function');
     expect(Object.keys(openai).toSorted()).toEqual(CODEC_KEYS);
@@ -216,6 +226,11 @@ describe('@ably/ai-transport/openai', () => {
 });
 
 describe('@ably/ai-transport/ag-ui', () => {
+  it('exports a decoder factory', () => {
+    expect(typeof agUiDecoder().receive).toBe('function');
+    expect(typeof agUiDecoder().decode).toBe('function');
+  });
+
   it('exports the codec, its factory and its event types', () => {
     expect(typeof createAGUICodec).toBe('function');
     expect(Object.keys(agui).toSorted()).toEqual(CODEC_KEYS);

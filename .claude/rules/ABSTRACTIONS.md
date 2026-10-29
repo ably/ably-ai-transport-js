@@ -255,8 +255,9 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    row writes it only to expose a field there on purpose. Ably admits only a
    flat map of string, number, boolean and null values under it (error 40032
    otherwise), so the row property is typed to that and written as given; the
-   builder translates and checks nothing. The transport adds the headers of
-   the `send` or `pipe` call and prefers the row's where both name a key, so a
+   builder translates and checks nothing. The adaptor adds its default
+   headers and the headers of the `send` or `pipe` call, the call's over the
+   defaults, and prefers the row's over both where they name a key, so a
    row keeps a header it writes and its `decode` sees the merged map
    (`src/core/adaptor/headers.ts`), since the wire cannot tell a caller's
    headers from the row's; the shipped codecs rebuild events from `fields` and

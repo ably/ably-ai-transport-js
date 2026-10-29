@@ -26,6 +26,15 @@ export const flushMicrotasks = async (): Promise<void> => {
 };
 
 /**
+ * Let every pending microtask run, however long its chain, by waiting for the
+ * event loop's next macrotask.
+ * @returns Resolves once the microtask queue has drained.
+ */
+export const nextMacrotask = async (): Promise<void> => {
+  await new Promise((resolve) => setImmediate(resolve));
+};
+
+/**
  * Build a stream that enqueues the given events and closes.
  * @param events - The chunks to emit, in order.
  * @returns The closed-after-emitting stream.

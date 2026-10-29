@@ -71,7 +71,7 @@ export enum ErrorCode {
   OperationCancelled = 40033,
   // Custom SDK-specific codes (104xxx range)
   StreamedMessageFinalizeFailed = 104000,
-  SessionSubscriptionFailed = 104001,
+  PipeFailed = 104008,
   // ...
 }
 ```

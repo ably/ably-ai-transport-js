@@ -6,8 +6,8 @@
  * the reply and the pipe's last serial in the store.
  */
 
-import { createTransport, ErrorCode } from '@ably/ai-transport';
-import { vercel } from '@ably/ai-transport/vercel';
+import { ErrorCode } from '@ably/ai-transport';
+import { vercelAdaptor } from '@ably/ai-transport/vercel';
 import { convertToModelMessages, streamText, toUIMessageStream, type UIMessage } from 'ai';
 import { createRealtimeClient, ErrorInfo } from '@ably/pubsub-server';
 
@@ -45,7 +45,7 @@ export async function POST(req: Request) {
   // Ably rolls the appends a connection publishes within 40ms into one
   // delivery; a window of 0 delivers every chunk as its own message.
   const pubsubClient = createRealtimeClient({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
-  const transport = createTransport({ client: pubsubClient, channelName, codec: vercel });
+  const adaptor = vercelAdaptor(pubsubClient.channels.get(channelName));
 
   try {
     const result = streamText({
@@ -65,7 +65,7 @@ export async function POST(req: Request) {
     // it resolves, so the callback has run by the time the serial is known.
     let reply: UIMessage | undefined;
     try {
-      const { serial } = await transport.pipe(
+      const { serial } = await adaptor.pipe(
         toUIMessageStream({
           stream: result.fullStream,
           originalMessages: messages,
@@ -87,7 +87,7 @@ export async function POST(req: Request) {
         // reply has ended. Best effort: a tab that misses it reads the
         // channel on its next load.
         try {
-          await transport.send({ type: 'abort' }, { headers });
+          await adaptor.send({ type: 'abort' }, { headers });
         } catch (sendError) {
           console.error('abort publish failed', sendError);
         }
@@ -98,7 +98,6 @@ export async function POST(req: Request) {
     }
     return new Response(null, { status: 204 });
   } finally {
-    await transport.close();
     pubsubClient.close();
   }
 }

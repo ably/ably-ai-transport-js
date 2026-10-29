@@ -6,7 +6,10 @@ The generic layer lives in `src/core/`. Each provider lives in its own
 directory (`src/vercel/`, `src/openai/`, …): its row table under a `codec/`
 subdirectory, and beside it the adaptor and decoder factories that wrap that
 codec. A provider directory may depend on the generic layer and on its own
-provider SDK, never on another provider. The SDK's own identity, the errors,
+provider SDK, never on another provider. It may also hold an adapter to its
+provider's own client framework, in a subdirectory of its own
+(`src/vercel/chat-transport/`, the `useChat` transport, is the instance). The
+SDK's own identity, the errors,
 the logger and the event emitter sit at the top of `src/` and `src/core/`.
 Tests mirror `src/` under `test/`.
 
@@ -16,12 +19,12 @@ types and functions it re-exports are public API. A new codec adds a new entry
 point rather than changing an existing one. An Anthropic codec is planned as
 a further entry point.
 
-| Entry point                 | Purpose                                                                          | Peer deps                       |
-| --------------------------- | -------------------------------------------------------------------------------- | ------------------------------- |
-| `@ably/ai-transport`        | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder | a Pub/Sub client                |
-| `@ably/ai-transport/vercel` | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s              | a Pub/Sub client, `ai`          |
-| `@ably/ai-transport/openai` | An adaptor and a decoder over OpenAI Responses stream events                     | a Pub/Sub client, `openai`      |
-| `@ably/ai-transport/ag-ui`  | An adaptor and a decoder over AG-UI events                                       | a Pub/Sub client, `@ag-ui/core` |
+| Entry point                 | Purpose                                                                                                         | Peer deps                       |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `@ably/ai-transport`        | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder                                | a Pub/Sub client                |
+| `@ably/ai-transport/vercel` | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s, and a `useChat` transport over the decoder | a Pub/Sub client, `ai`          |
+| `@ably/ai-transport/openai` | An adaptor and a decoder over OpenAI Responses stream events                                                    | a Pub/Sub client, `openai`      |
+| `@ably/ai-transport/ag-ui`  | An adaptor and a decoder over AG-UI events                                                                      | a Pub/Sub client, `@ag-ui/core` |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.
@@ -55,7 +58,8 @@ preserve.
 
 - **Codec layer** (`src/vercel/`, `src/openai/`, …) is one codec per provider,
   a row table built with `defineCodec` against that provider's own types, and
-  the adaptor and decoder factories over it.
+  the adaptor and decoder factories over it, and, where the provider's client
+  framework needs one, an adapter to that framework (see Layout).
 
 The application owns the channel. It gets an `Ably.RealtimeChannel` from
 its Pub/Sub client, hands it to an adaptor on the agent side, and on the client side

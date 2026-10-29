@@ -55,8 +55,8 @@ import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { OpenAIEvent } from './events.js';
 
-/** The value the codec stamps as its `adapterTag`. */
-const ADAPTER_TAG = 'openai-responses';
+/** The codec's id. */
+const CODEC_ID = 'openai-responses';
 
 type Row<T extends OpenAIEvent['type']> = EventRow<OpenAIEvent, T>;
 
@@ -227,7 +227,7 @@ const isInputItems = (data: unknown): data is Responses.ResponseInputItem[] =>
 export const createOpenAICodec = (): Codec<OpenAIEvent> =>
   defineCodec({
     name: 'ai',
-    adapterTag: ADAPTER_TAG,
+    id: CODEC_ID,
     typeOf: (e: OpenAIEvent) => e.type,
     events: {
       // The response lifecycle. The openers carry a response with no output

@@ -50,16 +50,16 @@ interface AgentToken {
 
 /**
  * Build the ordered entries for a codec. The order is fixed: this SDK, the
- * layer, then the codec's adapter tag.
- * @param codec - The codec whose optional tag adds an entry.
- * @param codec.adapterTag - The codec's attribution tag; appended when present.
+ * layer, then the codec's id.
+ * @param codec - The codec whose id adds an entry.
+ * @param codec.id - The codec's id; appended when not empty.
  * @returns The entries, in the order they appear in the identifier.
  */
-const buildTokens = (codec?: { readonly adapterTag?: string }): readonly AgentToken[] => {
+const buildTokens = (codec?: { readonly id: string }): readonly AgentToken[] => {
   const tokens: AgentToken[] = [{ name: SDK_NAME, version: VERSION }, { name: LAYER }];
-  const tag = codec?.adapterTag;
-  // An empty tag would render as a bare `/version`, which is not a valid
-  // agent, so it reads as an opt-out just like an absent one.
+  const tag = codec?.id;
+  // An empty id would render as a bare `/version`, which is not a valid
+  // agent, so it reads as an opt-out just like an absent codec.
   if (tag !== undefined && tag !== '') tokens.push({ name: tag, version: VERSION });
   return tokens;
 };
@@ -89,17 +89,17 @@ const toAgentMap = (tokens: readonly AgentToken[]): Record<string, string> =>
 
 /**
  * The space-separated `params.agent` string to stamp on channel ATTACH:
- * `ai-transport-js/<version> streaming`, plus the codec's own tag when it
- * carries one.
+ * `ai-transport-js/<version> streaming`, plus the codec's id when it is not
+ * empty.
  *
  * Pure, and safe to call repeatedly: the same codec always yields the same
  * string. The transport passes it as the channel's `params.agent` when it
  * resolves the channel.
- * @param codec - The codec whose optional tag adds an attribution entry.
- * @param codec.adapterTag - The codec's attribution tag; appended when present.
+ * @param codec - The codec whose id adds an attribution entry.
+ * @param codec.id - The codec's id; appended when not empty.
  * @returns The channel `params.agent` string.
  */
-export const channelAgent = (codec?: { readonly adapterTag?: string }): string => joinTokens(buildTokens(codec));
+export const channelAgent = (codec?: { readonly id: string }): string => joinTokens(buildTokens(codec));
 
 /**
  * Register this SDK's entries on the client's `options.agents`, so the
@@ -109,10 +109,10 @@ export const channelAgent = (codec?: { readonly adapterTag?: string }): string =
  * on the same client survives, and repeated calls with the same codec write
  * the same keys and values.
  * @param client - The Ably Realtime client to register on.
- * @param codec - The codec whose optional tag adds an attribution entry.
- * @param codec.adapterTag - The codec's attribution tag; appended when present.
+ * @param codec - The codec whose id adds an attribution entry.
+ * @param codec.id - The codec's id; appended when not empty.
  */
-export const registerAgent = (client: Ably.Realtime, codec?: { readonly adapterTag?: string }): void => {
+export const registerAgent = (client: Ably.Realtime, codec?: { readonly id: string }): void => {
   // CAST: Ably.Realtime's public type omits `options.agents`, but the SDK
   // carries it at runtime. ably-chat-js relies on the same shape.
   const realtime = client as RealtimeWithOptions;

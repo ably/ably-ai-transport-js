@@ -282,8 +282,8 @@ describe('the AG-UI codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying the adapter tag', () => {
-    expect(agui.adapterTag).toBe('ag-ui-events');
-    expect(Object.keys(agui).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
+  it('exports a prebuilt codec carrying its id', () => {
+    expect(agui.id).toBe('ag-ui-events');
+    expect(Object.keys(agui).toSorted()).toEqual(['decode', 'encode', 'id']);
   });
 });

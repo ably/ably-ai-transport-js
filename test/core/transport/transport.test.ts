@@ -308,6 +308,7 @@ describe('createTransport', () => {
         type: 'note';
       }
       const tagged = defineCodec({
+        id: 'tagged',
         name: 'tagged',
         typeOf: (e: TaggedEvent) => e.type,
         events: {

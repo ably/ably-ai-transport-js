@@ -208,8 +208,8 @@ export type EventRows<E, K extends string> = { [T in K]: EventRow<E, T> };
 export interface DefineCodecConfig<E, K extends string> {
   /** The Ably message name for a message whose row names none. Defaults to `ai`. */
   name?: string;
-  /** The codec's entry in the channel's `params.agent` attribution string. See {@link Codec.adapterTag}. */
-  adapterTag?: string;
+  /** The codec's identity. See {@link Codec.id}. */
+  id: string;
   /**
    * Read an event's type. Its return type is the union of row keys, so the
    * table is checked against it. Annotate the parameter with the event union:
@@ -318,7 +318,8 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
 
   const core = createDecoderCore({ logger: config.logger });
 
-  const codec: Codec<E> = {
+  return {
+    id: config.id,
     encode: (event) => {
       const type = config.typeOf(event);
       const row = findRow(type);
@@ -382,8 +383,4 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       return decoded === undefined ? [] : [decoded];
     },
   };
-
-  // adapterTag is optional on Codec; set it only when supplied so a codec can
-  // opt out of channel attribution.
-  return config.adapterTag === undefined ? codec : { ...codec, adapterTag: config.adapterTag };
 };

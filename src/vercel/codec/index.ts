@@ -33,8 +33,8 @@ import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelEvent } from './events.js';
 
-/** The value every codec built here stamps as its `adapterTag`. */
-const ADAPTER_TAG = 'vercel-ai-sdk-ui-message';
+/** The codec's id. */
+const CODEC_ID = 'vercel-ai-sdk-ui-message';
 
 type Row<T extends VercelEvent['type']> = EventRow<VercelEvent, T>;
 
@@ -94,7 +94,7 @@ export const createVercelCodec = <
 >(): Codec<VercelEvent<TMetadata, TDataParts, TTools>> => {
   const codec = defineCodec({
     name: 'ai',
-    adapterTag: ADAPTER_TAG,
+    id: CODEC_ID,
     typeOf: (e: VercelEvent) => e.type,
     events: {
       // Streams: the start is a plain publish, each delta appends its text as

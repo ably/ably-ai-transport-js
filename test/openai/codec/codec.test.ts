@@ -435,8 +435,8 @@ describe('the OpenAI codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying the adapter tag', () => {
-    expect(openai.adapterTag).toBe('openai-responses');
-    expect(Object.keys(openai).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
+  it('exports a prebuilt codec carrying its id', () => {
+    expect(openai.id).toBe('openai-responses');
+    expect(Object.keys(openai).toSorted()).toEqual(['decode', 'encode', 'id']);
   });
 });

@@ -74,11 +74,11 @@ export interface Delivery<E> {
  */
 export interface Codec<E> {
   /**
-   * Optional Ably-Agent identifier the transport appends to its channel's
-   * `params.agent`, so traffic is attributed to this codec. Omit to contribute
-   * nothing.
+   * The codec's identity. The transport appends it to its channel's
+   * `params.agent`, so traffic is attributed to this codec. An empty id
+   * contributes nothing to the attribution.
    */
-  readonly adapterTag?: string;
+  readonly id: string;
   /**
    * Encode one event to the Ably messages that carry it, in the order they are
    * written. An empty array publishes nothing. `defineCodec` builds a codec

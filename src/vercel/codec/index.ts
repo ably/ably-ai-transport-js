@@ -81,7 +81,7 @@ const isUIMessage = (data: unknown): data is AI.UIMessage =>
 
 /**
  * Build the Vercel codec, typed for a consumer's `UIMessage` generic
- * parameters. Each call builds a fresh codec with its own decoder table.
+ * parameters.
  * @template TMetadata - Per-message metadata type.
  * @template TDataParts - Custom data-part types.
  * @template TTools - Tool set typing the user message's tool parts.
@@ -185,5 +185,5 @@ export const createVercelCodec = <
   return codec as Codec<VercelEvent<TMetadata, TDataParts, TTools>>;
 };
 
-/** The Vercel codec at the SDK's default `UIMessage` types, with one decoder table shared by every transport that uses it. */
+/** The Vercel codec at the SDK's default `UIMessage` types. */
 export const vercel: Codec<VercelEvent> = createVercelCodec();

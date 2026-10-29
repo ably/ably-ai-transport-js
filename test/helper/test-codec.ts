@@ -22,8 +22,7 @@ const asString = (value: unknown): string => (typeof value === 'string' ? value 
 const idOf = (fields: Record<string, unknown> = {}): string => asString(fields.id);
 
 /**
- * Build a fresh test codec. Fresh, because a built codec's decoder core
- * remembers every serial it has seen.
+ * Build the test codec.
  * @returns The codec.
  */
 export const createTestCodec = (): Codec<TestEvent> =>

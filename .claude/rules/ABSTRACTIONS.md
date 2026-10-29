@@ -149,10 +149,10 @@ and injected, and each layer wires the layer below it.
 The split follows what a part's state is scoped to. State scoped to one pipe
 (the live keys, the pending appends) lives in that pipe's writer. State scoped
 to the transport (the subscriptions, the pipes in flight, whether the channel
-listener is registered) lives in the transport. State scoped to the codec (the
-decoder core's table of the streams in flight, opened by the writer's `stream`
-marker and freed by its `ends` marker) lives inside the built codec, which is
-why a codec instance is shared only when its transports may share a table.
+listener is registered, and the decoder core's table of the streams in flight,
+opened by the writer's `stream` marker and freed by its `ends` marker) lives in
+the transport. A codec holds no state, so one codec value serves every
+transport that uses it.
 
 ## Dependency injection
 

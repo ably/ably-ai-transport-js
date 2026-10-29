@@ -138,8 +138,7 @@ const isRunAgentInput = (data: unknown): data is AGUIRunInput['input'] =>
   Array.isArray(data.context);
 
 /**
- * Build the AG-UI codec. Each call builds a fresh codec with its own decoder
- * table.
+ * Build the AG-UI codec.
  * @returns The codec.
  */
 export const createAGUICodec = (): Codec<AGUIEvent> =>
@@ -257,5 +256,5 @@ export const createAGUICodec = (): Codec<AGUIEvent> =>
     },
   });
 
-/** The AG-UI codec, with one decoder table shared by every transport that uses it. */
+/** The AG-UI codec. */
 export const agui: Codec<AGUIEvent> = createAGUICodec();

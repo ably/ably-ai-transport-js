@@ -45,6 +45,7 @@ import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
+import { createDecoderCore, type DecoderCore } from '../codec/decoder.js';
 import { withCodec } from '../wire.js';
 import {
   bestEffortDetach,
@@ -361,6 +362,8 @@ const wrapPublishError = (error: unknown): Ably.ErrorInfo => {
 class DefaultTransport<E> implements Transport<E> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<E>;
+  /** The per-serial state behind every decode, live and history alike, so a message both carry decodes once. */
+  private readonly _core: DecoderCore;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<TransportEvents>;
   private readonly _pipes = new Set<InFlightPipe>();
@@ -383,6 +386,7 @@ class DefaultTransport<E> implements Transport<E> {
     });
     this._channel = resolveChannel(options, this._logger);
     this._codec = options.codec;
+    this._core = createDecoderCore({ logger: this._logger });
     this._emitter = new EventEmitter<TransportEvents>(this._logger);
     this._listener = (message: Ably.InboundMessage) => {
       if (!this._closed) this._deliverNow(message);
@@ -660,7 +664,8 @@ class DefaultTransport<E> implements Transport<E> {
     this._logger.trace('Transport; inbound message', { serial: message.serial, action: message.action });
     let events: E[] = [];
     try {
-      events = this._codec.decode(message);
+      const prepared = this._core.prepare(message);
+      if (prepared !== undefined) events = this._codec.decode(prepared);
     } catch (error) {
       const wrapped = wrapMessageProcessingError(error);
       this._logger.error('Transport; decode failed, delivering the message without an event', {

@@ -220,8 +220,7 @@ const isInputItems = (data: unknown): data is Responses.ResponseInputItem[] =>
   Array.isArray(data) && data.every((item: unknown) => isRecord(item));
 
 /**
- * Build the OpenAI Responses codec. Each call builds a fresh codec with its
- * own decoder table.
+ * Build the OpenAI Responses codec.
  * @returns The codec.
  */
 export const createOpenAICodec = (): Codec<OpenAIEvent> =>
@@ -395,5 +394,5 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
     },
   });
 
-/** The OpenAI Responses codec, with one decoder table shared by every transport that uses it. */
+/** The OpenAI Responses codec. */
 export const openai: Codec<OpenAIEvent> = createOpenAICodec();

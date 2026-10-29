@@ -68,9 +68,9 @@ export interface Delivery<E> {
 /**
  * A codec: encode an event to the Ably messages that carry it, decode an Ably
  * message to the events it carries. Both directions are pure functions of
- * their input; any state a codec needs to reduce a full-content update to what
- * it adds lives inside the codec (the builder supplies it), never in the
- * transport.
+ * their input, and a codec holds no state. Reducing a full-content update to
+ * what it adds, and dropping a delivery already seen, happen before `decode`
+ * runs, in the reader that holds the per-serial state.
  * @template E - The codec's event union, covering everything either side publishes.
  */
 export interface Codec<E> {
@@ -94,8 +94,10 @@ export interface Codec<E> {
   encode(event: E): EncodedMessage[];
   /**
    * Decode one Ably message to the events it carries, in order. An empty
-   * array is a message that is not this codec's, or that adds nothing (a
-   * replay the codec has already seen). `defineCodec` builds a codec whose
+   * array is a message that is not this codec's, or one that carries no event
+   * for the application. `data` is what this delivery adds: an append's
+   * fragment, the unseen tail of a full-content update, or a plain publish's
+   * body. `defineCodec` builds a codec whose
    * rows produce at most one event; a hand-written codec may fold one message
    * into several. Throws for a message the codec recognises as its own but
    * cannot decode.

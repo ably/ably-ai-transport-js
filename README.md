@@ -280,7 +280,7 @@ const adaptor = createAgentAdaptor(channel, codec);
 const decoder = createDecoder(codec);
 ```
 
-Every message the adaptor writes is named `ai` and carries the codec's `id`, and a decoder skips a message with another name or another codec's id. Two formats can share a channel when their ids differ.
+Every message a codec encodes carries the codec's `name`, `ai` unless you pass `name` to `defineCodec`, and its `id`, and a decoder skips a message with another name or another codec's id. Two formats can share a channel when their ids differ. A hand-written codec must write both itself.
 
 ### React
 

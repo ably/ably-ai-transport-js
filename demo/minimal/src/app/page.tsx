@@ -1,9 +1,7 @@
 'use client';
 
-import { TransportProvider } from '@ably/ai-transport/react';
-import { vercel } from '@ably/ai-transport/vercel';
 import Ably from 'ably';
-import { AblyProvider } from 'ably/react';
+import { AblyProvider, ChannelProvider } from 'ably/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
@@ -49,12 +47,12 @@ function ChatPage() {
 
   return (
     <AblyProvider client={client}>
-      <TransportProvider
-        channelName={channelName}
-        codec={vercel}
-      >
-        <Chat channelName={channelName} />
-      </TransportProvider>
+      <ChannelProvider channelName={channelName}>
+        <Chat
+          key={channelName}
+          channelName={channelName}
+        />
+      </ChannelProvider>
     </AblyProvider>
   );
 }

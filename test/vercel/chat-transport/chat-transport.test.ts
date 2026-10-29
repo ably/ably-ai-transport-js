@@ -396,6 +396,26 @@ describe('sendMessages', () => {
     expect(onStop).not.toHaveBeenCalled();
   });
 
+  it('ends the stream with OperationCancelled when stopped mid-reply, then calls onStop', async () => {
+    const onStop = vi.fn();
+    const { transport, fixture } = setup([], { onStop });
+    const controller = new AbortController();
+    const stream = await transport.sendMessages(sendOptions({ abortSignal: controller.signal }));
+    const wire = wireOf(reply).live;
+    fixture.deliver(wire.slice(0, 2));
+
+    controller.abort();
+    fixture.deliver(wire.slice(2));
+    expect(onStop).not.toHaveBeenCalled();
+    await flushMicrotasks();
+
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledWith({ chatId: 'chat-1', channel: fixture.channel });
+    const read = stream.getReader().read();
+    await expect(read).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+    await expect(read).rejects.toHaveProperty('name', 'AbortError');
+  });
+
   it('ends the stream as a stop when no onStop is given', async () => {
     const { transport } = setup();
     const controller = new AbortController();
@@ -405,6 +425,47 @@ describe('sendMessages', () => {
     await nextMacrotask();
 
     await expect(drain(stream)).rejects.toHaveProperty('name', 'AbortError');
+  });
+
+  it('does not call onStop for an abort after the reply ended, or for a reply useChat cancels', async () => {
+    const onStop = vi.fn();
+    const { transport, fixture } = setup([], { onStop });
+    const controller = new AbortController();
+    const finished = await transport.sendMessages(sendOptions({ abortSignal: controller.signal }));
+    fixture.deliver(wireOf(reply).live);
+    await drain(finished);
+    controller.abort();
+
+    const cancelled = await transport.sendMessages(sendOptions());
+    await cancelled.cancel();
+    await nextMacrotask();
+
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it('logs an onStop that throws, or an async one that rejects', async () => {
+    const { logger, errors } = recordingLogger();
+    const failures = [
+      vi.fn(() => {
+        throw new Error('the cancel endpoint is down');
+      }),
+      vi.fn(async () => {
+        await Promise.resolve();
+        throw new Error('the cancel endpoint is down');
+      }),
+    ];
+    for (const onStop of failures) {
+      const { transport } = setup([], { logger, onStop });
+      const controller = new AbortController();
+      const stream = await transport.sendMessages(sendOptions({ abortSignal: controller.signal }));
+
+      controller.abort();
+      await nextMacrotask();
+
+      await expect(drain(stream)).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+      expect(onStop).toHaveBeenCalledTimes(1);
+    }
+    expect(errors).toEqual(['ChatTransport; onStop threw', 'ChatTransport; onStop threw']);
   });
 
   it('rejects with SessionSubscriptionFailed when the channel cannot be attached, and tries again on the next call', async () => {
@@ -700,6 +761,34 @@ describe('close', () => {
     await expect(drain(stream)).rejects.toHaveProperty('name', 'AbortError');
     expect(fixture.channel.listener).toBeUndefined();
     expect(fixture.channel.detach).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an abort just before it, with no await between, from calling onStop, as an unmount does', async () => {
+    const onStop = vi.fn();
+    const { transport } = setup([], { onStop });
+    const controller = new AbortController();
+    const stream = await transport.sendMessages(sendOptions({ abortSignal: controller.signal }));
+
+    controller.abort();
+    transport.close();
+    await nextMacrotask();
+
+    expect(onStop).not.toHaveBeenCalled();
+    await expect(drain(stream)).rejects.toHaveProperty('name', 'AbortError');
+  });
+
+  it('still calls onStop for an abort it follows after an await, as dispose() does', async () => {
+    const onStop = vi.fn();
+    const { transport } = setup([], { onStop });
+    const controller = new AbortController();
+    await transport.sendMessages(sendOptions({ abortSignal: controller.signal }));
+
+    controller.abort();
+    await flushMicrotasks();
+    transport.close();
+    await nextMacrotask();
+
+    expect(onStop).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a call still opening the channel with OperationCancelled, posting nothing', async () => {

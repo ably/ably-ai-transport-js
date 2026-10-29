@@ -331,6 +331,12 @@ interface TurnRequest {
   readonly body: string;
 }
 
+/** A stop that `onStop` has not been told about yet. */
+interface PendingStop {
+  /** The chat it belongs to. */
+  readonly chatId: string;
+}
+
 /**
  * Wait for `work`, unless `signal` fires first.
  * @param work - What to wait for.
@@ -449,7 +455,10 @@ class DefaultAblyChatTransport implements AblyChatTransport {
   private readonly _client: Ably.Realtime;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _api: string;
+  private readonly _onStop: ((context: StopContext) => void | PromiseLike<void>) | undefined;
   private readonly _logger: Logger;
+  /** Stops whose `onStop` waits for the microtask after the abort. */
+  private readonly _pendingStops = new Set<PendingStop>();
   /** The reader serving replies, from the first call until `close()`. */
   private _reader: TurnReader | undefined;
   /** Counts `close()` calls, so a call still waiting can tell that the transport closed meanwhile. */
@@ -462,6 +471,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
     });
     this._client = options.client;
     this._api = options.api ?? DEFAULT_API;
+    this._onStop = options.onStop;
     // Resolved now, with the options the transport owns, so application code
     // that asks for the channel by name gets this one.
     this._channel = resolveChannel(
@@ -513,6 +523,9 @@ class DefaultAblyChatTransport implements AblyChatTransport {
   close(): void {
     this._logger.trace('ChatTransport.close();');
     this._closes += 1;
+    // An abort just before this, with no `await` between, is an unmount: a
+    // disconnect, not a stop.
+    this._cancelPendingStops();
     const reader = this._reader;
     if (reader === undefined) return;
     this._reader = undefined;
@@ -622,7 +635,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
    * Open a reply: a stream that follows the reader and ends when `useChat`'s
    * signal fires.
    * @param reader - The live reader.
-   * @param chatId - The chat, for the log.
+   * @param chatId - The chat, for `onStop`.
    * @param signal - `useChat`'s abort signal.
    * @param operation - The call that opens it, for the error.
    * @returns The reply's stream.
@@ -638,6 +651,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
     const onAbort = (): void => {
       this._logger.debug('ChatTransport; reply aborted', { chatId });
       stream.fail(stoppedError('read the turn', ABORTED));
+      this._deferStop({ chatId });
     };
     const stream = new TurnStream(() => {
       signal?.removeEventListener('abort', onAbort);
@@ -646,6 +660,49 @@ class DefaultAblyChatTransport implements AblyChatTransport {
     signal?.addEventListener('abort', onAbort, { once: true });
     reader.waitForNextTurn(stream);
     return stream;
+  }
+
+  /**
+   * Tell the application about a stop a microtask after the abort, unless
+   * `close()` comes first: React's unmount cleanups close the transport
+   * straight after `useChat` aborts its reply, and that is no stop.
+   * @param stop - The stop.
+   */
+  private _deferStop(stop: PendingStop): void {
+    this._pendingStops.add(stop);
+    queueMicrotask(() => {
+      if (!this._pendingStops.delete(stop)) return;
+      // Not awaited: `_callOnStop` logs whatever `onStop` throws or rejects with.
+      void this._callOnStop(stop.chatId);
+    });
+  }
+
+  /**
+   * Drop the stops `onStop` has not been told about yet: the abort that made
+   * them was a disconnect.
+   */
+  private _cancelPendingStops(): void {
+    if (this._pendingStops.size === 0) return;
+    this._logger.debug('ChatTransport; not calling onStop: the abort was a disconnect', {
+      replies: this._pendingStops.size,
+    });
+    this._pendingStops.clear();
+  }
+
+  /**
+   * Call `onStop`, logging a throw or a rejection rather than letting either
+   * escape.
+   * @param chatId - The chat.
+   */
+  private async _callOnStop(chatId: string): Promise<void> {
+    const onStop = this._onStop;
+    if (onStop === undefined) return;
+    this._logger.debug('ChatTransport; calling onStop', { chatId });
+    try {
+      await onStop({ chatId, channel: this._channel });
+    } catch (error) {
+      this._logger.error('ChatTransport; onStop threw', { chatId, error: errorMessage(error) });
+    }
   }
 
   /**

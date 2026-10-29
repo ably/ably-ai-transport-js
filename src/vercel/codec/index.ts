@@ -184,6 +184,3 @@ export const createVercelCodec = <
   // tool parts at the type level only, so one codec value serves them all.
   return codec as Codec<VercelEvent<TMetadata, TDataParts, TTools>>;
 };
-
-/** The Vercel codec at the SDK's default `UIMessage` types. */
-export const vercel: Codec<VercelEvent> = createVercelCodec();

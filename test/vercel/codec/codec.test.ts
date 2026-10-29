@@ -244,8 +244,8 @@ describe('the Vercel codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying the adapter tag', () => {
-    expect(vercel.adapterTag).toBe('vercel-ai-sdk-ui-message');
-    expect(Object.keys(vercel).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
+  it('exports a prebuilt codec carrying its id', () => {
+    expect(vercel.id).toBe('vercel-ai-sdk-ui-message');
+    expect(Object.keys(vercel).toSorted()).toEqual(['decode', 'encode', 'id']);
   });
 });

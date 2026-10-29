@@ -2,8 +2,8 @@
  * Unit tests for the Ably-Agent string this SDK stamps on a channel.
  *
  * Covers: the SDK's own agent and the streaming layer always being present, a
- * codec's adapter tag being appended when it carries one, the opt-out when it
- * does not, repeat-call stability, and the registration on the client's
+ * codec's id being appended when it is not empty, the opt-out when it
+ * is empty, repeat-call stability, and the registration on the client's
  * `options.agents`, where every entry carries a version.
  */
 
@@ -40,27 +40,21 @@ describe('channelAgent', () => {
     expect(channelAgent()).toBe(`ai-transport-js/${VERSION} streaming`);
   });
 
-  it('appends a codec that carries an adapter tag, after the layer', () => {
-    expect(channelAgent({ adapterTag: 'some-codec' })).toBe(
-      `ai-transport-js/${VERSION} streaming some-codec/${VERSION}`,
-    );
+  it("appends the codec's id, after the layer", () => {
+    expect(channelAgent({ id: 'some-codec' })).toBe(`ai-transport-js/${VERSION} streaming some-codec/${VERSION}`);
   });
 
-  it('omits a codec that opts out by carrying no tag', () => {
-    expect(channelAgent({})).toBe(`ai-transport-js/${VERSION} streaming`);
-  });
-
-  it('omits a codec whose tag is an empty string', () => {
-    // An empty tag would render as a bare `/version` entry, which is not a
+  it('omits a codec whose id is an empty string', () => {
+    // An empty id would render as a bare `/version` entry, which is not a
     // valid agent. Treated as an opt-out rather than stamped.
-    expect(channelAgent({ adapterTag: '' })).toBe(`ai-transport-js/${VERSION} streaming`);
+    expect(channelAgent({ id: '' })).toBe(`ai-transport-js/${VERSION} streaming`);
   });
 
   it('returns the same string every call for the same codec', () => {
     // The transport passes this as a channel option. ably-js compares options
     // to decide whether an attached channel needs reattaching, so an unstable
     // string would churn the channel.
-    const codec = { adapterTag: 'some-codec' };
+    const codec = { id: 'some-codec' };
 
     expect(channelAgent(codec)).toBe(channelAgent(codec));
   });
@@ -69,7 +63,7 @@ describe('channelAgent', () => {
 describe('registerAgent', () => {
   it('gives every entry a version, the layer the SDK version, since ably-js writes each as name/value', () => {
     const client = clientWith();
-    registerAgent(client, { adapterTag: 'some-codec' });
+    registerAgent(client, { id: 'some-codec' });
     expect(agentsOf(client)).toEqual({ 'ai-transport-js': VERSION, streaming: VERSION, 'some-codec': VERSION });
   });
 
@@ -81,9 +75,9 @@ describe('registerAgent', () => {
 
   it('writes the same entries when called again', () => {
     const client = clientWith();
-    registerAgent(client, { adapterTag: 'some-codec' });
+    registerAgent(client, { id: 'some-codec' });
     const first = agentsOf(client);
-    registerAgent(client, { adapterTag: 'some-codec' });
+    registerAgent(client, { id: 'some-codec' });
     expect(agentsOf(client)).toEqual(first);
   });
 });

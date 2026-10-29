@@ -48,7 +48,7 @@ const provider = ({
 }): ReactNode =>
   createElement(
     TransportProvider,
-    { channelName, codec: { adapterTag: 'test' } as never, ...(channelModes ? { channelModes } : {}) },
+    { channelName, codec: { id: 'test' } as never, ...(channelModes ? { channelModes } : {}) },
     children,
   );
 
@@ -217,7 +217,7 @@ describe('TransportProvider', () => {
     // ably-js's ChannelProvider calls setOptions with whatever it is given,
     // and setOptions replaces rather than merges, so passing none would drop
     // the attribution the transport stamped.
-    expect(channelProviderCapture.options).toEqual(transportChannelOptions({ codec: { adapterTag: 'test' } }));
+    expect(channelProviderCapture.options).toEqual(transportChannelOptions({ codec: { id: 'test' } }));
     expect(channelProviderCapture.options?.params?.agent).toContain('ai-transport-js');
   });
 

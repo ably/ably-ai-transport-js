@@ -64,7 +64,7 @@ const testEvents = (): EventRows<TestEvent, TestEvent['type']> => ({
 
 const testCodec = defineCodec({
   name: 'chat',
-  adapterTag: 'test-codec',
+  id: 'test-codec',
   typeOf: (e: TestEvent) => e.type,
   events: testEvents(),
 });
@@ -107,6 +107,7 @@ const inbound = (opts: InboundOptions): Ably.InboundMessage =>
  */
 const singleRow = (encode: () => ReturnType<EventRow<{ type: 'a' }, 'a'>['encode']>): Codec<{ type: 'a' }> =>
   defineCodec({
+    id: 'test',
     typeOf: (e: { type: 'a' }) => e.type,
     events: { a: { encode, decode: () => ({ type: 'a' }) } },
   });
@@ -250,7 +251,7 @@ describe('defineCodec', () => {
     // every stream it has seen, and these tests reuse serials.
     let codec: Codec<TestEvent>;
     beforeEach(() => {
-      codec = defineCodec({ typeOf: (e: TestEvent) => e.type, events: testEvents() });
+      codec = defineCodec({ id: 'test', typeOf: (e: TestEvent) => e.type, events: testEvents() });
     });
 
     it('picks the row from the type header, and returns exactly one event for it', () => {
@@ -262,6 +263,7 @@ describe('defineCodec', () => {
     it('hands the row the body: the name, the type it matched, the data, the fields, and the headers', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: TestEvent) => e.type,
         events: {
           ...testEvents(),
@@ -282,6 +284,7 @@ describe('defineCodec', () => {
     it('leaves the name off the body when the message carries none', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: TestEvent) => e.type,
         events: {
           ...testEvents(),
@@ -310,6 +313,7 @@ describe('defineCodec', () => {
     it('hands the row the fields as the wire carries them, nested values as objects', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -331,6 +335,7 @@ describe('defineCodec', () => {
       // headers alongside it, and the wire cannot tell the two apart.
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -362,6 +367,7 @@ describe('defineCodec', () => {
     it('hands decode the type it matched, separate from the fields', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: TestEvent) => e.type,
         events: {
           ...testEvents(),
@@ -407,6 +413,7 @@ describe('defineCodec', () => {
     it('round-trips a type field unmodified', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -429,6 +436,7 @@ describe('defineCodec', () => {
     it('hands the row empty fields and headers when either is missing or not an object', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -458,6 +466,7 @@ describe('defineCodec', () => {
 
     it('does not return an event when the row returns undefined', () => {
       const quiet = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         // eslint-disable-next-line unicorn/no-useless-undefined -- a row that does not decode to an event returns undefined
         events: { a: { encode: () => ({}), decode: () => undefined } },
@@ -485,7 +494,7 @@ describe('defineCodec', () => {
     });
 
     it('hands the row an append with its fragment', () => {
-      const codec = defineCodec({ typeOf: (e: TestEvent) => e.type, events: testEvents() });
+      const codec = defineCodec({ id: 'test', typeOf: (e: TestEvent) => e.type, events: testEvents() });
       codec.decode(inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } }));
       expect(
         codec.decode(
@@ -501,7 +510,7 @@ describe('defineCodec', () => {
     });
 
     it('hands the row a full-content update as its unseen tail', () => {
-      const codec = defineCodec({ typeOf: (e: TestEvent) => e.type, events: testEvents() });
+      const codec = defineCodec({ id: 'test', typeOf: (e: TestEvent) => e.type, events: testEvents() });
       codec.decode(inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } }));
       codec.decode(
         inbound({
@@ -568,18 +577,15 @@ describe('defineCodec', () => {
   // ---------------------------------------------------------------------------
 
   describe('codec shape', () => {
-    it('exposes encode, decode and the adapter tag', () => {
-      expect(Object.keys(testCodec).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
-      expect(testCodec.adapterTag).toBe('test-codec');
-    });
-
-    it('omits adapterTag when none is given', () => {
-      expect(Object.keys(singleRow(() => ({}))).toSorted()).toEqual(['decode', 'encode']);
+    it('exposes encode, decode and the id', () => {
+      expect(Object.keys(testCodec).toSorted()).toEqual(['decode', 'encode', 'id']);
+      expect(testCodec.id).toBe('test-codec');
     });
 
     it('rejects a wildcard key with no prefix', () => {
       expect(() =>
         defineCodec({
+          id: 'test',
           typeOf: (e: { type: string }) => e.type,
           events: { '-*': { encode: () => ({}), decode: () => ({ type: 'x' }) } },
         }),
@@ -609,6 +615,7 @@ describe('defineCodec', () => {
     it('requires a row for every type typeOf returns', () => {
       type Kinded = { kind: 'a'; a: number } | { kind: 'b'; b: string };
       const complete: Codec<Kinded> = defineCodec({
+        id: 'test',
         typeOf: (e: Kinded) => e.kind,
         events: {
           a: { encode: (e) => ({ data: e.kind === 'a' ? e.a : 0 }), decode: () => ({ kind: 'a', a: 1 }) },
@@ -618,6 +625,7 @@ describe('defineCodec', () => {
       expect(complete.encode({ kind: 'a', a: 2 })[0]?.message.data).toBe(2);
 
       defineCodec({
+        id: 'test',
         typeOf: (e: Kinded) => e.kind,
         // @ts-expect-error a row for `b` is missing
         events: { a: { encode: () => ({}), decode: () => ({ kind: 'a', a: 1 }) } },
@@ -626,6 +634,7 @@ describe('defineCodec', () => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the ping row
       const { ping, ...withoutPing } = testEvents();
       defineCodec({
+        id: 'test',
         typeOf: (e: TestEvent) => e.type,
         // @ts-expect-error a row for `ping` is missing
         events: withoutPing,

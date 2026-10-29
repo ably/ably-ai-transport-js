@@ -21,6 +21,7 @@ export type SplitEvent =
  * @returns The codec.
  */
 export const createSplitCodec = (): Codec<SplitEvent> => ({
+  id: 'split',
   encode: (event) => {
     switch (event.type) {
       case 'half': {

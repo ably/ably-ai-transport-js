@@ -13,9 +13,9 @@
  * and `headers`, the Ably headers a codec author sets on purpose. On every
  * message it encodes the builder writes `data` as the body, the row's `fields`
  * and its own `type` under `extras.ai`, and the row's `headers` under
- * `extras.headers`, reads them back on decode, and wraps `decode` with the
- * decoder core so a late joiner's full-content update reaches the row as the unseen
- * tail and replays are dropped.
+ * `extras.headers`, and reads them back on decode. The built codec holds no
+ * state: reducing a late joiner's full-content update to its unseen tail and
+ * dropping replays is the decoder core's job, before `decode` runs.
  *
  * Ably accepts only known keys at the top of `extras` and rejects a publish
  * carrying any other. `ai` is the key the platform reserves for this SDK, and
@@ -41,7 +41,6 @@
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
-import type { Logger } from '../../logger.js';
 import {
   EXTRAS_KEY,
   FIELDS_FIELD,
@@ -52,7 +51,6 @@ import {
   TYPE_FIELD,
 } from '../wire.js';
 import type { Codec, EncodedMessage } from './codec.js';
-import { createDecoderCore } from './decoder.js';
 
 /** The suffix that makes a row key match every type sharing its prefix (`data-*` matches `data-weather`). */
 const WILDCARD_SUFFIX = '-*';
@@ -211,8 +209,6 @@ export interface DefineCodecConfig<E, K extends string> {
   typeOf: (event: E) => K;
   /** One `{ encode, decode }` pair per event type; a `-*` key covers a template member. See {@link EventRows}. */
   events: NoInfer<EventRows<E, K>>;
-  /** Logger for diagnostics. */
-  logger?: Logger;
 }
 
 /** The builder's own fields, read off an inbound message. */
@@ -306,8 +302,6 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
     return wildcard === undefined ? undefined : rows[wildcard.key];
   };
 
-  const core = createDecoderCore({ logger: config.logger });
-
   return {
     id: config.id,
     encode: (event) => {
@@ -348,9 +342,7 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       return [encoded];
     },
     decode: (message) => {
-      const prepared = core.prepare(message);
-      if (prepared === undefined) return [];
-      const own = readOwn(prepared);
+      const own = readOwn(message);
       if (own === undefined) return [];
       const row = findRow(own.type);
       if (row === undefined) {
@@ -362,9 +354,9 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       }
       const body: DecodedRow = {
         type: own.type,
-        data: prepared.data as unknown,
+        data: message.data as unknown,
         fields: own.fields,
-        headers: readHeaders(prepared),
+        headers: readHeaders(message),
       };
       const decoded = row.decode(body);
       return decoded === undefined ? [] : [decoded];

@@ -29,8 +29,8 @@ type TestEvent =
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 /**
- * The fixture's rows. A function, so a test that needs a fresh decoder core
- * gets a fresh codec.
+ * The fixture's rows. A function, so a test can spread them into a codec of
+ * its own and replace one row.
  * @returns The event table.
  */
 const testEvents = (): EventRows<TestEvent, TestEvent['type']> => ({
@@ -246,8 +246,6 @@ describe('defineCodec', () => {
   // ---------------------------------------------------------------------------
 
   describe('decode', () => {
-    // A fresh codec per test: the decoder core inside a built codec remembers
-    // every stream it has seen, and these tests reuse serials.
     let codec: Codec<TestEvent>;
     beforeEach(() => {
       codec = defineCodec({ id: 'test', typeOf: (e: TestEvent) => e.type, events: testEvents() });
@@ -477,45 +475,25 @@ describe('defineCodec', () => {
       ).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello' }]);
     });
 
-    it('hands the row a full-content update as its unseen tail', () => {
-      const codec = defineCodec({ id: 'test', typeOf: (e: TestEvent) => e.type, events: testEvents() });
-      codec.decode(inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } }));
-      codec.decode(
-        inbound({
-          serial: 's9',
-          action: 'message.append',
-          data: 'Hello',
-          fields: { type: 'text-delta', id: 'msg_1' },
-          version: 's9:v2',
-        }),
-      );
-      expect(
-        codec.decode(
-          inbound({
-            serial: 's9',
-            action: 'message.update',
-            data: 'Hello world',
-            fields: { type: 'text-delta', id: 'msg_1' },
-            version: 's9:v3',
-          }),
-        ),
-      ).toEqual([{ type: 'text-delta', id: 'msg_1', delta: ' world' }]);
+    it('hands the row a full-content update whole, since the codec holds no state', () => {
+      const update = inbound({
+        serial: 's9',
+        action: 'message.update',
+        data: 'Hello world',
+        fields: { type: 'text-delta', id: 'msg_1' },
+        version: 's9:v3',
+      });
+      expect(codec.decode(update)).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello world' }]);
     });
 
-    it('drops a replay of a stream message the decoder core has already seen', () => {
+    it('decodes the same stream message to the same event every time, since the codec holds no state', () => {
       const create = inbound({
         serial: 's9',
         data: 'Hello',
         extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'msg_1' } } },
       });
       expect(codec.decode(create)).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello' }]);
-      expect(codec.decode(create)).toEqual([]);
-    });
-
-    it('decodes a replayed plain publish again, since only stream messages are remembered', () => {
-      const create = inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } });
-      expect(codec.decode(create)).toEqual([{ type: 'text-start', id: 'msg_1' }]);
-      expect(codec.decode(create)).toEqual([{ type: 'text-start', id: 'msg_1' }]);
+      expect(codec.decode(create)).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello' }]);
     });
 
     it('decodes a finished stream read back from history as the events the agent produced, with the deltas joined', () => {
@@ -525,18 +503,11 @@ describe('defineCodec', () => {
         { type: 'text-delta', id: 'm1', delta: ' world' },
         { type: 'text-end', id: 'm1' },
       ]);
-      // Decoded live first. The closer frees the deltas' message, so history
-      // then decodes as a fresh read of the same stream.
-      for (const delivery of deliveriesOf(encoded)) codec.decode(delivery);
       expect(historyOf(encoded).flatMap((m) => codec.decode(m))).toEqual([
         { type: 'text-start', id: 'm1' },
         { type: 'text-delta', id: 'm1', delta: 'Hello world' },
         { type: 'text-end', id: 'm1' },
       ]);
-    });
-
-    it('returns no event for a delete', () => {
-      expect(codec.decode(inbound({ action: 'message.delete', fields: { type: 'note' } }))).toEqual([]);
     });
   });
 

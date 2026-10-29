@@ -12,7 +12,6 @@ import { fileURLToPath } from 'node:url';
 import js from '@eslint/js';
 import { FlatCompat } from '@eslint/eslintrc';
 import preferArrowFunctions from 'eslint-plugin-prefer-arrow-functions';
-import reactHooks from 'eslint-plugin-react-hooks';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,7 +46,6 @@ export default [
       'demo/**',
       '.github',
       '.claude/worktrees/**',
-      'react/**',
       'vercel/**',
       'openai/**',
       'ag-ui/**',
@@ -140,22 +138,6 @@ export default [
           leadingUnderscore: 'forbid',
         },
       ],
-    },
-  },
-  {
-    // The hook contract, over the SDK's React source and its suite. The two
-    // rules here are the contract itself; the compiler rules the plugin's
-    // recommended preset adds flag the render-phase ref writes and the
-    // effect-driven setState this design uses on purpose.
-    files: ['src/react/**/*.{ts,tsx}', 'test/react/**/*.{ts,tsx}'],
-
-    plugins: {
-      'react-hooks': reactHooks,
-    },
-
-    rules: {
-      'react-hooks/rules-of-hooks': 'error',
-      'react-hooks/exhaustive-deps': 'error',
     },
   },
   {

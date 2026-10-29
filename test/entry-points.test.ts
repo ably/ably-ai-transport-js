@@ -85,17 +85,6 @@ import {
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
 import { createOpenAICodec, openai, openaiAdaptor, openaiDecoder } from '../src/openai/index.js';
-import type {
-  HistoryHandle,
-  TransportHandle,
-  TransportProviderProps,
-  TransportStatusHandle,
-  UseDeliveriesOptions,
-  UseHistoryOptions,
-  UseTransportOptions,
-  UseTransportStatusOptions,
-} from '../src/react/index.js';
-import { TransportProvider, useDeliveries, useHistory, useTransport, useTransportStatus } from '../src/react/index.js';
 import type { VercelCrossMajorChunk, VercelEvent, VercelUserMessage } from '../src/vercel/index.js';
 import { createVercelCodec, vercel, vercelAdaptor, vercelDecoder } from '../src/vercel/index.js';
 import { createMockChannel } from './helper/mock-channel.js';
@@ -207,25 +196,6 @@ describe('@ably/ai-transport/vercel', () => {
     expectTypeOf<VercelEvent>().toHaveProperty('type');
     expectTypeOf<VercelUserMessage>().toHaveProperty('message');
     expectTypeOf<VercelCrossMajorChunk>().toHaveProperty('type');
-  });
-});
-
-describe('@ably/ai-transport/react', () => {
-  it('exports the provider, the hooks and their option and handle types', () => {
-    expect(typeof TransportProvider).toBe('function');
-    expect(typeof useTransport).toBe('function');
-    expect(typeof useDeliveries).toBe('function');
-    expect(typeof useHistory).toBe('function');
-    expect(typeof useTransportStatus).toBe('function');
-    expectTypeOf<TransportProviderProps<TestEvent>>().toHaveProperty('channelName');
-    expectTypeOf<UseTransportOptions>().toHaveProperty('channelName');
-    expectTypeOf<TransportHandle<TestEvent>>().toHaveProperty('transport');
-    expectTypeOf<UseDeliveriesOptions>().toHaveProperty('channelName');
-    expectTypeOf<ReturnType<typeof useDeliveries>>().toBeVoid();
-    expectTypeOf<UseHistoryOptions>().toHaveProperty('limit');
-    expectTypeOf<HistoryHandle<TestEvent>>().toHaveProperty('loadMore');
-    expectTypeOf<UseTransportStatusOptions>().toHaveProperty('channelName');
-    expectTypeOf<TransportStatusHandle>().toHaveProperty('discontinuity');
   });
 });
 

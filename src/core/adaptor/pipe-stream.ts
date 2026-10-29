@@ -1,9 +1,11 @@
 /**
- * The pipe driver: read a source of events, encode each one, and write it
- * through a {@link PipeWriter}.
+ * The pipe drivers: read a source of events, encode each one, and write it
+ * through a {@link PipeWriter}. `pipeStream` runs unattended and settles once;
+ * `pipeEach` hands each event back as it is written. Both share the step that
+ * encodes and writes one event, and differ in how they end.
  *
- * A pipe resolves when its source ends, with the serial of its last publish,
- * and rejects otherwise: `OperationCancelled` when the signal fires, and
+ * `pipeStream` resolves when its source ends, with the serial of its last
+ * publish, and rejects otherwise: `OperationCancelled` when the signal fires, and
  * `PipeFailed` when the source throws, the codec cannot encode an event, a
  * publish or update fails, or a repair fails. A failed append does not end the
  * pipe: the writer repairs it when the stream ends, and a failed repair is what
@@ -152,18 +154,101 @@ const pipeFailed = (what: string, error: unknown, event?: unknown): Ably.ErrorIn
 const cancelledError = (): Ably.ErrorInfo =>
   new Ably.ErrorInfo('unable to pipe; cancelled by signal', ErrorCode.OperationCancelled, 400);
 
-/** What `pipeStream` takes beside its source, codec and writer. */
+/** What a pipe driver takes beside its source, codec and writer. */
 export interface PipeStreamOptions {
   /** Fires to cancel the pipe. */
   signal?: AbortSignal;
-  /** The call's headers, added to every message before it reaches the writer. Already checked by the transport. */
+  /** The call's headers, added to every message before it reaches the writer. Already checked by the caller. */
   headers?: MessageHeaders;
   /** Logger for diagnostics. */
   logger?: Logger;
 }
 
 /**
- * Pipe a source of events through a codec to a writer.
+ * One event handed back by the iterable pipe once it is written.
+ * @template E - The codec's event union.
+ */
+export interface Published<E> {
+  /** The event, as the source produced it. */
+  event: E;
+  /**
+   * The serial of the message the event landed on: a publish's ack serial,
+   * and for an append or an update, the serial of the stream's message. When
+   * the codec encoded the event to several messages, the last one's; when it
+   * encoded the event to none, `undefined`.
+   */
+  serial: string | undefined;
+}
+
+/** Where one event's messages landed. */
+interface EventWritten {
+  /** The serial the event's last message landed on, or `undefined` when it encoded to none. */
+  landed: string | undefined;
+  /** The ack serial of the event's last publish, or `undefined` when it published nothing. */
+  published: string | undefined;
+}
+
+/**
+ * Pull the next event, or report that the signal fired first. A signal that
+ * has already fired wins before the read, so a cancelled pipe writes nothing
+ * more even when the source has an event ready; the race covers a signal that
+ * fires mid-read.
+ * @param puller - The source.
+ * @param signal - The pipe's signal.
+ * @param aborted - A promise that resolves when the signal fires.
+ * @returns The pull, or `'cancelled'`.
+ */
+const pullNext = async <E>(
+  puller: Puller<E>,
+  signal: AbortSignal | undefined,
+  aborted: Promise<void>,
+): Promise<PullResult<E> | 'cancelled'> => {
+  if (signal?.aborted === true) return 'cancelled';
+  // .then() is intentional: it turns the AbortSignal into a discriminant for
+  // Promise.race, which has no async/await equivalent.
+  return Promise.race([puller.read(), aborted.then(() => 'cancelled' as const)]);
+};
+
+/**
+ * Encode one event and write its messages in order, each with the call's
+ * headers. An event's messages are written as a
+ * unit; the signal is read again before the next event, not between them.
+ * @param event - The event.
+ * @param codec - The codec.
+ * @param writer - The pipe's writer.
+ * @param headers - The call's headers.
+ * @returns Where the event's messages landed.
+ * @throws {Ably.ErrorInfo} `PipeFailed` when the encode or a write failed, with the failure as `cause`.
+ */
+const writeEvent = async <E>(
+  event: E,
+  codec: Codec<E>,
+  writer: PipeWriter,
+  headers: MessageHeaders | undefined,
+): Promise<EventWritten> => {
+  let encoded;
+  try {
+    encoded = codec.encode(event);
+  } catch (error) {
+    throw pipeFailed('encode failed', error, event);
+  }
+  const written: EventWritten = { landed: undefined, published: undefined };
+  try {
+    for (const encodedMessage of encoded) {
+      const { message: encodedBody } = encodedMessage;
+      const message = headers === undefined ? encodedBody : withHeaders(encodedBody, headers);
+      const result = await writer.write({ ...encodedMessage, message });
+      written.landed = result.serial;
+      if (result.published) written.published = result.serial;
+    }
+  } catch (error) {
+    throw pipeFailed('write failed', error, event);
+  }
+  return written;
+};
+
+/**
+ * Pipe a source of events through a codec to a writer, unattended.
  * @param source - The events to pipe.
  * @param codec - The codec that turns each event into an Ably message.
  * @param writer - This pipe's writer, holding its key table.
@@ -185,24 +270,21 @@ export const pipeStream = async <E>(
   let failure: Ably.ErrorInfo | undefined;
   let cancelled = false;
 
-  const fail = (what: string, error: unknown, event?: E): void => {
-    failure = pipeFailed(what, error, event);
-    logger?.debug('pipeStream(); pipe failed', { what, error: errorMessage(error) });
+  const fail = (error: Ably.ErrorInfo): void => {
+    failure = error;
+    logger?.debug('pipeStream(); pipe failed', { error: error.message });
   };
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by break
     while (true) {
-      // A signal that has already fired wins before the next read, so a
-      // cancelled pipe writes nothing more even when the source has an event
-      // ready. The race below covers a signal that fires mid-read.
-      // .then() is intentional: it turns the AbortSignal into a discriminant
-      // for Promise.race, which has no async/await equivalent.
-      const pulled =
-        signal?.aborted === true
-          ? 'cancelled'
-          : await Promise.race([puller.read(), abort.promise.then(() => 'cancelled' as const)]);
-
+      let pulled;
+      try {
+        pulled = await pullNext(puller, signal, abort.promise);
+      } catch (error) {
+        fail(pipeFailed('source failed', error));
+        break;
+      }
       if (pulled === 'cancelled') {
         cancelled = true;
         logger?.debug('pipeStream(); cancelled by signal');
@@ -212,33 +294,14 @@ export const pipeStream = async <E>(
         logger?.debug('pipeStream(); source ended');
         break;
       }
-
-      const event = pulled.value;
-      let encoded;
       try {
-        encoded = codec.encode(event);
+        const written = await writeEvent(pulled.value, codec, writer, headers);
+        if (written.published !== undefined) serial = written.published;
       } catch (error) {
-        fail('encode failed', error, event);
-        break;
-      }
-
-      try {
-        // An event's messages are written as a unit; the signal is read again
-        // before the next event, not between them.
-        for (const encodedMessage of encoded) {
-          const { message: encodedBody } = encodedMessage;
-          const message = headers === undefined ? encodedBody : withHeaders(encodedBody, headers);
-          const written = await writer.write({ ...encodedMessage, message });
-          if (written.published) serial = written.serial;
-        }
-      } catch (error) {
-        fail('write failed', error, event);
+        fail(error instanceof Ably.ErrorInfo ? error : pipeFailed('write failed', error));
         break;
       }
     }
-  } catch (error) {
-    // The source threw on read.
-    fail('source failed', error);
   } finally {
     abort.cleanup();
     puller.release();
@@ -253,7 +316,7 @@ export const pipeStream = async <E>(
     // rejection, cancelled or not: the caller that cancelled knows it did, and
     // what it does not know is that the channel is missing text.
     if (failure === undefined) {
-      fail('repair failed', error);
+      fail(pipeFailed('repair failed', error));
     } else {
       logger?.error('pipeStream(); repair after failure also failed', { error: errorMessage(error) });
     }
@@ -264,3 +327,67 @@ export const pipeStream = async <E>(
   logger?.debug('pipeStream(); finished', { serial });
   return { serial };
 };
+
+/**
+ * Pipe a source of events through a codec to a writer, handing each event
+ * back once it is written. The source is read only when the consumer asks for
+ * the next event, so the loop body sets the pace.
+ *
+ * A publish is yielded once acked; an append to an open stream is yielded at
+ * once, before its ack. A failed append is not reported where it was
+ * yielded: the writer repairs the stream before the event that ends it, and
+ * a failed repair throws from that event, which is never yielded. When the
+ * source ends, the writer flushes and repairs what it wrote before the loop
+ * finishes.
+ *
+ * Any other exit stops where the pipe has got to: a `break`, a `return`, a
+ * throw in the loop body, the signal, or a failure. Nothing more is written,
+ * nothing is flushed or repaired, and no open stream is ended, so a
+ * subscriber sees those streams stay open. Appends already sent finish on
+ * their own, and a rejected one is dropped. The source is released either
+ * way.
+ * @param source - The events to pipe.
+ * @param codec - The codec that turns each event into an Ably message.
+ * @param writer - This pipe's writer, holding its key table.
+ * @param options - The signal, the call's headers and the logger.
+ * @yields {Published<E>} Each event with the serial of the message it landed on.
+ * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fired; `PipeFailed` when the source, an encode, a write or the final repair failed, with the failure as `cause`.
+ */
+export async function* pipeEach<E>(
+  source: PipeSource<E>,
+  codec: Codec<E>,
+  writer: PipeWriter,
+  options: PipeStreamOptions = {},
+): AsyncGenerator<Published<E>, void, undefined> {
+  const { signal, headers, logger } = options;
+  logger?.trace('pipeEach();');
+  const puller = toPuller(source, logger);
+  const abort = abortSignalToPromise(signal);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by return
+    while (true) {
+      let pulled;
+      try {
+        pulled = await pullNext(puller, signal, abort.promise);
+      } catch (error) {
+        throw pipeFailed('source failed', error);
+      }
+      if (pulled === 'cancelled') {
+        logger?.debug('pipeEach(); cancelled by signal');
+        throw cancelledError();
+      }
+      if (pulled.done) break;
+      const written = await writeEvent(pulled.value, codec, writer, headers);
+      yield { event: pulled.value, serial: written.landed };
+    }
+    try {
+      await writer.flush();
+    } catch (error) {
+      throw pipeFailed('repair failed', error);
+    }
+    logger?.debug('pipeEach(); finished');
+  } finally {
+    abort.cleanup();
+    puller.release();
+  }
+}

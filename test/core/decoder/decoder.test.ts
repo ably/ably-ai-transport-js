@@ -9,7 +9,7 @@ import { deliveriesOf, encodeAll, historyOf } from '../../helper/wire.js';
 
 /**
  * The live deliveries and the stored history of the events the test codec
- * encodes, as the transport would write them.
+ * encodes, as the adaptor would write them.
  * @param events - The events, in order.
  * @returns The live messages and the history messages, both oldest first.
  */
@@ -21,7 +21,7 @@ const wire = (events: TestEvent[]): { live: Ably.InboundMessage[]; history: Ably
 const eventsOf = (deliveries: Delivery<TestEvent>[]): (TestEvent | undefined)[] => deliveries.map((d) => d.event);
 
 /**
- * A note message as the transport writes it, under another name or codec id when given.
+ * A note message as the adaptor writes it, under another name or codec id when given.
  * @param opts - The overrides.
  * @param opts.name - The message name.
  * @param opts.codec - The codec id under `extras.ai`.

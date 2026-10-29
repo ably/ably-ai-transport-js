@@ -22,15 +22,15 @@
  * a value under it travels as it is, nested objects and arrays included. The
  * builder writes two fields there, the `type` that picks the row and the row's
  * `fields`, and on every message the codec's `id` as `codec` and the codec's
- * `name` as the message name, which the decoder filters on; the transport
- * writes two more fields on the messages that open and end a key (see
+ * `name` as the message name, which the decoder filters on; the adaptor's pipe
+ * writer writes two more fields on the messages that open and end a key (see
  * `src/core/wire.ts`); the builder reads its own two and ignores the rest.
  * `headers` is the key Ably provides for a publisher's own fields and the one
  * its server-side filtering reads. Ably admits only a flat map of
  * string, number, boolean and null values under it (error 40032 otherwise),
  * so a row's `headers` are typed to that and written as given; the builder
  * translates nothing. An `undefined` value in either map is dropped. The
- * transport adds the headers of the publishing `send` or `pipe` call and
+ * adaptor adds the headers of the publishing `send` or `pipe` call and
  * prefers a row's where both name a key, so a row keeps a header it writes
  * and its decode sees the merged map. The
  * builder hands the type it matched to a row's decode on the body. A row that

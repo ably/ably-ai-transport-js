@@ -13,26 +13,6 @@ export type {
 } from './core/adaptor/index.js';
 export { createAgentAdaptor } from './core/adaptor/index.js';
 
-// The transport
-export type {
-  FromSerialOptions,
-  HistoryOptions,
-  HistoryPage,
-  Replay,
-  ReplayFn,
-  ReplayResult,
-  SubscribeHistory,
-  SubscribeOptions,
-  Subscription,
-  Transport,
-  TransportOptions,
-  UntilEventOptions,
-} from './core/transport/index.js';
-export { createTransport, fromSerial, untilEvent } from './core/transport/index.js';
-
-// The extra channel modes a transport can request, as its `channelModes`.
-export { OBJECT_MODES } from './core/channel-options.js';
-
 // Codec contract and builder
 export type {
   Codec,

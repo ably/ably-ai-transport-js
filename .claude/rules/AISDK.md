@@ -66,3 +66,10 @@ compiles on both. Dual support is a claim about this package's own use of
 `ai`, not about the AI SDK generally. Anything built on top of it, an example
 or an application, picks one major and uses that major's spelling;
 `demo/minimal` pins `^7` and calls the standalone `toUIMessageStream`.
+
+`demo/minimal` reads the SDK's declarations through `link:../..`, and they
+name the root's `ai`, so the demo compiles only while its own `ai` agrees
+with the root's. Two releases can disagree on a type both use, such as
+`providerMetadata`. So the demo's lockfile resolves the same `ai` release as
+the root's lockfile, with the provider packages released alongside it, and
+moves when the root's does.

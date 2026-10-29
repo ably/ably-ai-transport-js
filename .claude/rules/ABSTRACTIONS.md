@@ -5,9 +5,12 @@
 The generic layer lives in `src/core/` and `src/react/`. Each codec lives in
 its own directory (`src/vercel/`, `src/openai/`, …) with its row table under a
 `codec/` subdirectory. A codec directory may depend on the generic layer and on
-its own provider SDK, never on another codec. The SDK's own identity, the
-channel option helpers, the errors, the logger and the event emitter sit at the
-top of `src/` and `src/core/`. Tests mirror `src/` under `test/`.
+its own provider SDK, never on another codec. It may also hold an adapter that
+fits the transport to its provider's own client framework, in a subdirectory of
+its own (`src/vercel/chat-transport/` is the instance). The
+SDK's own identity, the channel option helpers, the errors, the logger and the
+event emitter sit at the top of `src/` and `src/core/`. Tests mirror `src/`
+under `test/`.
 
 The package ships five entry points, each with its own `index.ts` (see the
 table). That `index.ts` is the authoritative list of what is public: only
@@ -15,13 +18,13 @@ types and functions it re-exports are public API. A new codec adds a new entry
 point rather than changing an existing one. An Anthropic codec is planned as
 a further entry point.
 
-| Entry point                 | Purpose                                                         | Peer deps             |
-| --------------------------- | --------------------------------------------------------------- | --------------------- |
-| `@ably/ai-transport`        | The transport, the codec contract and the `defineCodec` builder | `ably`                |
-| `@ably/ai-transport/react`  | A provider and hooks over the transport, for any codec          | `ably`, `react`       |
-| `@ably/ai-transport/vercel` | The Vercel AI SDK codec: one row per `UIMessageChunk` type      | `ably`, `ai`          |
-| `@ably/ai-transport/openai` | The OpenAI Responses codec: one row per stream event type       | `ably`, `openai`      |
-| `@ably/ai-transport/ag-ui`  | The AG-UI codec: one row per AG-UI event type                   | `ably`, `@ag-ui/core` |
+| Entry point                 | Purpose                                                                                       | Peer deps             |
+| --------------------------- | --------------------------------------------------------------------------------------------- | --------------------- |
+| `@ably/ai-transport`        | The transport, the codec contract and the `defineCodec` builder                               | `ably`                |
+| `@ably/ai-transport/react`  | A provider and hooks over the transport, for any codec                                        | `ably`, `react`       |
+| `@ably/ai-transport/vercel` | The Vercel AI SDK codec: one row per `UIMessageChunk` type, and a `useChat` transport over it | `ably`, `ai`          |
+| `@ably/ai-transport/openai` | The OpenAI Responses codec: one row per stream event type                                     | `ably`, `openai`      |
+| `@ably/ai-transport/ag-ui`  | The AG-UI codec: one row per AG-UI event type                                                 | `ably`, `@ag-ui/core` |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.
@@ -49,7 +52,9 @@ preserve.
   boundary, which is what keeps it free of any codec.
 
 - **Codec layer** (`src/vercel/`, `src/openai/`, …) is one codec per provider,
-  a row table built with `defineCodec` against that provider's own types.
+  a row table built with `defineCodec` against that provider's own types,
+  and, where the provider's client framework needs one, an adapter over the
+  transport (see Layout).
 
 Codec and transport are themselves distinct. The **codec** owns the wire
 format: which Ably message an event becomes, whether that message is a
@@ -269,11 +274,14 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     listener, and `close()` detaches the channel when `subscribe` or `history`
     attached it, so a transport sharing that name on the same client sees the
     channel detach. The caller owns the client's lifecycle, and the transport
-    never closes it. Anything
-    that wants the same channel asks for it by name with no options of its own,
-    which is what the React provider's `<ChannelProvider>` does so ably-js's
-    channel hooks run on the channel the transport resolved. See
-    `src/core/channel-options.ts`.
+    never closes it. A component
+    that must hold the channel before or beside its transport gets it through
+    the transport's own resolution, never with options of its own: the React
+    provider hands `<ChannelProvider>` `transportChannelOptions()`, so
+    ably-js's channel hooks run on the channel the transport resolved, and the
+    `useChat` transport resolves it at creation with `resolveChannel()`.
+    Anything else that wants the same channel asks for it by name with no
+    options. See `src/core/channel-options.ts`.
 11. **No message assembly anywhere in the package.** No reducer, no merge
     driver, no projection type, and no grouping: a delivery carries one
     event, and the application groups deliveries by `message.serial`, by

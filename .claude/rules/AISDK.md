@@ -6,6 +6,15 @@ The `ai` peer range is `^6 || ^7`, and CI typechecks and tests against both
 (`test-ai-peer-range` in `.github/workflows/dev.yml`). Source must compile and
 behave correctly on either major.
 
+**Where the AI SDK runs this package's code, behaviour can depend on a patch
+release.** `AbstractChat` drives the `useChat` transport, and some of what the
+transport relies on arrived in patch releases within each major. The peer
+range still names majors. The factory's TSDoc names the release each such
+behaviour needs and what an older release does without it, and the `ai` dev
+dependency's floor sits at or past the newest `ai` release named there, so the
+tests exercise those behaviours. A parameter type that gained a member within
+the range is widened structurally.
+
 **The codec's union is the SDK's `UIMessageChunk` plus the chunk types some
 supported releases lack.** `VercelCrossMajorChunk` in
 `src/vercel/codec/events.ts` declares those members structurally (the three
@@ -27,9 +36,10 @@ newer than the SDK's lockfile sees the new member in the union, and the pipe
 fails loudly on the first one rather than dropping it. When that happens, add
 the member to `VercelCrossMajorChunk` and give it a row.
 
-**`ai` is a types-only import in `src/`.** Every import is
-`import type * as AI from 'ai'`, so the published bundle carries no `ai` code
-and no value has to exist under the same name in both majors. Assembling chunks
+**`ai` is a types-only import in `src/`.** Every import is type-only:
+`import type * as AI from 'ai'`, or a named type where a heritage clause needs
+one (see TYPES.md), so the published bundle carries no `ai` code and no value
+has to exist under the same name in both majors. Assembling chunks
 into messages is not this package's job: a consumer folds the decoded chunks
 with the SDK's own reducer (`readUIMessageStream`).
 

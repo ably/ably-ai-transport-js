@@ -546,9 +546,15 @@ class DefaultTransport<E> implements Transport<E> {
       await run;
     } catch (error) {
       failure = wrapReplayError(error);
-      this._logger.error('Transport.subscribe(); history replay failed, handler is live with a gap', {
-        error: failure.message,
-      });
+      // A replay stopped because the handler unsubscribed, or the transport
+      // closed, is not a failure.
+      if (aborted()) {
+        this._logger.debug('Transport.subscribe(); history replay stopped', { error: failure.message });
+      } else {
+        this._logger.error('Transport.subscribe(); history replay failed, handler is live with a gap', {
+          error: failure.message,
+        });
+      }
     } finally {
       const buffered = entry.buffered ?? [];
       entry.buffered = undefined;

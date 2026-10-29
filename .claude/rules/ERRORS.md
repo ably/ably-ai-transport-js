@@ -141,6 +141,15 @@ reject(
 );
 ```
 
+### An error a framework reads as a stop
+
+Some frameworks tell a stop from a failure by the error's `name`: the AI
+SDK's `useChat` treats an error named `AbortError` as a stop, as it does an
+aborted `fetch`. An `OperationCancelled` error handed to such a framework for
+a stop stays an `Ably.ErrorInfo` with that code and has its `name` set to
+`AbortError`, so the framework reads it as a stop. `stoppedError` in
+`src/vercel/chat-transport/stopped.ts` is the instance.
+
 ## Testing Errors
 
 Use the custom Vitest matchers in a test helper (`test/helper/expectations.ts`):

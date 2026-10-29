@@ -162,7 +162,11 @@ why a codec instance is shared only when its transports may share a table.
 ## Dependency injection
 
 All dependencies are passed through constructors or option objects. There are
-no singletons or service locators.
+no singletons or service locators. The one module-level registry is the
+`useChat` transport's table of reader closes in flight, keyed by channel
+(`src/vercel/chat-transport/turn-reader.ts`): a reader must not subscribe
+until the previous reader on its channel has detached it, even one another
+chat transport opened, and nothing else connects the two.
 
 ## Class pattern
 
@@ -222,7 +226,8 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    one, or to nothing; the codec contract speaks arrays so a hand-written
    codec can split or fold. The decoder core absorbs the platform's two
    departures from one-to-one.
-4. **Constructor/option injection.** No singletons, no globals.
+4. **Constructor/option injection.** No singletons or service locators; the
+   one module-level registry, and why it exists, is under Dependency injection.
 5. **Composition, not inheritance.** Compose features; no class hierarchies.
 6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
@@ -283,8 +288,13 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     Anything else that wants the same channel asks for it by name with no
     options. See `src/core/channel-options.ts`.
 11. **No message assembly anywhere in the package.** No reducer, no merge
-    driver, no projection type, and no grouping: a delivery carries one
-    event, and the application groups deliveries by `message.serial`, by
-    the ids the provider's own events carry, or by a header the publishing
-    call attached, then folds them with the provider's reducer.
-    `demo/minimal/src/app/chat.tsx` is the worked example.
+    driver and no projection type. A delivery carries one event, and the
+    application groups deliveries by `message.serial`, by the ids the
+    provider's own events carry, or by a header the publishing call
+    attached, then folds them with the provider's reducer.
+    `demo/minimal/src/app/chat.tsx` is the worked example. The one place the
+    package groups deliveries is the `useChat` transport, because
+    `ChatTransport` hands `useChat` one stream per turn: it cuts the
+    deliveries at each turn's `start` and terminal chunk, and keeps the
+    latest turn's chunks so a later `reconnectToStream` can replay them. It
+    still builds no messages; `useChat`'s own reducer does.

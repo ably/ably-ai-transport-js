@@ -40,48 +40,34 @@ import type {
   EncodedRow,
   EventRow,
   EventRows,
-  FromSerialOptions,
   HeaderPrimitive,
-  HistoryOptions,
-  HistoryPage,
   LogContext,
   Logger,
   LoggerOptions,
   LogHandler,
+  MessageHeaders,
   PipeOptions,
   PipeResult,
   PipeSource,
   Published,
-  Replay,
-  ReplayFn,
-  ReplayResult,
   RowEvent,
   RowEventType,
   RowMessage,
+  SendOptions,
   SendResult,
   Stripped,
-  SubscribeHistory,
-  SubscribeOptions,
-  Subscription,
-  Transport,
-  TransportOptions,
-  UntilEventOptions,
 } from '../src/index.js';
 import {
   consoleLogger,
   createAgentAdaptor,
   createDecoder,
-  createTransport,
   defineCodec,
   ErrorCode,
   errorInfoIs,
   EventEmitter,
-  fromSerial,
   LogLevel,
   makeLogger,
-  OBJECT_MODES,
   stripUndefined,
-  untilEvent,
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
 import { createOpenAICodec, openai, openaiAdaptor, openaiDecoder } from '../src/openai/index.js';
@@ -94,13 +80,6 @@ import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 const CODEC_KEYS = ['decode', 'encode', 'id', 'name'];
 
 describe('@ably/ai-transport', () => {
-  it('exports the transport factory and the channel modes a transport can request', () => {
-    expect(typeof createTransport).toBe('function');
-    expect(typeof fromSerial).toBe('function');
-    expect(typeof untilEvent).toBe('function');
-    expect(Array.isArray(OBJECT_MODES)).toBe(true);
-  });
-
   it('exports the agent adaptor factory', () => {
     expect(typeof createAgentAdaptor).toBe('function');
     expectTypeOf<AgentAdaptor<TestEvent>>().toHaveProperty('pipeEach');
@@ -129,26 +108,12 @@ describe('@ably/ai-transport', () => {
   });
 
   it('exports the public types', () => {
-    expectTypeOf<Transport<TestEvent>>().toHaveProperty('pipe');
-    expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('client');
-    expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('channelName');
-    expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('echoMessages');
-    expectTypeOf<TransportOptions<TestEvent>>().toHaveProperty('codec');
     expectTypeOf<SendResult>().toHaveProperty('serial');
+    expectTypeOf<SendOptions>().toHaveProperty('headers');
+    expectTypeOf<MessageHeaders>().not.toBeNever();
     expectTypeOf<PipeOptions>().toHaveProperty('signal');
     expectTypeOf<PipeResult>().toHaveProperty('serial');
     expectTypeOf<PipeSource<TestEvent>>().not.toBeNever();
-    expectTypeOf<Transport<TestEvent>['subscribe']>().returns.toEqualTypeOf<Subscription>();
-    expectTypeOf<Subscription>().toHaveProperty('replayed');
-    expectTypeOf<SubscribeOptions<TestEvent>>().toHaveProperty('history');
-    expectTypeOf<SubscribeHistory<TestEvent>>().toHaveProperty('replay');
-    expectTypeOf<ReplayFn<TestEvent>>().parameter(0).toEqualTypeOf<HistoryPage<TestEvent>>();
-    expectTypeOf<Replay<TestEvent>>().toHaveProperty('deliveries');
-    expectTypeOf<ReplayResult>().toHaveProperty('replayed');
-    expectTypeOf<FromSerialOptions>().toHaveProperty('maxPages');
-    expectTypeOf<UntilEventOptions>().toHaveProperty('inclusive');
-    expectTypeOf<HistoryOptions>().toHaveProperty('limit');
-    expectTypeOf<HistoryPage<TestEvent>>().toHaveProperty('next');
     expectTypeOf<ChannelWriter>().toHaveProperty('appendMessage');
     expectTypeOf<Codec<TestEvent>>().toHaveProperty('decode');
     expectTypeOf<Codec<TestEvent>['encode']>().returns.toEqualTypeOf<EncodedMessage[]>();

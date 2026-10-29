@@ -50,7 +50,7 @@ const taggedCodec = defineCodec({
 });
 
 describe('createAgentAdaptor', () => {
-  let channel: MockChannel & Ably.RealtimeChannel;
+  let channel: MockChannel;
   let adaptor: AgentAdaptor<TestEvent>;
 
   beforeEach(() => {

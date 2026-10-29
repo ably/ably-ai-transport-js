@@ -2,13 +2,13 @@
  * The `extras` vocabulary: the two `extras` keys this SDK writes and the
  * fields under them.
  *
- * Two layers write there and neither imports the other, so the names live
- * here. Under `ai`, the key Ably reserves for this SDK, the codec builder
+ * The codec builder, the agent adaptor and the decoder all read or write
+ * there, so the names live here. Under `ai`, the key Ably reserves for this SDK, the codec builder
  * writes `type`, which picks the row on decode, and `fields`, a row's event
  * fields that travel beside an appended body, nested values as they are,
  * and `codec`, the codec's `id`; it also gives every message the codec's
  * `name`, `ai` by default. A decoder skips any message with another name or
- * another codec's id. The transport's pipe writer writes `stream`, `true` on every write under a
+ * another codec's id. The adaptor's pipe writer writes `stream`, `true` on every write under a
  * live key (the publish that opens the key, each append and each update), and
  * `ends`, the serial of the message a key's closer ends. Ably stores the last
  * write's name and extras on an appended message, so the name, `codec` and
@@ -18,7 +18,7 @@
  *
  * Under `headers`, the key Ably provides for a publisher's own fields and the
  * one its server-side filtering reads, the builder writes a row's `headers`
- * and the transport adds a `send` or `pipe` call's headers, preferring the
+ * and the adaptor adds a `send` or `pipe` call's headers, preferring the
  * row's where both name a key. Ably admits only a flat map of string, number,
  * boolean and null values there (error 40032 otherwise).
  */
@@ -40,10 +40,10 @@ export const TYPE_FIELD = 'type';
 /** Builder: a row's event fields, nested values as they are. */
 export const FIELDS_FIELD = 'fields';
 
-/** Transport: `true` on every write under a live key, so a stream's message is marked however it is read back. */
+/** Adaptor: `true` on every write under a live key, so a stream's message is marked however it is read back. */
 export const STREAM_FIELD = 'stream';
 
-/** Transport: on the message that ends a key, the serial of the message it ends. */
+/** Adaptor: on the message that ends a key, the serial of the message it ends. */
 export const ENDS_FIELD = 'ends';
 
 /** The `extras` key Ably provides for a publisher's own fields, the one its filtering reads. A row's `headers` go under it, over the headers of the `send` or `pipe` call that published the message. */

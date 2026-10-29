@@ -5,11 +5,10 @@
  * Two layers write there and neither imports the other, so the names live
  * here. Under `ai`, the key Ably reserves for this SDK, the codec builder
  * writes `type`, which picks the row on decode, and `fields`, a row's event
- * fields that travel beside an appended body, nested values as they are. The
- * transport writes `codec`, the id of the codec that encoded the message, on
- * every message it publishes, appends or updates, and names every one of them
- * `ai`; a decoder skips any message with another name or another codec's id.
- * The transport's pipe writer writes `stream`, `true` on every write under a
+ * fields that travel beside an appended body, nested values as they are,
+ * and `codec`, the codec's `id`; it also gives every message the codec's
+ * `name`, `ai` by default. A decoder skips any message with another name or
+ * another codec's id. The transport's pipe writer writes `stream`, `true` on every write under a
  * live key (the publish that opens the key, each append and each update), and
  * `ends`, the serial of the message a key's closer ends. Ably stores the last
  * write's name and extras on an appended message, so the name, `codec` and
@@ -29,10 +28,10 @@ import type * as Ably from 'ably';
 /** The `extras` key Ably reserves for this SDK. */
 export const EXTRAS_KEY = 'ai';
 
-/** The name of every message the SDK writes. */
+/** The message name a codec built by `defineCodec` uses when it names none. */
 export const MESSAGE_NAME = 'ai';
 
-/** Transport: the id of the codec that encoded the message, on every message. */
+/** Builder: the id of the codec that encoded the message, on every message. */
 export const CODEC_FIELD = 'codec';
 
 /** Builder: the event type that picks the row on decode. */
@@ -85,14 +84,3 @@ export const withOwnField = (message: Ably.Message, field: string, value: unknow
   const own = isRecord(extras[EXTRAS_KEY]) ? extras[EXTRAS_KEY] : {};
   return { ...message, extras: { ...extras, [EXTRAS_KEY]: { ...own, [field]: value } } };
 };
-
-/**
- * A copy of `message` as the SDK writes it: named `ai`, with the id of the
- * codec that encoded it under `extras.ai`. Neither `message` nor its `extras`
- * is mutated.
- * @param message - The message a codec encoded.
- * @param codecId - The codec's id.
- * @returns The stamped copy.
- */
-export const withCodec = (message: Ably.Message, codecId: string): Ably.Message =>
-  withOwnField({ ...message, name: MESSAGE_NAME }, CODEC_FIELD, codecId);

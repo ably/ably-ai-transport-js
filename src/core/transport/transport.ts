@@ -46,7 +46,6 @@ import { registerAgent } from '../agent.js';
 import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
 import { createDecoder, type Decoder } from '../decoder/decoder.js';
-import { withCodec } from '../wire.js';
 import { bestEffortDetach, closedError, ContinuityWatcher, subscribeAndAttach } from './channel-support.js';
 import { type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import { type HistoryOptions, type HistoryPage, openHistoryWalk } from './history-pager.js';
@@ -413,8 +412,7 @@ class DefaultTransport<E> implements Transport<E> {
     }
     let serial: string | undefined;
     for (const { message } of encoded) {
-      const stamped = withCodec(message, this._codec.id);
-      serial = await this._publish(headers === undefined ? stamped : withHeaders(stamped, headers));
+      serial = await this._publish(headers === undefined ? message : withHeaders(message, headers));
     }
     this._logger.debug('Transport.send(); published', { serial, messages: encoded.length });
     return { serial };

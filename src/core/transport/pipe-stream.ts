@@ -9,9 +9,8 @@
  * pipe: the writer repairs it when the stream ends, and a failed repair is what
  * rejects. On every exit, cancel included, the writer is flushed and the source
  * released before the pipe settles, so a provider's generator can clean up.
- * Every message is named `ai` and carries the codec's id, and the call's
- * headers, when it has any, are added to it, before it reaches the writer, so
- * the writer's repair snapshot carries them too.
+ * The call's headers, when it has any, are added to every message before it
+ * reaches the writer, so the writer's repair snapshot carries them too.
  */
 
 import * as Ably from 'ably';
@@ -20,7 +19,6 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
-import { withCodec } from '../wire.js';
 import { type MessageHeaders, withHeaders } from './headers.js';
 import type { PipeWriter } from './pipe-writer.js';
 
@@ -228,8 +226,8 @@ export const pipeStream = async <E>(
         // An event's messages are written as a unit; the signal is read again
         // before the next event, not between them.
         for (const encodedMessage of encoded) {
-          const named = withCodec(encodedMessage.message, codec.id);
-          const message = headers === undefined ? named : withHeaders(named, headers);
+          const { message: encodedBody } = encodedMessage;
+          const message = headers === undefined ? encodedBody : withHeaders(encodedBody, headers);
           const acked = await writer.write({ ...encodedMessage, message });
           if (acked !== undefined) serial = acked;
         }

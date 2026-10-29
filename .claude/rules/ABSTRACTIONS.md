@@ -222,18 +222,20 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 5. **Composition, not inheritance.** Compose features; no class hierarchies.
 6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
-7. **The SDK owns the message name and three wire fields, and the builder
-   two more, all under `extras.ai`.** A row speaks in `data`, `fields` and `headers`: a plain
+7. **The transport owns two wire fields, and the codec three, all under
+   `extras.ai`, plus the message name.** A row speaks in `data`, `fields` and `headers`: a plain
    publish carries the event in `data`, and a message that is appended to
    carries the appended text in `data` and the event's other fields in
    `fields`, since an append grows `data` and carries nothing else. The
    builder writes `fields` under `extras.ai.fields`, nested objects and
    arrays as they are, beside its own `type` under `extras.ai`, the key the
    platform reserves for this SDK, and reads `extras.ai.type` back to pick
-   the row. The transport names every message `ai` and stamps the codec's
-   `id` as `extras.ai.codec` on every write, so a reader can tell one
-   codec's messages from another's on a shared channel; a codec names no
-   message. The transport's pipe writer stamps `extras.ai.stream` on every
+   the row. A codec gives every message it encodes its own `name` (`ai` by
+   default) and writes its `id` as `extras.ai.codec`, appends included,
+   since Ably keeps the last write's name and extras; a decoder reads both
+   off the codec and skips any message that carries another. The builder
+   does this for every row, and a hand-written codec must do it itself. The
+   transport's pipe writer stamps `extras.ai.stream` on every
    write under a live key, so a stream's message carries it however it is
    read back, and `extras.ai.ends`, the serial it ends, on the message that
    ends one; the decoder core reads both to know which messages to remember

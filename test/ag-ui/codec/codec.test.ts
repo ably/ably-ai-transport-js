@@ -64,9 +64,11 @@ describe('the AG-UI codec', () => {
     it('carries a delta’s text as the body and the rest of the event under extras.ai.fields', () => {
       const [delta] = codec.encode(at(textRun, 2));
       expect(delta?.message).toEqual({
+        name: 'ai',
         data: 'It is ',
         extras: {
           ai: {
+            codec: 'ag-ui-events',
             type: 'TEXT_MESSAGE_CONTENT',
             fields: { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', timestamp: 1 },
           },
@@ -78,8 +80,9 @@ describe('the AG-UI codec', () => {
       const [end] = codec.encode(at(textRun, 5));
       expect(end?.ends).toBe('text:m1');
       expect(end?.message).toEqual({
+        name: 'ai',
         data: { type: 'TEXT_MESSAGE_END', messageId: 'm1', metadata: { model: 'm-1' } },
-        extras: { ai: { type: 'TEXT_MESSAGE_END' } },
+        extras: { ai: { codec: 'ag-ui-events', type: 'TEXT_MESSAGE_END' } },
       });
     });
 
@@ -155,7 +158,11 @@ describe('the AG-UI codec', () => {
 
     it('carries the run input as the body', () => {
       const [sent] = codec.encode({ type: 'run-input', input: runInput });
-      expect(sent?.message).toEqual({ data: runInput, extras: { ai: { type: 'run-input' } } });
+      expect(sent?.message).toEqual({
+        name: 'ai',
+        data: runInput,
+        extras: { ai: { codec: 'ag-ui-events', type: 'run-input' } },
+      });
     });
 
     it('throws for an event type with no row', () => {
@@ -232,7 +239,11 @@ describe('the AG-UI codec', () => {
     it('does not return an event for a messages snapshot another publisher sent', () => {
       const [delivery] = deliveriesOf([
         {
-          message: { data: messagesSnapshot, extras: { ai: { type: 'MESSAGES_SNAPSHOT' } } },
+          message: {
+            name: 'ai',
+            data: messagesSnapshot,
+            extras: { ai: { codec: 'ag-ui-events', type: 'MESSAGES_SNAPSHOT' } },
+          },
         },
       ]);
       if (delivery === undefined) throw new Error('fixture');
@@ -240,7 +251,9 @@ describe('the AG-UI codec', () => {
     });
 
     it('throws for a plain publish whose body is not an object', () => {
-      const [delivery] = deliveriesOf([{ message: { data: 'nope', extras: { ai: { type: 'TOOL_CALL_START' } } } }]);
+      const [delivery] = deliveriesOf([
+        { message: { name: 'ai', data: 'nope', extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_START' } } } },
+      ]);
       if (delivery === undefined) throw new Error('fixture');
       expect(() => codec.decode(delivery)).toThrowErrorInfo({
         code: ErrorCode.InvalidArgument,
@@ -262,7 +275,9 @@ describe('the AG-UI codec', () => {
         { threadId: 'th1', runId: 'r1', messages: [], tools: [] },
       ];
       for (const data of malformed) {
-        const [delivery] = deliveriesOf([{ message: { data, extras: { ai: { type: 'run-input' } } } }]);
+        const [delivery] = deliveriesOf([
+          { message: { data, extras: { ai: { codec: 'ag-ui-events', type: 'run-input' } } } },
+        ]);
         if (delivery === undefined) throw new Error('fixture');
         expect(() => createAGUICodec().decode(delivery)).toThrowErrorInfo({
           code: ErrorCode.InvalidArgument,
@@ -280,6 +295,6 @@ describe('the AG-UI codec', () => {
 
   it('exports a prebuilt codec carrying its id', () => {
     expect(agui.id).toBe('ag-ui-events');
-    expect(Object.keys(agui).toSorted()).toEqual(['decode', 'encode', 'id']);
+    expect(Object.keys(agui).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });
 });

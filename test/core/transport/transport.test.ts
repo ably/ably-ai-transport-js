@@ -216,15 +216,16 @@ describe('createTransport', () => {
       ]);
     });
 
-    it('names the message ai and writes the codec id over any name the codec gave', async () => {
+    it('publishes the message as the codec wrote it, name and codec id included', async () => {
       const named: Codec<{ type: 'x' }> = {
         id: 'named',
-        encode: () => [{ message: { name: 'own', data: 'x', extras: { ai: { type: 'x' } } } }],
+        name: 'own',
+        encode: () => [{ message: { name: 'own', data: 'x', extras: { ai: { codec: 'named', type: 'x' } } } }],
         decode: () => [],
       };
       const namedTransport = createTransport({ client: createMockClient(channel), channelName: CHANNEL, codec: named });
       await namedTransport.send({ type: 'x' });
-      expect(channel.publishCalls).toEqual([{ name: 'ai', data: 'x', extras: { ai: { type: 'x', codec: 'named' } } }]);
+      expect(channel.publishCalls).toEqual([{ name: 'own', data: 'x', extras: { ai: { codec: 'named', type: 'x' } } }]);
     });
 
     it('resolves with no serial when the codec publishes nothing', async () => {
@@ -561,7 +562,7 @@ describe('createTransport', () => {
       // CAST: a fixture inbound message as the transport writes it for the split codec.
       const message = {
         ...inbound({ serial: 's1', data: 'x|y', extras: { ai: { codec: 'split' } } }),
-        name: 'ai',
+        name: 'split',
       } as Ably.InboundMessage;
       channel.listener?.(message);
       expect(deliveries.map((d) => d.event)).toEqual([
@@ -667,7 +668,7 @@ describe('createTransport', () => {
       // CAST: a fixture inbound message as the transport writes it for the split codec.
       const twin = {
         ...inbound({ serial: 's1', data: 'x|y', extras: { ai: { codec: 'split' } } }),
-        name: 'ai',
+        name: 'split',
       } as Ably.InboundMessage;
       channel = createMockChannel([[twin]]);
       const split = createTransport({
@@ -793,7 +794,7 @@ describe('createTransport', () => {
       // CAST: a fixture inbound message as the transport writes it for the split codec.
       const twin = {
         ...inbound({ serial: 's1', data: 'x|y', extras: { ai: { codec: 'split' } } }),
-        name: 'ai',
+        name: 'split',
       } as Ably.InboundMessage;
       channel = createMockChannel([[twin]]);
       const split = createTransport({

@@ -9,8 +9,9 @@
  * the message carries none, so the application sees every message on the
  * channel, its own included, and decides for itself.
  *
- * A message is the decoder's when it is named `ai` and carries this codec's id
- * under `extras.ai`, as the SDK writes every message. Anything else is handed
+ * A message is the decoder's when it carries the codec's `name` as its name
+ * and the codec's `id` under `extras.ai.codec`, as the codec writes every
+ * message it encodes. Anything else is handed
  * on with no event and touches no state, so a channel can carry the
  * application's own messages and a second codec's beside this one.
  *
@@ -43,7 +44,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec, Delivery } from '../codec/codec.js';
-import { CODEC_FIELD, MESSAGE_NAME, readOwnExtras } from '../wire.js';
+import { CODEC_FIELD, readOwnExtras } from '../wire.js';
 import { createDecoderCore, type DecoderCore } from './decoder-core.js';
 
 /** Options for {@link createDecoder}. */
@@ -174,13 +175,13 @@ class DefaultDecoder<E> implements Decoder<E> {
   }
 
   /**
-   * Whether the SDK wrote this message through this decoder's codec: named
-   * `ai`, with the codec's id under `extras.ai`.
+   * Whether this decoder's codec wrote this message: the codec's `name`, with
+   * its `id` under `extras.ai.codec`.
    * @param message - The message.
    * @returns True when the message is this codec's.
    */
   private _isOwn(message: Ably.InboundMessage): boolean {
-    return message.name === MESSAGE_NAME && readOwnExtras(message.extras)?.[CODEC_FIELD] === this._codec.id;
+    return message.name === this._codec.name && readOwnExtras(message.extras)?.[CODEC_FIELD] === this._codec.id;
   }
 }
 

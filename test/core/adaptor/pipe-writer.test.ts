@@ -5,7 +5,9 @@ import type { PipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
 import { createPipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
 import type { EncodedMessage } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import { flushMicrotasks } from '../../helper/streams.js';
 
 const publish = (key?: string, data: unknown = '', extras: unknown = {}): EncodedMessage =>
   key === undefined
@@ -333,6 +335,20 @@ describe('createPipeWriter', () => {
   });
 
   describe('repair', () => {
+    it('warns when an append fails, before the flush repairs it', async () => {
+      const logHandler = vi.fn();
+      const warned = createPipeWriter(channel, makeLogger({ logLevel: LogLevel.Warn, logHandler }));
+      await warned.write(publish('k1', 'The', { type: 'text-start', id: 'k1' }));
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await warned.write(append('k1', ' weather', { type: 'text-delta', id: 'k1' }));
+      await flushMicrotasks();
+      expect(logHandler).toHaveBeenCalledWith(
+        expect.stringContaining('append failed, the next flush repairs the stream'),
+        LogLevel.Warn,
+        expect.objectContaining({ key: 'k1', serial: 'serial-1', error: 'network' }),
+      );
+    });
+
     it('replaces the content of a stream whose append failed, with the last delta’s extras, before the closer', async () => {
       await writer.write(publish('k1', 'The', { type: 'text-start', id: 'k1' }));
       channel.appendMessage.mockRejectedValueOnce(new Error('network'));

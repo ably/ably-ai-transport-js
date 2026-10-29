@@ -542,7 +542,15 @@ describe('pipeEach', () => {
   });
 
   it('yields an append before its ack', async () => {
-    channel.appendMessage.mockImplementationOnce(async () => neverSettles());
+    let ack: (() => void) | undefined;
+    channel.appendMessage.mockImplementationOnce(
+      async () =>
+        new Promise<Ably.UpdateDeleteResult>((resolve) => {
+          ack = () => {
+            resolve({ versionSerial: 'serial-2:v1' });
+          };
+        }),
+    );
     const iterator = pipeEach(streamOf<TestEvent>(...textEvents('m1', 'a', 'b')), codec, writer)[
       Symbol.asyncIterator
     ]();
@@ -552,7 +560,10 @@ describe('pipeEach', () => {
       done: false,
       value: { event: { type: 'text-delta', id: 'm1', delta: 'b' }, serial: 'serial-2' },
     });
-    await iterator.return();
+    // Leaving the loop waits for the append's ack before it repairs and returns.
+    const leaving = iterator.return();
+    ack?.();
+    await leaving;
   });
 
   it('flushes and repairs what it wrote when the source ends', async () => {
@@ -579,33 +590,102 @@ describe('pipeEach', () => {
     expect(yielded.map((p) => p.event.type)).toEqual(['text-start', 'text-delta', 'text-delta']);
   });
 
-  it('stops dead on break: no closer, no flush, no repair, and releases the source', async () => {
+  it('repairs what it wrote before throwing when the pipe itself fails', async () => {
+    // The second delta's append fails and is held; the note's publish then
+    // fails and ends the loop. The repair runs before the failure is thrown.
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.publish
+      .mockResolvedValueOnce({ serials: ['serial-1'] })
+      .mockResolvedValueOnce({ serials: ['serial-2'] })
+      .mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 50000, 500));
+    const events: TestEvent[] = [
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'a' },
+      { type: 'text-delta', id: 'm1', delta: 'b' },
+      { type: 'note', text: 'n' },
+    ];
+    const { yielded, error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: 50000 } });
+    expect(yielded).toHaveLength(3);
+    expect(channel.updateCalls).toHaveLength(1);
+    expect(channel.updateCalls[0]?.data).toBe('ab');
+  });
+
+  it('keeps the failure as the error when the repair after it also fails', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+    // CAST: force a type the codec has no row for past the compile-time check.
+    const rogue = { type: 'rogue' } as unknown as TestEvent;
+    const events: TestEvent[] = [{ type: 'text-start', id: 'm1' }, ...textEvents('m1', 'a', 'b').slice(1, 3), rogue];
+    const { error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+    expect(channel.updateMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('repairs on break, writes no closer, and releases the source', async () => {
     channel.appendMessage.mockRejectedValueOnce(new Error('network'));
     const { iterable, state } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a', 'b'));
     for await (const { event } of pipeEach(iterable, codec, writer)) {
       if (event.type === 'text-delta' && event.delta === 'b') break;
     }
-    await flushMicrotasks();
     expect(state.returned).toBe(true);
-    // The failed append is dropped: nothing repairs it, and the closer is never written.
-    expect(channel.updateMessage).not.toHaveBeenCalled();
+    // The failed append is repaired before the loop exits, and the closer is never written.
+    expect(channel.updateCalls.map((m) => m.data as unknown)).toEqual(['ab']);
     expect(channel.publishCalls.map((m) => m.data as unknown)).toEqual(['', 'a']);
   });
 
-  it('stops dead when the loop body throws, and the throw reaches the caller', async () => {
-    const { iterable, state } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a'));
+  it('throws PipeFailed from the loop exit when the repair after a break fails', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+    const { iterable, state } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a', 'b'));
+    const run = async (): Promise<void> => {
+      for await (const { event } of pipeEach(iterable, codec, writer)) {
+        if (event.type === 'text-delta' && event.delta === 'b') break;
+      }
+    };
+    await expect(run()).rejects.toBeErrorInfo({
+      code: ErrorCode.PipeFailed,
+      message: 'unable to pipe; repair failed: unable to repair stream; 1 of 1 repairs failed',
+      cause: { code: ErrorCode.StreamedMessageFinalizeFailed },
+    });
+    expect(state.returned).toBe(true);
+  });
+
+  it('repairs when the loop body throws, and the throw reaches the caller', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    const { iterable, state } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a', 'b'));
     const thrown = new Error('loop body failed');
     const run = async (): Promise<void> => {
-      for await (const published of pipeEach(iterable, codec, writer)) {
-        if (published.serial !== undefined) throw thrown;
+      for await (const { event } of pipeEach(iterable, codec, writer)) {
+        if (event.type === 'text-delta' && event.delta === 'b') throw thrown;
       }
     };
     await expect(run()).rejects.toBe(thrown);
     expect(state.returned).toBe(true);
-    expect(channel.publish).toHaveBeenCalledTimes(1);
+    expect(channel.updateCalls.map((m) => m.data as unknown)).toEqual(['ab']);
   });
 
-  it('throws OperationCancelled when the signal fires, without flushing', async () => {
+  it('keeps the loop body throw and logs a repair that also fails', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+    const logHandler = vi.fn();
+    const logger = makeLogger({ logLevel: LogLevel.Error, logHandler });
+    const { iterable } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a', 'b'));
+    const thrown = new Error('loop body failed');
+    const run = async (): Promise<void> => {
+      for await (const { event } of pipeEach(iterable, codec, writer, { logger })) {
+        if (event.type === 'text-delta' && event.delta === 'b') throw thrown;
+      }
+    };
+    await expect(run()).rejects.toBe(thrown);
+    expect(logHandler).toHaveBeenCalledWith(
+      expect.stringContaining('pipeEach(); repair failed'),
+      LogLevel.Error,
+      expect.objectContaining({ error: expect.stringContaining('1 of 1 repairs failed') as unknown }),
+    );
+  });
+
+  it('throws OperationCancelled when the signal fires, after repairing what it wrote', async () => {
     channel.appendMessage.mockRejectedValueOnce(new Error('network'));
     const controller = new AbortController();
     const source = abortingAfter<TestEvent>(
@@ -617,7 +697,55 @@ describe('pipeEach', () => {
     const { yielded, error } = await drain(pipeEach(source, codec, writer, { signal: controller.signal }));
     expect(error).toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
     expect(yielded).toHaveLength(3);
-    expect(channel.updateMessage).not.toHaveBeenCalled();
+    expect(channel.updateCalls.map((m) => m.data as unknown)).toEqual(['ab']);
+  });
+
+  it('throws PipeFailed when the repair after the signal fails', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+    const controller = new AbortController();
+    const source = abortingAfter<TestEvent>(controller, ...textEvents('m1', 'a', 'b').slice(0, 3));
+    const { error } = await drain(pipeEach(source, codec, writer, { signal: controller.signal }));
+    expect(error).toBeErrorInfo({
+      code: ErrorCode.PipeFailed,
+      cause: { code: ErrorCode.StreamedMessageFinalizeFailed },
+    });
+  });
+
+  it('removes the abort listener after every pull when the signal never fires', async () => {
+    const controller = new AbortController();
+    const added = vi.spyOn(controller.signal, 'addEventListener');
+    const removed = vi.spyOn(controller.signal, 'removeEventListener');
+    const events: TestEvent[] = Array.from({ length: 50 }, (_, i) => ({ type: 'note', text: `n${String(i)}` }));
+    const { error } = await drain(pipeEach(streamOf(...events), codec, writer, { signal: controller.signal }));
+    expect(error).toBeUndefined();
+    // One listener per pull, the final done pull included, each removed once its race settles.
+    expect(added).toHaveBeenCalledTimes(events.length + 1);
+    expect(removed).toHaveBeenCalledTimes(events.length + 1);
+  });
+
+  it('throws OperationCancelled when the signal fires while a read is pending, and releases the source', async () => {
+    const controller = new AbortController();
+    const source = neverEndingStream<TestEvent>();
+    const iterator = pipeEach(source, codec, writer, { signal: controller.signal })[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    controller.abort();
+    await expect(pending).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    expect(source.locked).toBe(false);
+    expect(channel.publish).not.toHaveBeenCalled();
+  });
+
+  it('yields an update with the serial of the stream it replaces', async () => {
+    const events: TestEvent[] = [
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'draft' },
+      { type: 'text-replace', id: 'm1', text: 'final' },
+    ];
+    const { yielded, error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeUndefined();
+    // The delta opened the stream's message at serial-2, and the update lands on it.
+    expect(yielded[2]).toEqual({ event: events[2], serial: 'serial-2' });
+    expect(channel.updateCalls.map((m) => m.data as unknown)).toEqual(['final']);
   });
 
   it('throws OperationCancelled at once for an already-aborted signal, writing nothing', async () => {

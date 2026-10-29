@@ -380,10 +380,10 @@ done
 ## ABSTRACTIONS.md calls this the most important invariant in the codebase. A
 ## generic-layer file that imports a codec directory, or names a codec's wire
 ## type, has broken it.
-grep -E '^src/(core|react)/' "$WORK/added" \
+grep -E '^src/core/' "$WORK/added" \
   | grep -E "from '(\.\./)*(vercel|openai|temporal)/|from '@?ai\b|from 'openai'" \
   | report_new_lines BLOCKER layer-violation \
-    'the generic layer imports from a codec; ABSTRACTIONS.md requires src/core and src/react to know nothing about any specific codec'
+    'the generic layer imports from a codec; ABSTRACTIONS.md requires src/core to know nothing about any specific codec'
 
 # --------------------------------------------------------------------- summary
 

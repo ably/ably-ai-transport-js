@@ -2,10 +2,12 @@
 
 /**
  * Read a ReadableStream to completion, collecting every chunk it emits.
- * @param stream - The stream to drain.
+ * @param stream - The stream to drain, or the `null` a call that finds no stream resolves with.
  * @returns The chunks read, in order, once the stream closes.
+ * @throws {Error} When `stream` is `null`, so a test that expected a stream fails at once.
  */
-export const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
+export const drain = async <T>(stream: ReadableStream<T> | null): Promise<T[]> => {
+  if (stream === null) throw new Error('expected a stream, got null');
   const reader = stream.getReader();
   const results: T[] = [];
   for (;;) {

@@ -221,15 +221,18 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 5. **Composition, not inheritance.** Compose features; no class hierarchies.
 6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
-7. **The SDK owns two wire fields, and the builder two more, all under
-   `extras.ai`.** A row speaks in `data`, `fields` and `headers`: a plain
+7. **The SDK owns the message name and three wire fields, and the builder
+   two more, all under `extras.ai`.** A row speaks in `data`, `fields` and `headers`: a plain
    publish carries the event in `data`, and a message that is appended to
    carries the appended text in `data` and the event's other fields in
    `fields`, since an append grows `data` and carries nothing else. The
    builder writes `fields` under `extras.ai.fields`, nested objects and
    arrays as they are, beside its own `type` under `extras.ai`, the key the
    platform reserves for this SDK, and reads `extras.ai.type` back to pick
-   the row. The transport's pipe writer stamps `extras.ai.stream` on every
+   the row. The transport names every message `ai` and stamps the codec's
+   `id` as `extras.ai.codec` on every write, so a reader can tell one
+   codec's messages from another's on a shared channel; a codec names no
+   message. The transport's pipe writer stamps `extras.ai.stream` on every
    write under a live key, so a stream's message carries it however it is
    read back, and `extras.ai.ends`, the serial it ends, on the message that
    ends one; the decoder core reads both to know which messages to remember
@@ -249,8 +252,7 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    `extras`. A message
    without `extras.ai.type` is **foreign**: the transport shares its channel
    with the application, so `decode` returns `undefined` and the transport
-   delivers it raw. Classify by that field, never by the wire `name`, which is
-   the codec author's to choose and a foreign publisher's to collide with.
+   delivers it raw.
 8. **Explicit exports.** Only what an `index.ts` re-exports is public API.
 9. **Self-contained features.** Each manages its own subscriptions, state, and
    cleanup.

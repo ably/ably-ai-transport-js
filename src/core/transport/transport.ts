@@ -45,6 +45,7 @@ import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
+import { withCodec } from '../wire.js';
 import {
   bestEffortDetach,
   closedError,
@@ -411,7 +412,8 @@ class DefaultTransport<E> implements Transport<E> {
     }
     let serial: string | undefined;
     for (const { message } of encoded) {
-      serial = await this._publish(headers === undefined ? message : withHeaders(message, headers));
+      const stamped = withCodec(message, this._codec.id);
+      serial = await this._publish(headers === undefined ? stamped : withHeaders(stamped, headers));
     }
     this._logger.debug('Transport.send(); published', { serial, messages: encoded.length });
     return { serial };

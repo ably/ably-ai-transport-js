@@ -93,17 +93,17 @@ describe('pipeStream', () => {
       // The deltas' writes carry the transport's stream marker and the end
       // names the message it ends; the start and the note carry neither.
       expect(channel.publishCalls.map((m) => m.extras as unknown)).toEqual([
-        { ai: { type: 'text-start', fields: { id: 'm1' } } },
-        { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } },
-        { ai: { type: 'text-end', ends: 'serial-2', fields: { id: 'm1' } } },
-        { ai: { type: 'note' } },
+        { ai: { codec: 'test-codec', type: 'text-start', fields: { id: 'm1' } } },
+        { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } },
+        { ai: { codec: 'test-codec', type: 'text-end', ends: 'serial-2', fields: { id: 'm1' } } },
+        { ai: { codec: 'test-codec', type: 'note' } },
       ]);
       expect(channel.appendCalls).toEqual([
         {
           serial: 'serial-2',
-          name: 'test',
+          name: 'ai',
           data: ' world',
-          extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } },
+          extras: { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } },
         },
       ]);
     });
@@ -151,8 +151,9 @@ describe('pipeStream', () => {
       expect(channel.updateCalls).toEqual([
         {
           serial: 'serial-2',
+          name: 'ai',
           data: 'kept lost',
-          extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } },
+          extras: { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } },
         },
       ]);
     });
@@ -252,7 +253,12 @@ describe('pipeStream', () => {
       );
       // The second delta's append failed; the cancel still repairs the stream.
       expect(channel.updateCalls).toEqual([
-        { serial: 'serial-2', data: 'ab', extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } } },
+        {
+          serial: 'serial-2',
+          name: 'ai',
+          data: 'ab',
+          extras: { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } },
+        },
       ]);
     });
 
@@ -362,7 +368,12 @@ describe('pipeStream', () => {
       // message with the text so far under the last delta's extras.
       expect(channel.appendMessage).toHaveBeenCalledTimes(1);
       expect(channel.updateCalls).toEqual([
-        { serial: 'serial-2', data: 'ab', extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } } },
+        {
+          serial: 'serial-2',
+          name: 'ai',
+          data: 'ab',
+          extras: { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } },
+        },
       ]);
     });
 

@@ -226,7 +226,6 @@ const isInputItems = (data: unknown): data is Responses.ResponseInputItem[] =>
  */
 export const createOpenAICodec = (): Codec<OpenAIEvent> =>
   defineCodec({
-    name: 'ai',
     id: CODEC_ID,
     typeOf: (e: OpenAIEvent) => e.type,
     events: {

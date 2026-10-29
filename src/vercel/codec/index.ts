@@ -93,7 +93,6 @@ export const createVercelCodec = <
   TTools extends AI.UITools = AI.UITools,
 >(): Codec<VercelEvent<TMetadata, TDataParts, TTools>> => {
   const codec = defineCodec({
-    name: 'ai',
     id: CODEC_ID,
     typeOf: (e: VercelEvent) => e.type,
     events: {

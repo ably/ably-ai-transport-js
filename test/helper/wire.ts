@@ -7,15 +7,19 @@
 import type * as Ably from 'ably';
 
 import type { Codec, EncodedMessage } from '../../src/core/codec/index.js';
-import { ENDS_FIELD, STREAM_FIELD, withOwnField } from '../../src/core/wire.js';
+import { ENDS_FIELD, STREAM_FIELD, withCodec, withOwnField } from '../../src/core/wire.js';
 
 /**
- * Encode every event to the messages it produces.
+ * Encode every event to the messages it produces, named and stamped with the
+ * codec's id as the transport writes them.
  * @param codec - The codec.
  * @param events - The events, in order.
  * @returns The encoded messages, in order.
  */
-export const encodeAll = <E>(codec: Codec<E>, events: E[]): EncodedMessage[] => events.flatMap((e) => codec.encode(e));
+export const encodeAll = <E>(codec: Codec<E>, events: E[]): EncodedMessage[] =>
+  events
+    .flatMap((e) => codec.encode(e))
+    .map((encoded) => ({ ...encoded, message: withCodec(encoded.message, codec.id) }));
 
 /**
  * The inbound messages a subscriber receives for a sequence of encoded

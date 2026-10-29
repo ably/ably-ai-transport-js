@@ -34,7 +34,6 @@ describe('the OpenAI codec', () => {
       const [done] = codec.encode(at(textResponse, 5));
       expect(done?.ends).toBe('msg_1:0');
       expect(done?.message).toEqual({
-        name: 'ai',
         data: { ...at(textResponse, 5), text: '' },
         extras: { ai: { type: 'response.output_text.done' } },
       });
@@ -186,7 +185,6 @@ describe('the OpenAI codec', () => {
 
     it('carries a delta’s other fields under extras.ai.fields, arrays as they are, with no headers', () => {
       expect(codec.encode(at(textResponse, 3))[0]?.message).toEqual({
-        name: 'ai',
         data: 'It is 21°C',
         extras: {
           ai: {
@@ -222,7 +220,7 @@ describe('the OpenAI codec', () => {
     it('publishes input items as the message data', () => {
       const items: Responses.ResponseInputItem[] = [{ role: 'user', content: 'What is the weather?' }];
       expect(codec.encode({ type: 'input', items })).toEqual([
-        { message: { name: 'ai', data: items, extras: { ai: { type: 'input' } } } },
+        { message: { data: items, extras: { ai: { type: 'input' } } } },
       ]);
     });
 
@@ -317,7 +315,9 @@ describe('the OpenAI codec', () => {
         { data: events[1] },
         { data: events[2] },
       ]);
-      expect(encoded[2]?.message.extras).toEqual({ ai: { type: 'response.image_generation_call.partial_image' } });
+      expect(encoded[2]?.message.extras).toEqual({
+        ai: { codec: 'openai-responses', type: 'response.image_generation_call.partial_image' },
+      });
       expect(roundTrip(createOpenAICodec(), events)).toStrictEqual(decodedOf(events));
     });
 
@@ -349,7 +349,6 @@ describe('the OpenAI codec', () => {
       const [done] = codec.encode(at(textResponse, 6));
       expect(done?.ends).toBeUndefined();
       expect(done?.message).toEqual({
-        name: 'ai',
         data: { ...at(textResponse, 6), part: { type: 'output_text', text: '', annotations: [] } },
         extras: { ai: { type: 'response.content_part.done' } },
       });

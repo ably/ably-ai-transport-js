@@ -13,18 +13,18 @@
  * and `headers`, the Ably headers a codec author sets on purpose. On every
  * message it encodes the builder writes `data` as the body, the row's `fields`
  * and its own `type` under `extras.ai`, and the row's `headers` under
- * `extras.headers`, reads them back on decode, applies a default message
- * `name` to a message that names none, and wraps `decode` with the decoder
- * core so a late joiner's full-content update reaches the row as the unseen
+ * `extras.headers`, reads them back on decode, and wraps `decode` with the
+ * decoder core so a late joiner's full-content update reaches the row as the unseen
  * tail and replays are dropped.
  *
  * Ably accepts only known keys at the top of `extras` and rejects a publish
  * carrying any other. `ai` is the key the platform reserves for this SDK, and
  * a value under it travels as it is, nested objects and arrays included. The
  * builder writes two fields there, the `type` that picks the row and the row's
- * `fields`; the transport writes two more on the messages that open and end a
- * key (see `src/core/wire.ts`); the builder reads its own two and ignores the
- * rest. `headers` is the key Ably provides for a publisher's own fields and
+ * `fields`; the transport writes the codec's id on every message, and two more
+ * fields on the messages that open and end a key (see `src/core/wire.ts`); the
+ * builder reads its own two and ignores the rest. The message name is the
+ * transport's too: it names every message `ai`. `headers` is the key Ably provides for a publisher's own fields and
  * the one its server-side filtering reads. Ably admits only a flat map of
  * string, number, boolean and null values under it (error 40032 otherwise),
  * so a row's `headers` are typed to that and written as given; the builder
@@ -84,13 +84,6 @@ export type RowEvent<E, T extends string> = [Extract<E, { type: RowEventType<T> 
  * as delivered.
  */
 export interface RowMessage {
-  /**
-   * The Ably message name. Stamped on every message, an append or update
-   * included, since Ably replaces the stored name with the one the append
-   * carries and the first append of a stream may be the publish that opens it.
-   * Defaults to the codec's `name`.
-   */
-  name?: string;
   /**
    * The message body, Ably's `data`. For a message that is appended to, the
    * text this delivery adds, and the one field appends concatenate; for a
@@ -206,8 +199,6 @@ export type EventRows<E, K extends string> = { [T in K]: EventRow<E, T> };
  * @template K - The union of types `typeOf` returns.
  */
 export interface DefineCodecConfig<E, K extends string> {
-  /** The Ably message name for a message whose row names none. Defaults to `ai`. */
-  name?: string;
   /** The codec's identity. See {@link Codec.id}. */
   id: string;
   /**
@@ -291,7 +282,6 @@ const withoutUndefined = <V>(record: Record<string, V> | undefined): Record<stri
  * @throws {Ably.ErrorInfo} `InvalidArgument` when a row key carries the wildcard suffix with no prefix.
  */
 export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>): Codec<E> => {
-  const name = config.name ?? 'ai';
   // CAST: the table is typed per key for the author; the dispatcher reads it
   // by string, and invokes each row only with the member its key selects.
   const rows = config.events as unknown as Record<string, EventRow<E, string>>;
@@ -348,9 +338,7 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       if (headers !== undefined) extras[HEADERS_KEY] = headers;
       if (produced.ephemeral === true) extras.ephemeral = true;
       const data: unknown = produced.data ?? '';
-      // Every message carries a name: an append to a key not yet live is the
-      // publish that opens it, and Ably keeps the name of an append anyway.
-      const message: Ably.Message = { name: produced.name ?? name, data, extras };
+      const message: Ably.Message = { data, extras };
 
       const encoded: EncodedMessage = { message };
       if (produced.publish !== undefined) encoded.publish = produced.publish;
@@ -378,7 +366,6 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
         fields: own.fields,
         headers: readHeaders(prepared),
       };
-      if (prepared.name !== undefined) body.name = prepared.name;
       const decoded = row.decode(body);
       return decoded === undefined ? [] : [decoded];
     },

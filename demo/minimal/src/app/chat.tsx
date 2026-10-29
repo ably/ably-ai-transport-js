@@ -99,11 +99,7 @@ export function Chat({ channelName }: { channelName: string }) {
   // until the next change.
   const client = useAbly();
   const channel = client.channels.get(channelName);
-  // One decoder for the channel, for live delivery and history together, so
-  // a message both carry decodes once. The page mounts a Chat per channel, so
-  // the decoder lives as long as the channel does. The page publishes the
-  // user's message through an adaptor on the same channel.
-  const [decoder] = useState(() => vercelDecoder());
+  // The page publishes the user's message through an adaptor on the channel.
   const adaptor = useMemo(() => vercelAdaptor(channel), [channel]);
   const [attached, setAttached] = useState(channel.state === 'attached');
   useChannelStateListener(channelName, (change) => {
@@ -160,9 +156,15 @@ export function Chat({ channelName }: { channelName: string }) {
   // so the decoder sees live first and drops history's copy of anything live
   // already delivered. History is decoded newest first, as it pages, and
   // applied oldest first, then the held live deliveries follow. An effect
-  // that is torn down underneath the load (a Strict Mode remount, a channel
-  // change) unsubscribes and drops its result.
+  // that is torn down underneath the load (a Strict Mode remount, Fast
+  // Refresh) unsubscribes and drops its result.
   useEffect(() => {
+    // One decoder per run, for that run's live delivery and history together,
+    // so a message both carry decodes once. A decoder kept across runs would
+    // have seen the history a re-run reads again, and would drop the text of
+    // a reply while re-applying its start.
+    const decoder = vercelDecoder();
+    replaying.current = true;
     let cancelled = false;
     let held: Delivery<VercelEvent>[] | undefined = [];
     const listener = (message: Ably.InboundMessage) => {
@@ -184,7 +186,9 @@ export function Chat({ channelName }: { channelName: string }) {
         const fromHistory = newer.map((m) => decoder.decode(m)).toReversed();
         for (const deliveries of fromHistory) for (const delivery of deliveries) apply(delivery);
       } catch (error) {
-        // A failed load leaves the page live with a gap.
+        // A failure before the subscribe leaves the channel unattached, so the
+        // page stays on connecting… and Send stays disabled. A failure while
+        // reading history leaves the page live with a gap.
         if (!cancelled) console.error('load failed', error);
       } finally {
         if (!cancelled) {
@@ -200,7 +204,7 @@ export function Chat({ channelName }: { channelName: string }) {
       cancelled = true;
       channel.unsubscribe(listener);
     };
-  }, [channel, channelName, decoder, apply]);
+  }, [channel, channelName, apply]);
 
   const send = async (e: FormEvent) => {
     e.preventDefault();

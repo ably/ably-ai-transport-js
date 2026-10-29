@@ -20,6 +20,19 @@ import {
 } from './fixtures.js';
 
 type SendMessagesOptions = Parameters<AblyChatTransport['sendMessages']>[0];
+type ActiveTurnFn = NonNullable<ChatTransportOptions['activeTurn']>;
+type ActiveTurnAnswer = Awaited<ReturnType<ActiveTurnFn>>;
+
+/** What `activeTurn` resolves with when nothing is running. */
+// eslint-disable-next-line unicorn/no-null -- activeTurn says "nothing is running" with null
+const NOTHING_RUNNING: ActiveTurnAnswer = null;
+
+/**
+ * An `activeTurn` that always gives the same answer.
+ * @param answer - The answer.
+ * @returns The mock.
+ */
+const answering = (answer: ActiveTurnAnswer): Mock<ActiveTurnFn> => vi.fn<ActiveTurnFn>().mockResolvedValue(answer);
 
 const prompt: AI.UIMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'Hello?' }] };
 const reply = textTurn('t1', ['Hel', 'lo']);
@@ -940,5 +953,253 @@ describe('close', () => {
     await nextMacrotask();
 
     expect(fixture.channel.detach).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconnectToStream', () => {
+  /** A turn that started before the transport read the channel, and goes on live. */
+  const running = wireAcross(reply.slice(0, 3), reply.slice(3));
+
+  describe('without activeTurn', () => {
+    it('replays the turn running on the channel from its start chunk, then follows it live', async () => {
+      const { transport, fixture } = setup(running.stored);
+
+      const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+      fixture.deliver(running.live);
+
+      expect(await drain(stream)).toEqual(reply);
+    });
+
+    it('resolves null when the latest turn has finished', async () => {
+      const { transport } = setup(wireOf([...reply, ...textTurn('t2', ['Bye'])]).stored);
+      expect(await transport.reconnectToStream({ chatId: 'chat-1' })).toBeNull();
+    });
+
+    it('resolves null on a channel with no turn', async () => {
+      const { transport } = setup();
+      expect(await transport.reconnectToStream({ chatId: 'chat-1' })).toBeNull();
+    });
+
+    it('keeps reading after null, so a later call rejoins a turn that started in between', async () => {
+      const { transport, fixture } = setup();
+      expect(await transport.reconnectToStream({ chatId: 'chat-1' })).toBeNull();
+      const wire = wireOf(reply).live;
+      fixture.deliver(wire.slice(0, 3));
+
+      const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+      fixture.deliver(wire.slice(3));
+
+      expect(fixture.channel.history).toHaveBeenCalledTimes(1);
+      expect(await drain(stream)).toEqual(reply);
+    });
+  });
+
+  describe('with activeTurn', () => {
+    it('asks it about the chat, and resolves null when it says nothing is running, still reading the channel', async () => {
+      const activeTurn = answering(NOTHING_RUNNING);
+      const { transport, fixture } = setup(running.stored, { activeTurn });
+
+      expect(await transport.reconnectToStream({ chatId: 'chat-1' })).toBeNull();
+      expect(activeTurn).toHaveBeenCalledWith('chat-1');
+      expect(fixture.channel.subscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['{}', {}],
+      // eslint-disable-next-line unicorn/no-null -- a JSON body says "no serial yet" with null
+      ['a null from', { from: null }],
+    ])('replays the turn running on the channel when it answers %s', async (_label, answer) => {
+      const { transport, fixture } = setup(running.stored, { activeTurn: answering(answer) });
+
+      const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+      fixture.deliver(running.live);
+
+      expect(await drain(stream)).toEqual(reply);
+    });
+
+    it('follows the next turn to start when it answers {} and none is running', async () => {
+      const { transport, fixture } = setup(wireOf(textTurn('t0', ['Old'])).stored, {
+        activeTurn: answering({}),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+      fixture.deliver(wireAcross(textTurn('t0', ['Old']), reply).live);
+
+      expect(await drain(stream)).toEqual(reply);
+    });
+
+    it('replays the turn that started at or after from, even one that has just finished', async () => {
+      const finished = wireOf(reply);
+      const from = finished.stored[0]?.serial ?? '';
+      const { transport } = setup(finished.stored, { activeTurn: answering({ from }) });
+
+      const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+
+      expect(await drain(stream)).toEqual([
+        { type: 'start' },
+        { type: 'text-start', id: 't1' },
+        { type: 'text-delta', id: 't1', delta: 'Hello' },
+        { type: 'text-end', id: 't1' },
+        { type: 'finish' },
+      ]);
+    });
+
+    it('follows the next turn to start when the turn on the channel began before from', async () => {
+      const earlier = textTurn('t0', ['Old'], 'abort').slice(0, 3);
+      const wire = wireAcross(earlier, [...textTurn('t0', ['Old'], 'abort').slice(3), ...reply]);
+      const { transport, fixture } = setup(wire.stored, {
+        activeTurn: answering({ from: 's9999' }),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+      fixture.deliver(wire.live);
+
+      expect(await drain(stream)).toEqual(reply);
+    });
+
+    it.each([
+      ['undefined', undefined],
+      ['a string', 'running'],
+      ['a non-string from', { from: 7 }],
+      ['an empty from', { from: '' }],
+      ['an array', []],
+      ['an instance of a class', new Map([['from', 's1']])],
+    ])('rejects with InvalidArgument when it resolves %s', async (_label, answer) => {
+      // CAST: an answer that breaks the contract, as one read off a response body can.
+      const activeTurn = answering(answer as ActiveTurnAnswer);
+      const { transport } = setup([], { activeTurn });
+
+      await expect(transport.reconnectToStream({ chatId: 'chat-1' })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.InvalidArgument,
+      );
+    });
+
+    it('rejects with SessionHistoryFetchFailed when it rejects with anything but an Ably error, and logs it', async () => {
+      const { logger, errors } = recordingLogger();
+      const activeTurn = vi.fn<ActiveTurnFn>().mockRejectedValue(new SyntaxError('Unexpected token <'));
+      const { transport } = setup([], { logger, activeTurn });
+
+      await expect(transport.reconnectToStream({ chatId: 'chat-1' })).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionHistoryFetchFailed,
+        statusCode: 500,
+        message: 'unable to reconnect to stream; activeTurn rejected: Unexpected token <',
+      });
+      expect(errors).toEqual(['ChatTransport.reconnectToStream(); activeTurn rejected']);
+    });
+
+    it('passes an Ably error it rejects with on unchanged', async () => {
+      const failure = new Ably.ErrorInfo('unable to look up the turn; the backend is down', 50000, 500);
+      const { transport } = setup([], { activeTurn: vi.fn<ActiveTurnFn>().mockRejectedValue(failure) });
+
+      await expect(transport.reconnectToStream({ chatId: 'chat-1' })).rejects.toBe(failure);
+    });
+
+    it('does not ask it when the signal has already fired', async () => {
+      const activeTurn = answering({});
+      const { transport } = setup(running.stored, { activeTurn });
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal }),
+      ).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+      expect(activeTurn).not.toHaveBeenCalled();
+    });
+
+    it('rejects with OperationCancelled, without calling onStop, when stopped while it is asked', async () => {
+      const onStop = vi.fn();
+      const pending = Promise.withResolvers<ActiveTurnAnswer>();
+      const { transport } = setup([], { onStop, activeTurn: vi.fn<ActiveTurnFn>().mockReturnValue(pending.promise) });
+      const controller = new AbortController();
+
+      const reconnecting = transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal });
+      controller.abort();
+
+      await expect(reconnecting).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+      await expect(reconnecting).rejects.toHaveProperty('name', 'AbortError');
+      await nextMacrotask();
+      expect(onStop).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['{}', {}],
+      ['null', NOTHING_RUNNING],
+    ])('resolves null when the transport closes while it is asked, and it answers %s', async (_label, answer) => {
+      const pending = Promise.withResolvers<ActiveTurnAnswer>();
+      const { transport } = setup(running.stored, {
+        activeTurn: vi.fn<ActiveTurnFn>().mockReturnValue(pending.promise),
+      });
+
+      const reconnecting = transport.reconnectToStream({ chatId: 'chat-1' });
+      transport.close();
+      pending.resolve(answer);
+
+      expect(await reconnecting).toBeNull();
+    });
+  });
+
+  it('rejects with OperationCancelled, without calling onStop, when stopped while it reads the channel', async () => {
+    const onStop = vi.fn();
+    const { transport } = setup(running.stored, { onStop });
+    const controller = new AbortController();
+
+    const reconnecting = transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal });
+    controller.abort();
+
+    await expect(reconnecting).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+    await nextMacrotask();
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it('resolves null, leaving the channel unread, when the transport closes while it opens the channel', async () => {
+    const { transport, fixture } = setup(running.stored);
+
+    const reconnecting = transport.reconnectToStream({ chatId: 'chat-1' });
+    transport.close();
+
+    expect(await reconnecting).toBeNull();
+    await nextMacrotask();
+    expect(fixture.channel.subscribe).not.toHaveBeenCalled();
+  });
+
+  it('ends the stream with OperationCancelled when stopped after it rejoined, then calls onStop', async () => {
+    const onStop = vi.fn();
+    const { transport, fixture } = setup(running.stored, { onStop });
+    const controller = new AbortController();
+    const stream = await transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal });
+
+    controller.abort();
+    await flushMicrotasks();
+
+    expect(onStop).toHaveBeenCalledWith({ chatId: 'chat-1', channel: fixture.channel });
+    const read = drain(stream);
+    await expect(read).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+    await expect(read).rejects.toHaveProperty('name', 'AbortError');
+  });
+
+  it('keeps an abort just before it, with no await between, from calling onStop, as useChat replacing a resumed reply does', async () => {
+    const onStop = vi.fn();
+    const { transport, fixture } = setup(running.stored, { onStop });
+    const controller = new AbortController();
+    const first = await transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal });
+
+    controller.abort();
+    const again = transport.reconnectToStream({ chatId: 'chat-1' });
+    const second = await again;
+    fixture.deliver(running.live);
+
+    expect(onStop).not.toHaveBeenCalled();
+    await expect(drain(first)).rejects.toHaveProperty('name', 'AbortError');
+    expect(await drain(second)).toEqual(reply);
+  });
+
+  it('rejects with SessionSubscriptionFailed when the channel cannot be attached', async () => {
+    const { transport, fixture } = setup();
+    fixture.channel.attach.mockRejectedValue(new Ably.ErrorInfo('channel failed', 90000, 400));
+
+    await expect(transport.reconnectToStream({ chatId: 'chat-1' })).rejects.toBeErrorInfo({
+      code: ErrorCode.SessionSubscriptionFailed,
+      cause: { message: 'channel failed' },
+    });
   });
 });

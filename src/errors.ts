@@ -102,6 +102,9 @@ export enum ErrorCode {
    * retry budget, with the original failure as `cause` where available; or a
    * subscription's history replay failed: its replay function threw, or a replay
    * builder set to `onExhausted: 'error'` ran out of pages before its point.
+   * The useChat transport also reports an `activeTurn` that rejected with
+   * anything but an `Ably.ErrorInfo` under this code, since the lookup stands
+   * in for reading history.
    */
   SessionHistoryFetchFailed = 104011,
 }

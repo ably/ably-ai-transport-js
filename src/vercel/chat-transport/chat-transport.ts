@@ -20,7 +20,8 @@ import type * as AI from 'ai';
 import type { ChatTransport } from 'ai';
 
 import { resolveChannel } from '../../core/transport/transport.js';
-import { ErrorCode } from '../../errors.js';
+import { isRecord } from '../../core/wire.js';
+import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import { vercel } from '../codec/index.js';
@@ -323,6 +324,22 @@ const RESPONSE_EXCERPT_CHARS = 200;
 /** What `useChat` passes to `sendMessages`. */
 type SendMessagesOptions = Parameters<AblyChatTransport['sendMessages']>[0];
 
+/** What `useChat` passes to `reconnectToStream`. */
+type ReconnectToStreamOptions = Parameters<AblyChatTransport['reconnectToStream']>[0];
+
+/** Which turn a reply carries: the next to start, or the latest, replayed from its start. */
+type ReplyStart = 'next turn' | 'latest turn';
+
+/** What `activeTurn` answered, once checked, with a `null` `from` left out. */
+interface CheckedTurn {
+  /** A non-empty serial at or before the turn's first chunk. */
+  readonly from?: string;
+}
+
+/** What `reconnectToStream` resolves with when no turn is running. */
+// eslint-disable-next-line unicorn/no-null -- the ChatTransport contract says "nothing is running" with null
+const NOTHING_RUNNING = null;
+
 /** A turn's request, built before the transport waits on anything. */
 interface TurnRequest {
   /** The headers, with a content type. */
@@ -402,6 +419,48 @@ const untilSettledOrQuiet = async (
 };
 
 /**
+ * Whether a turn started at or after a serial.
+ * @param turn - The turn, if there is one.
+ * @param from - The serial.
+ * @returns True when the turn's `start` chunk is at or after `from`.
+ */
+const startedAtOrAfter = (turn: LatestTurn | undefined, from: string): boolean =>
+  turn !== undefined && turn.startSerial >= from;
+
+/**
+ * Whether a value is a plain object, as JSON parsing makes one, rather than
+ * an array or an instance of a class.
+ * @param value - The value.
+ * @returns True for a plain object.
+ */
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (!isRecord(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+/**
+ * Check what `activeTurn` resolved with: the answer comes from the
+ * application, often straight off a response body.
+ * @param answer - The resolved value.
+ * @returns The answer, with a `null` `from` left out.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when it is neither `null` nor a plain object whose `from` is absent, `null` or a non-empty string.
+ */
+const toCheckedTurn = (answer: unknown): CheckedTurn | null => {
+  if (answer === null) return NOTHING_RUNNING;
+  if (isPlainObject(answer)) {
+    const { from } = answer;
+    if (from === undefined || from === null) return {};
+    if (typeof from === 'string' && from !== '') return { from };
+  }
+  throw new Ably.ErrorInfo(
+    'unable to reconnect to stream; activeTurn must resolve to null or { from?: string | null } with a non-empty from',
+    ErrorCode.InvalidArgument,
+    400,
+  );
+};
+
+/**
  * What a failed response says about itself: the start of its body, or its
  * status text when the body is empty or cannot be read.
  * @param response - The response.
@@ -456,6 +515,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _api: string;
   private readonly _onStop: ((context: StopContext) => void | PromiseLike<void>) | undefined;
+  private readonly _activeTurn: ((chatId: string) => Promise<ActiveTurn | null>) | undefined;
   private readonly _logger: Logger;
   /** Stops whose `onStop` waits for the microtask after the abort. */
   private readonly _pendingStops = new Set<PendingStop>();
@@ -472,6 +532,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
     this._client = options.client;
     this._api = options.api ?? DEFAULT_API;
     this._onStop = options.onStop;
+    this._activeTurn = options.activeTurn;
     // Resolved now, with the options the transport owns, so application code
     // that asks for the channel by name gets this one.
     this._channel = resolveChannel(
@@ -496,7 +557,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
         // the wait for a live reader then throws or moves to the new one.
         // From this check on, nothing awaits until the turn is posted.
         if (reader !== this._reader || reader.stale) continue;
-        const stream = this._openReply(reader, chatId, abortSignal, operation);
+        const stream = this._openReply(reader, chatId, abortSignal, 'next turn', operation);
         // Not awaited: a backend that runs the agent inside the request holds
         // it open for the whole turn. A failure reaches `useChat` through the
         // stream.
@@ -515,9 +576,27 @@ class DefaultAblyChatTransport implements AblyChatTransport {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- a stub until rejoining a turn lands
-  async reconnectToStream(): Promise<ReadableStream<AI.UIMessageChunk> | null> {
-    throw new Ably.ErrorInfo('unable to reconnect to stream; not implemented', ErrorCode.InternalError, 500);
+  async reconnectToStream(options: ReconnectToStreamOptions): Promise<ReadableStream<AI.UIMessageChunk> | null> {
+    const { chatId, abortSignal } = options;
+    this._logger.trace('ChatTransport.reconnectToStream();', { chatId });
+    // `useChat` aborts a reply it resumed just before it resumes again, and
+    // replacing a reply is not a stop.
+    this._cancelPendingStops();
+    const closes = this._closes;
+    // Read the channel while the backend is asked, and keep reading after a
+    // `null`, so a later call finds a turn that starts in between.
+    this._ensureReader();
+    try {
+      return await this._rejoin(chatId, abortSignal, closes);
+    } catch (error) {
+      // A call that `close()` overtook resolves `null`, where `sendMessages`
+      // rejects. Every supported `ai` release reads `null` as nothing
+      // running, but some show a rejection as the chat's error, so the error
+      // is dropped.
+      if (this._closes === closes) throw error;
+      this._logger.debug('ChatTransport.reconnectToStream(); the transport closed while looking', { chatId });
+      return NOTHING_RUNNING;
+    }
   }
 
   close(): void {
@@ -588,6 +667,91 @@ class DefaultAblyChatTransport implements AblyChatTransport {
   }
 
   /**
+   * Find the turn to rejoin, and open a reply on it.
+   * @param chatId - The chat.
+   * @param signal - `useChat`'s abort signal.
+   * @param closes - The count of `close()` calls when the call began.
+   * @returns The reply's stream, or `null` when no turn is running.
+   * @throws {Ably.ErrorInfo} What `reconnectToStream` documents; `OperationCancelled` when the transport closes first.
+   */
+  private async _rejoin(
+    chatId: string,
+    signal: AbortSignal | undefined,
+    closes: number,
+  ): Promise<ReadableStream<AI.UIMessageChunk> | null> {
+    const operation = 'reconnect to stream';
+    const answer = await this._askActiveTurn(chatId, signal, operation);
+    if (answer === null) {
+      this._logger.debug('ChatTransport.reconnectToStream(); activeTurn says nothing is running', { chatId });
+      return NOTHING_RUNNING;
+    }
+    const reader = await this._waitForLiveReader(signal, operation, closes);
+    const latest = reader.latest;
+    const running = latest?.ended === false;
+    if (answer === undefined && !running) {
+      this._logger.debug('ChatTransport.reconnectToStream(); no turn running', { chatId });
+      return NOTHING_RUNNING;
+    }
+    // Replay the latest turn when it is the one asked for: the running turn
+    // when there is no `from`, or a turn that started at or after `from`.
+    // Otherwise the reply waits for the next turn to start.
+    const from = answer?.from;
+    const replay = from === undefined ? running : startedAtOrAfter(latest, from);
+    this._logger.debug('ChatTransport.reconnectToStream(); rejoining', { chatId, from, replay });
+    return this._openReply(reader, chatId, signal, replay ? 'latest turn' : 'next turn', operation).readable;
+  }
+
+  /**
+   * Ask `activeTurn` what is running, when the application gave one.
+   * @param chatId - The chat.
+   * @param signal - `useChat`'s abort signal.
+   * @param operation - The call that is asking, for the error.
+   * @returns The checked answer, or `undefined` when there is no `activeTurn`.
+   * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fires first; `InvalidArgument` for an answer that is not one; what `activeTurn` rejected with, as `SessionHistoryFetchFailed` unless it is an `Ably.ErrorInfo`.
+   */
+  private async _askActiveTurn(
+    chatId: string,
+    signal: AbortSignal | undefined,
+    operation: string,
+  ): Promise<CheckedTurn | null | undefined> {
+    const activeTurn = this._activeTurn;
+    if (activeTurn === undefined) return undefined;
+    // Checked before `activeTurn` is called, so a call already stopped asks
+    // the backend nothing.
+    if (signal?.aborted === true) throw stoppedError(operation, ABORTED);
+    let answer: unknown;
+    try {
+      answer = await untilAborted(activeTurn(chatId), signal, operation);
+    } catch (error) {
+      if (error instanceof Ably.ErrorInfo && errorInfoIs(error, ErrorCode.OperationCancelled)) throw error;
+      // The lookup stands in for reading history, so a failure that is not
+      // already an `Ably.ErrorInfo` is reported under the history code.
+      const failure =
+        error instanceof Ably.ErrorInfo
+          ? error
+          : new Ably.ErrorInfo(
+              `unable to reconnect to stream; activeTurn rejected: ${errorMessage(error)}`,
+              ErrorCode.SessionHistoryFetchFailed,
+              500,
+            );
+      this._logger.error('ChatTransport.reconnectToStream(); activeTurn rejected', {
+        chatId,
+        error: failure.message,
+      });
+      throw failure;
+    }
+    try {
+      return toCheckedTurn(answer);
+    } catch (error) {
+      this._logger.error('ChatTransport.reconnectToStream(); activeTurn resolved to an invalid answer', {
+        chatId,
+        error: errorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Wait while the latest turn's agent is still publishing, so the turn about
    * to be posted cannot stream at the same time. Stop waiting when the turn
    * goes quiet, as it does when its agent has died.
@@ -637,6 +801,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
    * @param reader - The live reader.
    * @param chatId - The chat, for `onStop`.
    * @param signal - `useChat`'s abort signal.
+   * @param start - Which turn the reply carries.
    * @param operation - The call that opens it, for the error.
    * @returns The reply's stream.
    * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal has already fired: nothing was handed back, so nothing is stopped.
@@ -645,6 +810,7 @@ class DefaultAblyChatTransport implements AblyChatTransport {
     reader: TurnReader,
     chatId: string,
     signal: AbortSignal | undefined,
+    start: ReplyStart,
     operation: string,
   ): TurnStream {
     if (signal?.aborted === true) throw stoppedError(operation, ABORTED);
@@ -658,14 +824,17 @@ class DefaultAblyChatTransport implements AblyChatTransport {
       reader.unfollow(stream);
     });
     signal?.addEventListener('abort', onAbort, { once: true });
-    reader.waitForNextTurn(stream);
+    if (start === 'latest turn') reader.joinLatestTurn(stream);
+    else reader.waitForNextTurn(stream);
     return stream;
   }
 
   /**
    * Tell the application about a stop a microtask after the abort, unless
-   * `close()` comes first: React's unmount cleanups close the transport
-   * straight after `useChat` aborts its reply, and that is no stop.
+   * `close()` or `reconnectToStream` comes first. React's unmount cleanups
+   * close the transport straight after `useChat` aborts its reply, and
+   * `useChat` calls `reconnectToStream` straight after aborting a reply it
+   * resumed; neither is a stop.
    * @param stop - The stop.
    */
   private _deferStop(stop: PendingStop): void {

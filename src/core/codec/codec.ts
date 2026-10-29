@@ -7,12 +7,13 @@
  * are one-to-one; the contract admits zero or several so a hand-written codec
  * can split a payload that is too large for one message, or fold one message
  * into several events. A codec holds the wire format and nothing else: the
- * transport owns the channel, the per-pipe key table that turns a stream key
- * into the serial an append targets, and delivery. Every message a codec
+ * agent adaptor writes to the channel and keeps the per-pipe key table that
+ * turns a stream key into the serial an append targets, and the decoder holds
+ * the per-serial state a reader needs. Every message a codec
  * encodes carries the codec's `name` as its message name and the codec's `id`
  * under `extras.ai.codec`, appends and updates included, since Ably replaces
  * the stored name and extras with the last write's; a decoder over the codec
- * reads both to tell its messages from anyone else's. The transport owns two
+ * reads both to tell its messages from anyone else's. The adaptor owns two
  * fields under `extras.ai`: `stream`, on every write under a live key, and
  * `ends`, on the message that ends one, carrying the serial it ends. It also adds
  * the headers of the `send` or `pipe` call under `extras.headers`, preferring
@@ -28,7 +29,7 @@ import type * as Ably from 'ably';
  * plain publish that nothing will append to.
  */
 export interface EncodedMessage {
-  /** The message the transport publishes, appends or updates. `name`, `data` and `extras` are the codec's, and must carry the codec's `name` and its `id` under `extras.ai.codec`. The transport adds its own two fields under `extras.ai` to a write under a key and to the message that ends one, and adds the call's headers under `extras.headers`, preferring the codec's. */
+  /** The message the adaptor publishes, appends or updates. `name`, `data` and `extras` are the codec's, and must carry the codec's `name` and its `id` under `extras.ai.codec`. The adaptor adds its own two fields under `extras.ai` to a write under a key and to the message that ends one, and adds the call's headers under `extras.headers`, preferring the codec's. */
   message: Ably.Message;
   /**
    * Publish `message` and remember the serial the ack returns under this key,
@@ -84,10 +85,8 @@ export interface Codec<E> {
   /**
    * The codec's identity. The codec writes it under `extras.ai.codec` on every
    * message it encodes, so a decoder over this codec can tell its messages
-   * from another codec's on the same channel. The transport also appends it to
-   * its channel's `params.agent`, so traffic is attributed to this codec. An
-   * empty id contributes nothing to the attribution. Two codecs that share a
-   * channel need different ids.
+   * from another codec's on the same channel. Two codecs that share a channel
+   * need different ids.
    */
   readonly id: string;
   /**
@@ -100,7 +99,7 @@ export interface Codec<E> {
    * Encode one event to the Ably messages that carry it, in the order they are
    * written. An empty array publishes nothing. `defineCodec` builds a codec
    * whose rows each produce at most one message; a hand-written codec may
-   * return several, which the transport writes in order. Throws for an event
+   * return several, which the adaptor writes in order. Throws for an event
    * the codec does not know.
    * @param event - The event to encode.
    * @returns The messages and the operation to perform with each, in order.

@@ -12,14 +12,8 @@ import { EventType } from '@ag-ui/core';
 import type * as Ably from 'ably';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  agUiAdaptor,
-  agUiDecoder,
-  type AGUIEvent,
-  type AGUIRunInput,
-  createAGUICodec,
-} from '../../../src/ag-ui/index.js';
-import { createTransport, type Transport } from '../../../src/index.js';
+import { agUiAdaptor, agUiDecoder, type AGUIEvent, type AGUIRunInput } from '../../../src/ag-ui/index.js';
+import type { AgentAdaptor } from '../../../src/index.js';
 import {
   chunkRun,
   decodedOf,
@@ -36,21 +30,7 @@ import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-clien
 import { streamOf } from '../../helper/test-codec.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
-const transportOn = (name: string): Transport<AGUIEvent> =>
-  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createAGUICodec() });
-
-/**
- * A transport with the channel it reads, for a subscriber that waits for the channel to attach.
- * The channel comes back from a bare `channels.get`, which is how an
- * application shares the channel the transport owns the options of.
- * @param name - The channel name.
- * @returns The transport and its channel.
- */
-const readerOn = (name: string): { transport: Transport<AGUIEvent>; channel: Ably.RealtimeChannel } => {
-  const client = ablyRealtimeClient();
-  const transport = createTransport({ client, channelName: name, codec: createAGUICodec() });
-  return { transport, channel: client.channels.get(name) };
-};
+const adaptorOn = (name: string): AgentAdaptor<AGUIEvent> => agUiAdaptor(ablyRealtimeClient().channels.get(name));
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -102,14 +82,15 @@ describe('AG-UI codec over Ably', () => {
 
   it('streams a run’s input and a tool-calling run, event for event, and merges them with AG-UI’s reducer', async () => {
     const name = uniqueChannelName('ag-ui');
-    const agent = transportOn(name);
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const agent = adaptorOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = agUiDecoder();
     const recorder = createDeliveryRecorder<AGUIEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
 
     const input: AGUIRunInput = { type: 'run-input', input: { ...runInput, runId: 'r2', messages: [] } };
-    const sent = await client.send(input);
+    const sent = await agUiAdaptor(clientChannel).send(input);
     const piped = await agent.pipe(streamOf(...toolRun), { headers: { runId: 'r2' } });
     await recorder.waitFor((d) => finished(d) === 1);
 
@@ -206,7 +187,7 @@ describe('AG-UI codec over Ably', () => {
 
     // History stores the argument message once, with the fragments joined,
     // as the update the appends made of it.
-    const stored = await drainHistory(transportOn(name));
+    const stored = await drainHistory(ablyRealtimeClient().channels.get(name), agUiDecoder());
     expect(wireOf(stored.map((d) => d.message))).toStrictEqual([
       {
         action: 'message.create',
@@ -287,11 +268,12 @@ describe('AG-UI codec over Ably', () => {
 
   it('reads a finished run from history with the deltas joined, and merges it into the messages a live subscriber built', async () => {
     const name = uniqueChannelName('ag-ui');
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = agUiDecoder();
     const recorder = createDeliveryRecorder<AGUIEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
-    await transportOn(name).pipe(streamOf(...textRun));
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
+    await adaptorOn(name).pipe(streamOf(...textRun));
     await recorder.waitFor((d) => finished(d) === 1);
 
     // Live, the three text deltas share one message: the first creates it
@@ -387,7 +369,7 @@ describe('AG-UI codec over Ably', () => {
     // it: its data is the three fragments joined, and its extras are the last
     // append's, since an append replaces them. That message decodes to one
     // delta carrying the whole text.
-    const stored = await drainHistory(transportOn(name));
+    const stored = await drainHistory(ablyRealtimeClient().channels.get(name), agUiDecoder());
     expect(wireOf(stored.map((d) => d.message))).toStrictEqual([
       {
         action: 'message.create',
@@ -467,11 +449,12 @@ describe('AG-UI codec over Ably', () => {
 
   it('streams a reasoning message and a text message under one id as two appended messages, live and from history', async () => {
     const name = uniqueChannelName('ag-ui');
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = agUiDecoder();
     const recorder = createDeliveryRecorder<AGUIEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
-    await transportOn(name).pipe(streamOf(...reasoningRun));
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
+    await adaptorOn(name).pipe(streamOf(...reasoningRun));
     await recorder.waitFor((d) => finished(d) === 1);
 
     expect(recorder.events()).toStrictEqual(reasoningRun);
@@ -597,7 +580,7 @@ describe('AG-UI codec over Ably', () => {
     // History stores each stream's message once, in the order the stream
     // opened, as the update its appends made of it, with its own fragments
     // joined.
-    const stored = await drainHistory(transportOn(name));
+    const stored = await drainHistory(ablyRealtimeClient().channels.get(name), agUiDecoder());
     expect(wireOf(stored.map((d) => d.message))).toStrictEqual([
       {
         action: 'message.create',
@@ -688,14 +671,15 @@ describe('AG-UI codec over Ably', () => {
 
   it('reads a chunk stream from history one message per chunk, and merges it into the messages a live subscriber built', async () => {
     const name = uniqueChannelName('ag-ui');
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = agUiDecoder();
     const recorder = createDeliveryRecorder<AGUIEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
-    await transportOn(name).pipe(streamOf(...chunkRun));
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
+    await adaptorOn(name).pipe(streamOf(...chunkRun));
     await recorder.waitFor((d) => finished(d) === 1);
 
-    const stored = await drainHistory(transportOn(name));
+    const stored = await drainHistory(ablyRealtimeClient().channels.get(name), agUiDecoder());
     const live = await foldWithAGUIReducer(recorder.events(), history);
     const fromHistory = await foldWithAGUIReducer(
       stored.flatMap((d) => (d.event === undefined ? [] : [d.event])),
@@ -736,13 +720,14 @@ describe('AG-UI codec over Ably', () => {
 
   it('does not publish a messages snapshot', async () => {
     const name = uniqueChannelName('ag-ui');
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = agUiDecoder();
     const recorder = createDeliveryRecorder<AGUIEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
 
     const run = [...textRun.slice(0, -1), messagesSnapshot, ...textRun.slice(-1)];
-    await transportOn(name).pipe(streamOf(...run));
+    await adaptorOn(name).pipe(streamOf(...run));
     await recorder.waitFor((d) => finished(d) === 1);
 
     expect(recorder.deliveries.map((d) => d.event)).toStrictEqual(decodedOf(run));

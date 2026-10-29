@@ -1,5 +1,5 @@
 /**
- * Waiting primitives for the transport integration tier.
+ * Waiting primitives and a history drain for the integration tier.
  *
  * The recorder is what keeps these suites off the clock: it buffers every
  * delivery as it arrives and re-checks pending predicates on each one, so a
@@ -9,10 +9,10 @@
 
 import type * as Ably from 'ably';
 
-import type { Delivery, HistoryPage, Transport } from '../../src/index.js';
+import type { Decoder, Delivery } from '../../src/index.js';
 
 /**
- * A buffered, predicate-awaitable view of a transport's deliveries.
+ * A buffered, predicate-awaitable view of a decoder's deliveries.
  * @template E - The codec's event union.
  */
 export interface DeliveryRecorder<E> {
@@ -20,7 +20,7 @@ export interface DeliveryRecorder<E> {
   readonly deliveries: Delivery<E>[];
   /** The decoded events, in delivery order, with undefined ones left out. */
   events: () => E[];
-  /** Record one delivery, settling any predicate it satisfies. Pass to `subscribe`. */
+  /** Record one delivery, settling any predicate it satisfies. Pass to `decoder.onEvent`. */
   record: (delivery: Delivery<E>) => void;
   /**
    * Resolve once `predicate` holds over the recorded deliveries. Checked
@@ -34,7 +34,7 @@ export interface DeliveryRecorder<E> {
 
 /**
  * Create a {@link DeliveryRecorder}.
- * @returns A recorder to hand to `transport.subscribe`.
+ * @returns A recorder to hand to `decoder.onEvent`.
  */
 export const createDeliveryRecorder = <E>(): DeliveryRecorder<E> => {
   const deliveries: Delivery<E>[] = [];
@@ -83,20 +83,34 @@ export const controlledStream = <E>(): { source: ReadableStream<E>; push: (event
 };
 
 /**
- * Page a transport's history back to the channel start, oldest first.
- * @param transport - The transport to page.
+ * Every message on the channel up to its attach point, decoded through
+ * `decoder`, oldest first. History pages arrive newest first, and the decoder
+ * takes them in that order, which is the order it is built for; the
+ * deliveries are reversed into channel order afterwards. Attaches the channel.
+ * @param channel - The channel to read.
+ * @param decoder - The decoder, one per channel.
  * @param limit - Messages per page.
- * @returns Every historical delivery, in chronological order.
+ * @returns The deliveries, oldest first.
  */
-export const drainHistory = async <E>(transport: Transport<E>, limit = 50): Promise<Delivery<E>[]> => {
-  const all: Delivery<E>[] = [];
-  let page: HistoryPage<E> = await transport.history({ limit });
-  for (;;) {
-    all.unshift(...page.items);
-    if (!page.hasNext) break;
-    page = await page.next();
+export const drainHistory = async <E>(
+  channel: Ably.RealtimeChannel,
+  decoder: Decoder<E>,
+  limit = 50,
+): Promise<Delivery<E>[]> => {
+  await channel.attach();
+  const newestFirst: Ably.InboundMessage[] = [];
+  let page = await channel.history({ untilAttach: true, limit });
+  newestFirst.push(...page.items);
+  while (page.hasNext()) {
+    const next = await page.next();
+    if (!next) break;
+    page = next;
+    newestFirst.push(...page.items);
   }
-  return all;
+  return newestFirst
+    .map((message) => decoder.decode(message))
+    .toReversed()
+    .flat();
 };
 
 /**

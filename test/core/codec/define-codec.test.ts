@@ -338,7 +338,7 @@ describe('defineCodec', () => {
     });
 
     it('hands the row extras.headers as delivered, the headers of the publishing call included', () => {
-      // A row that writes one header of its own; the transport adds a call's
+      // A row that writes one header of its own; the adaptor adds a call's
       // headers alongside it, and the wire cannot tell the two apart.
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({

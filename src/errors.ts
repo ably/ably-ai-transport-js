@@ -4,9 +4,9 @@ import * as Ably from 'ably';
  * Error codes for the AI Transport SDK.
  *
  * The `Session*` member names mirror the canonical identifiers in the
- * ably-common error registry (`session_subscription_failed`, `session_closed`,
- * …), so they are kept even though this SDK's own vocabulary says "transport".
- * Read `Session` as "transport" throughout.
+ * ably-common error registry (`session_send_failed`, …), so they are kept even
+ * though this SDK has no session. Read `Session` as the adaptor or decoder
+ * that raised it.
  */
 export enum ErrorCode {
   /**
@@ -46,21 +46,7 @@ export enum ErrorCode {
   StreamedMessageFinalizeFailed = 104000,
 
   /**
-   * The transport could not subscribe to and attach its channel on the first
-   * `subscribe()`. Nothing is delivered until the attach succeeds; the next
-   * `subscribe()` retries, and whether that helps depends on the `cause` (a
-   * transient disconnect clears, a capability or auth rejection does not).
-   */
-  SessionSubscriptionFailed = 104001,
-
-  /**
-   * An operation was attempted on a transport or encoder that has already been
-   * closed.
-   */
-  SessionClosed = 104004,
-
-  /**
-   * A publish through `send` was rejected. A capability rejection surfaces as
+   * A publish through an agent adaptor's `send` was rejected. A capability rejection surfaces as
    * {@link ErrorCode.InsufficientCapability} instead. The underlying Ably
    * failure is the `cause`.
    */
@@ -76,20 +62,11 @@ export enum ErrorCode {
   PipeFailed = 104008,
 
   /**
-   * The codec threw while decoding an inbound channel message. The message is
-   * still delivered with no event, the subscription survives, and the
-   * transport keeps sending and receiving. The thrown value is the `cause`.
+   * The codec threw while the decoder decoded a channel message. The message
+   * is still delivered with no event, and the decoder carries on. The thrown
+   * value is the `cause`.
    */
   SessionMessageProcessingFailed = 104009,
-
-  /**
-   * The transport could not read channel history as asked. Either the initial
-   * `channel.history()` call or a subsequent `page.next()` exhausted its
-   * retry budget, with the original failure as `cause` where available; or a
-   * subscription's history replay failed: its replay function threw, or a replay
-   * builder set to `onExhausted: 'error'` ran out of pages before its point.
-   */
-  SessionHistoryFetchFailed = 104011,
 }
 
 /**

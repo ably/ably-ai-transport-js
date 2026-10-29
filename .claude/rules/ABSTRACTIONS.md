@@ -167,6 +167,9 @@ no singletons or service locators. The one module-level registry is the
 (`src/vercel/chat-transport/turn-reader.ts`): a reader must not subscribe
 until the previous reader on its channel has detached it, even one another
 chat transport opened, and nothing else connects the two.
+Platform globals the runtime provides, such as `fetch` and timers, are called
+directly rather than injected, and a test replaces them with `vi.stubGlobal`
+or fake timers.
 
 ## Class pattern
 

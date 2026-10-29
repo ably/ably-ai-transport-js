@@ -22,8 +22,9 @@ One exception: the React surface is tested per _surface_, not per module. A prov
 ### Style
 
 - Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` records publishes, appends and updates and serves history pages, and `test/helper/mock-client.ts` is the client a transport resolves it from, recording the name and options each `channels.get` received. `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.
+- An adapter's backend is replaced at `fetch` with `vi.stubGlobal`, undone in `afterEach`.
 - A codec suite round-trips through `test/helper/wire.ts`, which turns what the codec encoded into the inbound messages a subscriber would receive, with the serial bookkeeping the pipe writer does on a real channel. A built codec remembers every serial it has seen, so a test that round-trips twice uses a fresh codec the second time.
-- `flushMicrotasks()` or a `setImmediate` hop instead of `setTimeout`; never a clock in a test.
+- `flushMicrotasks()` or a `setImmediate` hop (`nextMacrotask()`) to let async work run; never wait on real time. Behaviour defined by a duration, such as a timeout, is driven with fake timers, restored in `afterEach`.
 - React suites select jsdom per file with a `// @vitest-environment jsdom` docblock and drive components through `@testing-library/react`; the vitest config carries no environment setting.
 - For streams that stay open, simulate a terminal event to close deterministically, then drain the reader.
 

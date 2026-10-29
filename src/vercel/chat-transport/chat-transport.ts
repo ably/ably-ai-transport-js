@@ -22,7 +22,11 @@ import type { ChatTransport } from 'ai';
 import { resolveChannel } from '../../core/transport/transport.js';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
+import { errorCause, errorMessage } from '../../utils.js';
 import { vercel } from '../codec/index.js';
+import { ABORTED, CLOSED, LOST_CONTINUITY, stoppedError } from './stopped.js';
+import { type LatestTurn, TurnReader } from './turn-reader.js';
+import { TurnStream } from './turn-stream.js';
 
 /**
  * What {@link ChatTransportOptions.onStop} is called with.
@@ -304,36 +308,421 @@ export interface AblyChatTransport extends ChatTransport<AI.UIMessage> {
   close(): void;
 }
 
+/** The endpoint a turn is posted to when the options name none. */
+const DEFAULT_API = '/api/chat';
+
+/** How long a running turn may publish nothing before a send stops waiting for it: by then its agent has most likely died. */
+const RUNNING_TURN_QUIET_MS = 10_000;
+
+/** How long a send waits after a turn's `error` for the `finish` the AI SDK writes after it. */
+const ERROR_TAIL_QUIET_MS = 2000;
+
+/** How many characters of a failed response's body go into the error. */
+const RESPONSE_EXCERPT_CHARS = 200;
+
+/** What `useChat` passes to `sendMessages`. */
+type SendMessagesOptions = Parameters<AblyChatTransport['sendMessages']>[0];
+
+/** A turn's request, built before the transport waits on anything. */
+interface TurnRequest {
+  /** The headers, with a content type. */
+  readonly headers: Headers;
+  /** The JSON body. */
+  readonly body: string;
+}
+
+/**
+ * Wait for `work`, unless `signal` fires first.
+ * @param work - What to wait for.
+ * @param signal - `useChat`'s abort signal.
+ * @param operation - The call that is waiting, for the error.
+ * @returns What `work` resolved with.
+ * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fires first; otherwise whatever `work` rejected with.
+ */
+const untilAborted = async <T>(work: Promise<T>, signal: AbortSignal | undefined, operation: string): Promise<T> => {
+  if (signal === undefined) return work;
+  if (signal.aborted) throw stoppedError(operation, ABORTED);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(stoppedError(operation, ABORTED));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+  }
+};
+
+/**
+ * Wait until a turn's agent has finished publishing it, until a running turn
+ * ends, or until the turn has gone `quietMs` without a chunk.
+ * @param turn - The turn.
+ * @param quietMs - How long the turn may go without a chunk.
+ * @param signal - `useChat`'s abort signal.
+ * @param operation - The call that is waiting, for the error.
+ * @returns `'settled'` when the agent finished, `'ended'` when a running turn ended, `'quiet'` when the turn went quiet.
+ * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fires first.
+ */
+const untilSettledOrQuiet = async (
+  turn: LatestTurn,
+  quietMs: number,
+  signal: AbortSignal | undefined,
+  operation: string,
+): Promise<'settled' | 'ended' | 'quiet'> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const quiet = new Promise<'quiet'>((resolve) => {
+    const check = (): void => {
+      const idle = Date.now() - turn.lastChunkAt;
+      if (idle >= quietMs) {
+        resolve('quiet');
+        return;
+      }
+      timer = setTimeout(check, quietMs - idle);
+    };
+    check();
+  });
+  try {
+    // `.then` tags which one settles first. A turn that has already ended
+    // leaves `whenEnded` out, since it has resolved.
+    const outcomes: Promise<'settled' | 'ended' | 'quiet'>[] = [turn.settled.then((): 'settled' => 'settled'), quiet];
+    if (!turn.ended) outcomes.push(turn.whenEnded.then((): 'ended' => 'ended'));
+    return await untilAborted(Promise.race(outcomes), signal, operation);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * What a failed response says about itself: the start of its body, or its
+ * status text when the body is empty or cannot be read.
+ * @param response - The response.
+ * @returns The text.
+ */
+const responseText = async (response: Response): Promise<string> => {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return response.statusText;
+  }
+  if (text === '') return response.statusText;
+  return text.length > RESPONSE_EXCERPT_CHARS ? `${text.slice(0, RESPONSE_EXCERPT_CHARS)}…` : text;
+};
+
+/**
+ * The error for a turn whose request cannot be built.
+ * @param reason - Why, for the message.
+ * @returns The error.
+ */
+const invalidRequest = (reason: string): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(`unable to send messages; ${reason}`, ErrorCode.InvalidArgument, 400);
+
+/**
+ * Build the request for a turn.
+ * @param options - What `useChat` passed to `sendMessages`.
+ * @returns The headers, with a content type, and the JSON body.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when the headers, body or messages cannot be made into a request.
+ */
+const requestOf = (options: SendMessagesOptions): TurnRequest => {
+  const { chatId, trigger, messageId, messages } = options;
+  let headers: Headers;
+  try {
+    headers = new Headers(options.headers);
+  } catch {
+    // The runtime's message quotes the value it rejected, which can be a
+    // credential, so the error names no value.
+    throw invalidRequest('the request headers are not valid HTTP headers');
+  }
+  if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+  try {
+    return { headers, body: JSON.stringify({ ...options.body, chatId, trigger, messageId, messages }) };
+  } catch (error) {
+    throw invalidRequest(errorMessage(error));
+  }
+};
+
 class DefaultAblyChatTransport implements AblyChatTransport {
   readonly resumeStreamIsReplay = true;
+  private readonly _client: Ably.Realtime;
+  private readonly _channel: Ably.RealtimeChannel;
+  private readonly _api: string;
+  private readonly _logger: Logger;
+  /** The reader serving replies, from the first call until `close()`. */
+  private _reader: TurnReader | undefined;
+  /** Counts `close()` calls, so a call still waiting can tell that the transport closed meanwhile. */
+  private _closes = 0;
 
   constructor(options: ChatTransportOptions) {
-    const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
+    this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ChatTransport',
       channel: options.channelName,
     });
+    this._client = options.client;
+    this._api = options.api ?? DEFAULT_API;
     // Resolved now, with the options the transport owns, so application code
     // that asks for the channel by name gets this one.
-    resolveChannel(
+    this._channel = resolveChannel(
       { client: options.client, channelName: options.channelName, codec: vercel },
-      logger,
+      this._logger,
       'ChatTransport',
       'create chat transport',
     );
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- the methods are stubs until the read path lands
-  async sendMessages(): Promise<ReadableStream<AI.UIMessageChunk>> {
-    throw new Ably.ErrorInfo('unable to send messages; not implemented', ErrorCode.InternalError, 500);
+  async sendMessages(options: SendMessagesOptions): Promise<ReadableStream<AI.UIMessageChunk>> {
+    const { chatId, trigger, abortSignal } = options;
+    this._logger.trace('ChatTransport.sendMessages();', { chatId, trigger });
+    const operation = 'send messages';
+    const request = this._buildRequest(options);
+    const closes = this._closes;
+    try {
+      for (;;) {
+        const reader = await this._waitForLiveReader(abortSignal, operation, closes);
+        await this._untilLatestTurnSettles(reader, chatId, abortSignal, operation);
+        // `close()` or a later call can replace the reader during the wait;
+        // the wait for a live reader then throws or moves to the new one.
+        // From this check on, nothing awaits until the turn is posted.
+        if (reader !== this._reader || reader.stale) continue;
+        const stream = this._openReply(reader, chatId, abortSignal, operation);
+        // Not awaited: a backend that runs the agent inside the request holds
+        // it open for the whole turn. A failure reaches `useChat` through the
+        // stream.
+        void this._post(request, abortSignal, chatId, stream);
+        return stream.readable;
+      }
+    } catch (error) {
+      if (this._closes !== closes) {
+        this._logger.debug('ChatTransport.sendMessages(); the transport closed before posting', { chatId });
+        throw stoppedError(operation, CLOSED);
+      }
+      if (abortSignal?.aborted === true) {
+        this._logger.debug('ChatTransport.sendMessages(); stopped before posting', { chatId });
+      }
+      throw error;
+    }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- the methods are stubs until the read path lands
+  // eslint-disable-next-line @typescript-eslint/require-await -- a stub until rejoining a turn lands
   async reconnectToStream(): Promise<ReadableStream<AI.UIMessageChunk> | null> {
     throw new Ably.ErrorInfo('unable to reconnect to stream; not implemented', ErrorCode.InternalError, 500);
   }
 
   close(): void {
-    /* nothing to release until the read path lands */
+    this._logger.trace('ChatTransport.close();');
+    this._closes += 1;
+    const reader = this._reader;
+    if (reader === undefined) return;
+    this._reader = undefined;
+    // Not awaited: it never rejects, and the next reader on the channel
+    // waits for it.
+    void reader.close();
+    this._logger.info('ChatTransport.close(); stopped reading the channel');
+  }
+
+  /**
+   * The reader serving replies. Opens one on first use, and again when the
+   * current one is stale: it could not read the channel, or the channel lost
+   * continuity under it. Replacing a stale reader closes it, which ends the
+   * replies still reading it as a stop.
+   * @returns The reader.
+   */
+  private _ensureReader(): TurnReader {
+    const current = this._reader;
+    if (current !== undefined && !current.stale) return current;
+    // Not awaited: it never rejects, and the new reader waits for it. Only a
+    // reader that lost continuity can have replies to end: one that could
+    // not read the channel never handed any out.
+    if (current !== undefined) void current.close(LOST_CONTINUITY);
+    const reader = new TurnReader({ client: this._client, channel: this._channel, logger: this._logger });
+    this._reader = reader;
+    this._logger.info('ChatTransport; reading the channel', { again: current !== undefined });
+    return reader;
+  }
+
+  /**
+   * Wait until the reader serving replies is live, and return it. When a
+   * later call replaces the reader during the wait, wait for the new one.
+   * @param signal - `useChat`'s abort signal.
+   * @param operation - The call that is waiting, for the error.
+   * @param closes - The count of `close()` calls when the call began.
+   * @returns The live reader.
+   * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fires or the transport closes first; the reader's failure otherwise.
+   */
+  private async _waitForLiveReader(
+    signal: AbortSignal | undefined,
+    operation: string,
+    closes: number,
+  ): Promise<TurnReader> {
+    for (;;) {
+      // Checked before a reader is opened: a call that `close()` overtook
+      // must not read the channel again.
+      if (this._closes !== closes) throw stoppedError(operation, CLOSED);
+      const reader = this._ensureReader();
+      try {
+        await untilAborted(reader.ready, signal, operation);
+      } catch (error) {
+        // A reader closed or replaced during the wait failed for that
+        // reason, not this call's: go round, and the check above throws if
+        // `close()` was called.
+        if (this._closes !== closes || reader !== this._reader) continue;
+        throw error;
+      }
+      if (reader === this._reader && !reader.stale) return reader;
+    }
+  }
+
+  /**
+   * Wait while the latest turn's agent is still publishing, so the turn about
+   * to be posted cannot stream at the same time. Stop waiting when the turn
+   * goes quiet, as it does when its agent has died.
+   * @param reader - The live reader.
+   * @param chatId - The chat, for the log.
+   * @param signal - `useChat`'s abort signal.
+   * @param operation - The call that is waiting, for the error.
+   * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fires first.
+   */
+  private async _untilLatestTurnSettles(
+    reader: TurnReader,
+    chatId: string,
+    signal: AbortSignal | undefined,
+    operation: string,
+  ): Promise<void> {
+    // Look again after each wait: a newer turn may have started, or the turn
+    // may have ended with an `error` and now waits only for its tail.
+    for (let turn = reader.latest; turn?.publishing === true; turn = reader.latest) {
+      // A turn that has ended but is still publishing ended with an `error`:
+      // the AI SDK still writes a `finish` after it.
+      const awaitingErrorTail = turn.ended;
+      this._logger.debug('ChatTransport.sendMessages(); waiting for the latest turn', {
+        chatId,
+        turn: turn.startSerial,
+      });
+      const outcome = await untilSettledOrQuiet(
+        turn,
+        awaitingErrorTail ? ERROR_TAIL_QUIET_MS : RUNNING_TURN_QUIET_MS,
+        signal,
+        operation,
+      );
+      if (outcome === 'quiet') {
+        if (!awaitingErrorTail) {
+          this._logger.warn('ChatTransport.sendMessages(); the running turn went quiet, so posting anyway', {
+            chatId,
+            turn: turn.startSerial,
+          });
+        }
+        return;
+      }
+    }
+  }
+
+  /**
+   * Open a reply: a stream that follows the reader and ends when `useChat`'s
+   * signal fires.
+   * @param reader - The live reader.
+   * @param chatId - The chat, for the log.
+   * @param signal - `useChat`'s abort signal.
+   * @param operation - The call that opens it, for the error.
+   * @returns The reply's stream.
+   * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal has already fired: nothing was handed back, so nothing is stopped.
+   */
+  private _openReply(
+    reader: TurnReader,
+    chatId: string,
+    signal: AbortSignal | undefined,
+    operation: string,
+  ): TurnStream {
+    if (signal?.aborted === true) throw stoppedError(operation, ABORTED);
+    const onAbort = (): void => {
+      this._logger.debug('ChatTransport; reply aborted', { chatId });
+      stream.fail(stoppedError('read the turn', ABORTED));
+    };
+    const stream = new TurnStream(() => {
+      signal?.removeEventListener('abort', onAbort);
+      reader.unfollow(stream);
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    reader.waitForNextTurn(stream);
+    return stream;
+  }
+
+  /**
+   * Build the request for a turn, logging a request that cannot be built.
+   * @param options - What `useChat` passed to `sendMessages`.
+   * @returns The request.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the headers, body or messages cannot be made into a request.
+   */
+  private _buildRequest(options: SendMessagesOptions): TurnRequest {
+    try {
+      return requestOf(options);
+    } catch (error) {
+      this._logger.error('ChatTransport.sendMessages(); unable to build the request', {
+        chatId: options.chatId,
+        error: errorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Post a turn to the backend. A failure ends the reply, unless the reply
+   * has already ended.
+   * @param request - The turn's request.
+   * @param signal - `useChat`'s abort signal, which aborts the request.
+   * @param chatId - The chat, for the log.
+   * @param stream - The reply.
+   */
+  private async _post(
+    request: TurnRequest,
+    signal: AbortSignal | undefined,
+    chatId: string,
+    stream: TurnStream,
+  ): Promise<void> {
+    let failure: Ably.ErrorInfo;
+    // What the log says about the failure. A response's body can echo the
+    // conversation, so a failed response logs only its status.
+    let detail: { status: number } | { error: string };
+    try {
+      const response = await fetch(this._api, {
+        method: 'POST',
+        headers: request.headers,
+        body: request.body,
+        signal,
+      });
+      if (response.ok) {
+        this._logger.debug('ChatTransport.sendMessages(); posted', { chatId, status: response.status });
+        return;
+      }
+      detail = { status: response.status };
+      failure = new Ably.ErrorInfo(
+        `unable to send messages; ${this._api} answered ${String(response.status)}: ${await responseText(response)}`,
+        ErrorCode.SessionSendFailed,
+        response.status,
+      );
+    } catch (error) {
+      failure = new Ably.ErrorInfo(
+        `unable to send messages; ${errorMessage(error)}`,
+        ErrorCode.SessionSendFailed,
+        500,
+        errorCause(error),
+      );
+      detail = { error: failure.message };
+    }
+    if (!stream.ended) {
+      this._logger.error('ChatTransport.sendMessages(); the request failed', { chatId, ...detail });
+      stream.fail(failure);
+      return;
+    }
+    if (signal?.aborted === true) {
+      this._logger.debug('ChatTransport.sendMessages(); the request was aborted with its reply', { chatId });
+      return;
+    }
+    this._logger.warn('ChatTransport.sendMessages(); the request failed after its reply ended', {
+      chatId,
+      ...detail,
+    });
   }
 }
 

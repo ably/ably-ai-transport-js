@@ -48,6 +48,11 @@
  * stream's pending acks before sending the message that ends it, append or
  * publish, and for nothing else. A publisher that sets the window to 0 gets
  * one delivery per append, and the wait then costs one round trip per stream.
+ *
+ * That wait orders a stream against its own closer and nothing else. The
+ * platform does not order a create against an append, so a publish that
+ * opens another stream, or a plain publish, can reach subscribers ahead of
+ * an open stream's held appends.
  */
 
 import * as Ably from 'ably';
@@ -83,17 +88,26 @@ export interface ChannelWriter {
   updateMessage(message: Ably.Message): Promise<Ably.UpdateDeleteResult>;
 }
 
+/** Where one write landed. */
+export interface WriteResult {
+  /** The serial of the message the write landed on: a publish's ack serial, or for an append or an update, the serial of the stream's message. */
+  serial: string;
+  /** Whether the write was a publish, including the publish an append to a key not yet live becomes. */
+  published: boolean;
+}
+
 /** One pipe's writer. */
 export interface PipeWriter {
   /**
-   * Perform the operation an encoded message asks for. Resolves with the ack
-   * serial of a publish, including the publish that an append to a key not yet
-   * live becomes, and with `undefined` for an append to a live key or an
-   * update. An append to a live key is not awaited; its failure surfaces from
-   * the flush that runs when its stream ends or the pipe ends.
+   * Perform the operation an encoded message asks for, and resolve with where
+   * it landed. A publish resolves once acked, with its ack serial, and so does
+   * the publish that an append to a key not yet live becomes. An append to a
+   * live key resolves at once with the stream's serial, before its ack; its
+   * failure surfaces from the flush that runs when its stream ends or the
+   * pipe ends. An update resolves once acked, with the stream's serial.
    * @throws {Ably.ErrorInfo} `InvalidArgument` for a publish under a live key or an update to a key that is not live; `InternalError` when a publish returns no serial; `StreamedMessageFinalizeFailed` when a stream this message ends could not be repaired.
    */
-  write(encoded: EncodedMessage): Promise<string | undefined>;
+  write(encoded: EncodedMessage): Promise<WriteResult>;
   /**
    * Await every pending append and repair each stream whose append failed with
    * one full-content update.
@@ -131,9 +145,9 @@ class DefaultPipeWriter implements PipeWriter {
     this._logger = logger?.withContext({ component: 'PipeWriter' });
   }
 
-  async write(encoded: EncodedMessage): Promise<string | undefined> {
+  async write(encoded: EncodedMessage): Promise<WriteResult> {
     const { message, publish, append, update, ends } = encoded;
-    let serial: string | undefined;
+    let result: WriteResult;
 
     // The message that ends a stream lands after the stream's appends and the
     // repair of any that failed: sent behind an unacked delta it could be
@@ -148,14 +162,15 @@ class DefaultPipeWriter implements PipeWriter {
       // The first append of a stream opens its message; see the module comment.
       const stream = this._streams.get(append);
       if (stream === undefined) {
-        serial = await this._publish(append, marked);
+        result = { serial: await this._publish(append, marked), published: true };
       } else {
         this._append(append, stream, marked);
+        result = { serial: stream.serial, published: false };
       }
     } else if (update === undefined) {
-      serial = await this._publish(publish, publish === undefined ? closing : marked);
+      result = { serial: await this._publish(publish, publish === undefined ? closing : marked), published: true };
     } else {
-      await this._update(update, marked);
+      result = { serial: await this._update(update, marked), published: false };
     }
 
     if (ends !== undefined) {
@@ -166,7 +181,7 @@ class DefaultPipeWriter implements PipeWriter {
       this._logger?.debug('PipeWriter.write(); stream ended', { key: ends, serial: ended });
     }
 
-    return serial;
+    return result;
   }
 
   async flush(): Promise<void> {
@@ -241,7 +256,7 @@ class DefaultPipeWriter implements PipeWriter {
     await this._repair(own);
   }
 
-  private async _update(key: string, message: Ably.Message): Promise<void> {
+  private async _update(key: string, message: Ably.Message): Promise<string> {
     const stream = this._streams.get(key);
     if (stream === undefined) {
       throw new Ably.ErrorInfo(`unable to update; no live stream for key '${key}'`, ErrorCode.InvalidArgument, 400);
@@ -251,6 +266,7 @@ class DefaultPipeWriter implements PipeWriter {
     stream.accumulated = stringOf(message.data);
     stream.name = message.name;
     stream.extras = message.extras;
+    return stream.serial;
   }
 
   private async _repair(snapshot: PendingAppend[]): Promise<void> {

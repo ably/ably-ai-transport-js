@@ -100,7 +100,7 @@ wrote, each carrying more text. The window is the publishing client's
 `appendRollupWindow` transport param, and 0 gives one delivery per append.
 The pipe writer sends appends as they arrive and waits only before the
 message that ends a stream, so a closer is never rolled up with, or delivered
-ahead of, the delta before it (`src/core/transport/pipe-writer.ts`).
+ahead of, the delta before it (`src/core/adaptor/pipe-writer.ts`).
 
 **Wire curation belongs to the codec, at encode.** Every type in the codec's
 event union has a row. A row that returns `undefined` keeps its event off the
@@ -249,7 +249,7 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    builder translates and checks nothing. The transport adds the headers of
    the `send` or `pipe` call and prefers the row's where both name a key, so a
    row keeps a header it writes and its `decode` sees the merged map
-   (`src/core/transport/headers.ts`), since the wire cannot tell a caller's
+   (`src/core/adaptor/headers.ts`), since the wire cannot tell a caller's
    headers from the row's; the shipped codecs rebuild events from `fields` and
    never spread `headers`. A `type`
    key in `fields` travels like any other, and the type the builder matched

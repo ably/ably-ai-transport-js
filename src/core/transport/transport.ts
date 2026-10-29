@@ -41,15 +41,15 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
+import { type MessageHeaders, prepareHeaders, withHeaders } from '../adaptor/headers.js';
+import { type PipeResult, type PipeSource, pipeStream } from '../adaptor/pipe-stream.js';
+import { createPipeWriter } from '../adaptor/pipe-writer.js';
 import { registerAgent } from '../agent.js';
 import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
 import { createDecoder, type Decoder } from '../decoder/decoder.js';
 import { bestEffortDetach, closedError, ContinuityWatcher, subscribeAndAttach } from './channel-support.js';
-import { type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import { type HistoryOptions, type HistoryPage, openHistoryWalk } from './history-pager.js';
-import { type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
-import { createPipeWriter } from './pipe-writer.js';
 import {
   type Replay,
   type ReplayResult,

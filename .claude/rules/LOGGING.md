@@ -62,7 +62,7 @@ The logger delegates to a `LogHandler` function. A default `consoleLogger` is pr
 type LogHandler = (message: string, level: LogLevel, context?: LogContext) => void;
 ```
 
-`src/core/transport/pipe-writer.ts` is the reference implementation to copy
+`src/core/adaptor/pipe-writer.ts` is the reference implementation to copy
 from. The examples below are deliberately generic (`DefaultFoo.bar()`) so they
 cannot drift against a rename — read the real strings off the code, not from
 here.

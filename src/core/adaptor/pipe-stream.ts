@@ -228,8 +228,8 @@ export const pipeStream = async <E>(
         for (const encodedMessage of encoded) {
           const { message: encodedBody } = encodedMessage;
           const message = headers === undefined ? encodedBody : withHeaders(encodedBody, headers);
-          const acked = await writer.write({ ...encodedMessage, message });
-          if (acked !== undefined) serial = acked;
+          const written = await writer.write({ ...encodedMessage, message });
+          if (written.published) serial = written.serial;
         }
       } catch (error) {
         fail('write failed', error, event);

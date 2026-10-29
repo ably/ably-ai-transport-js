@@ -1,10 +1,10 @@
 import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pipeStream } from '../../../src/core/adaptor/pipe-stream.js';
+import type { PipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
+import { createPipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
 import type { Codec } from '../../../src/core/codec/index.js';
-import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
-import type { PipeWriter } from '../../../src/core/transport/pipe-writer.js';
-import { createPipeWriter } from '../../../src/core/transport/pipe-writer.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';

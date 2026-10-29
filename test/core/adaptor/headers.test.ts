@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { prepareHeaders, withHeaders } from '../../../src/core/transport/headers.js';
+import { prepareHeaders, withHeaders } from '../../../src/core/adaptor/headers.js';
 import { ErrorCode } from '../../../src/errors.js';
 
 describe('prepareHeaders', () => {

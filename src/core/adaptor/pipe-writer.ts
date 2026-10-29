@@ -231,10 +231,15 @@ class DefaultPipeWriter implements PipeWriter {
     stream.name = message.name;
     stream.extras = message.extras;
     const promise = this._channel.appendMessage({ ...message, serial: stream.serial });
-    // Not awaited here: the ack is collected by flush. The no-op catch keeps an
-    // early rejection from surfacing as unhandled before flush collects it.
-    promise.catch(() => {
-      /* collected by flush */
+    // Not awaited here: the ack is collected by flush. The catch keeps an
+    // early rejection from surfacing as unhandled before flush collects it,
+    // and logs it, since a pipe that stops before a flush drops it unrepaired.
+    promise.catch((error: unknown) => {
+      this._logger?.debug('PipeWriter.write(); append failed, the next flush repairs the stream', {
+        key,
+        serial: stream.serial,
+        error: errorMessage(error),
+      });
     });
     this._pending.push({ key, promise });
   }

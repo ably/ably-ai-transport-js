@@ -579,6 +579,38 @@ describe('pipeEach', () => {
     expect(yielded.map((p) => p.event.type)).toEqual(['text-start', 'text-delta', 'text-delta']);
   });
 
+  it('repairs what it wrote before throwing when the pipe itself fails', async () => {
+    // The second delta's append fails and is held; the note's publish then
+    // fails and ends the loop. The repair runs before the failure is thrown.
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.publish
+      .mockResolvedValueOnce({ serials: ['serial-1'] })
+      .mockResolvedValueOnce({ serials: ['serial-2'] })
+      .mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 50000, 500));
+    const events: TestEvent[] = [
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'a' },
+      { type: 'text-delta', id: 'm1', delta: 'b' },
+      { type: 'note', text: 'n' },
+    ];
+    const { yielded, error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: 50000 } });
+    expect(yielded).toHaveLength(3);
+    expect(channel.updateCalls).toHaveLength(1);
+    expect(channel.updateCalls[0]?.data).toBe('ab');
+  });
+
+  it('keeps the failure as the error when the repair after it also fails', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+    // CAST: force a type the codec has no row for past the compile-time check.
+    const rogue = { type: 'rogue' } as unknown as TestEvent;
+    const events: TestEvent[] = [{ type: 'text-start', id: 'm1' }, ...textEvents('m1', 'a', 'b').slice(1, 3), rogue];
+    const { error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+    expect(channel.updateMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('stops dead on break: no closer, no flush, no repair, and releases the source', async () => {
     channel.appendMessage.mockRejectedValueOnce(new Error('network'));
     const { iterable, state } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a', 'b'));

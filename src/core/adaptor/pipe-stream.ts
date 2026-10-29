@@ -30,7 +30,10 @@ import type { PipeWriter } from './pipe-writer.js';
  * one event at a time and releases the source when it ends, is cancelled or
  * errors: it releases a stream reader's lock, or calls an iterator's
  * `return()`. A `return()` that throws or rejects is logged at warn and is
- * never the pipe's outcome.
+ * never the pipe's outcome. Releasing a `ReadableStream` does not cancel it:
+ * a pipe that stops early leaves the stream's producer, such as a model call,
+ * running, and stopping it is the caller's job, for example by aborting the
+ * model call with the same signal.
  * @template E - The codec's event union.
  */
 export type PipeSource<E> = ReadableStream<E> | AsyncIterable<E>;
@@ -115,13 +118,17 @@ const toPuller = <E>(source: PipeSource<E>, logger?: Logger): Puller<E> => {
 };
 
 /**
- * Adapt an AbortSignal into a promise that resolves once the signal aborts,
- * paired with a cleanup that detaches the listener. With no signal the promise
- * never resolves; an already-aborted signal resolves immediately.
+ * Adapt an AbortSignal into a promise that resolves to `'cancelled'` once the
+ * signal aborts, paired with a cleanup that detaches the listener. With no
+ * signal the promise never resolves; an already-aborted signal resolves
+ * immediately. Built once per pipe, so each pull races the same promise rather
+ * than adding a reaction to it per event.
  * @param signal - The AbortSignal to watch, or undefined for no cancellation.
  * @returns The abort promise and a cleanup to call when racing is done.
  */
-const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promise<void>; cleanup: () => void } => {
+const abortSignalToPromise = (
+  signal: AbortSignal | undefined,
+): { cancelled: Promise<'cancelled'>; cleanup: () => void } => {
   let listener: (() => void) | undefined;
   const promise =
     signal === undefined
@@ -138,7 +145,9 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
   const cleanup = (): void => {
     if (listener && signal) signal.removeEventListener('abort', listener);
   };
-  return { promise, cleanup };
+  // .then() is intentional: it turns the AbortSignal into a discriminant for
+  // Promise.race, which has no async/await equivalent.
+  return { cancelled: promise.then(() => 'cancelled' as const), cleanup };
 };
 
 const pipeFailed = (what: string, error: unknown, event?: unknown): Ably.ErrorInfo =>
@@ -195,18 +204,16 @@ interface EventWritten {
  * fires mid-read.
  * @param puller - The source.
  * @param signal - The pipe's signal.
- * @param aborted - A promise that resolves when the signal fires.
+ * @param cancelled - A promise that resolves to `'cancelled'` when the signal fires.
  * @returns The pull, or `'cancelled'`.
  */
 const pullNext = async <E>(
   puller: Puller<E>,
   signal: AbortSignal | undefined,
-  aborted: Promise<void>,
+  cancelled: Promise<'cancelled'>,
 ): Promise<PullResult<E> | 'cancelled'> => {
   if (signal?.aborted === true) return 'cancelled';
-  // .then() is intentional: it turns the AbortSignal into a discriminant for
-  // Promise.race, which has no async/await equivalent.
-  return Promise.race([puller.read(), aborted.then(() => 'cancelled' as const)]);
+  return Promise.race([puller.read(), cancelled]);
 };
 
 /**
@@ -280,7 +287,7 @@ export const pipeStream = async <E>(
     while (true) {
       let pulled;
       try {
-        pulled = await pullNext(puller, signal, abort.promise);
+        pulled = await pullNext(puller, signal, abort.cancelled);
       } catch (error) {
         fail(pipeFailed('source failed', error));
         break;
@@ -336,22 +343,26 @@ export const pipeStream = async <E>(
  * A publish is yielded once acked; an append to an open stream is yielded at
  * once, before its ack. A failed append is not reported where it was
  * yielded: the writer repairs the stream before the event that ends it, and
- * a failed repair throws from that event, which is never yielded. When the
- * source ends, the writer flushes and repairs what it wrote before the loop
- * finishes.
+ * a failed repair throws from that event, which is never yielded.
  *
- * Any other exit stops where the pipe has got to: a `break`, a `return`, a
- * throw in the loop body, the signal, or a failure. Nothing more is written,
+ * When the source ends, or the pipe itself fails (the source throws, an event
+ * cannot be encoded, a write fails), the writer flushes and repairs what it
+ * wrote before the loop finishes or the failure is thrown. A failure stays the
+ * error, and a repair that also fails after it is logged.
+ *
+ * A stop the consumer chooses ends where the pipe has got to: a `break`, a
+ * `return`, a throw in the loop body, or the signal. Nothing more is written,
  * nothing is flushed or repaired, and no open stream is ended, so a
  * subscriber sees those streams stay open. Appends already sent finish on
  * their own, and a rejected one is dropped. The source is released either
- * way.
+ * way, but a `ReadableStream` is not cancelled: its producer keeps running
+ * until the caller stops it.
  * @param source - The events to pipe.
  * @param codec - The codec that turns each event into an Ably message.
  * @param writer - This pipe's writer, holding its key table.
  * @param options - The signal, the call's headers and the logger.
  * @yields {Published<E>} Each event with the serial of the message it landed on.
- * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fired; `PipeFailed` when the source, an encode, a write or the final repair failed, with the failure as `cause`.
+ * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fired; `PipeFailed` when the source, an encode, a write or a repair failed, with the failure as `cause`.
  */
 export async function* pipeEach<E>(
   source: PipeSource<E>,
@@ -363,22 +374,39 @@ export async function* pipeEach<E>(
   logger?.trace('pipeEach();');
   const puller = toPuller(source, logger);
   const abort = abortSignalToPromise(signal);
+  let failure: Ably.ErrorInfo | undefined;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by return
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by break
     while (true) {
       let pulled;
       try {
-        pulled = await pullNext(puller, signal, abort.promise);
+        pulled = await pullNext(puller, signal, abort.cancelled);
       } catch (error) {
-        throw pipeFailed('source failed', error);
+        failure = pipeFailed('source failed', error);
+        break;
       }
       if (pulled === 'cancelled') {
         logger?.debug('pipeEach(); cancelled by signal');
         throw cancelledError();
       }
       if (pulled.done) break;
-      const written = await writeEvent(pulled.value, codec, writer, headers);
+      let written;
+      try {
+        written = await writeEvent(pulled.value, codec, writer, headers);
+      } catch (error) {
+        failure = error instanceof Ably.ErrorInfo ? error : pipeFailed('write failed', error);
+        break;
+      }
       yield { event: pulled.value, serial: written.landed };
+    }
+    if (failure !== undefined) {
+      logger?.debug('pipeEach(); pipe failed, repairing before throwing', { error: failure.message });
+      try {
+        await writer.flush();
+      } catch (error) {
+        logger?.error('pipeEach(); repair after failure also failed', { error: errorMessage(error) });
+      }
+      throw failure;
     }
     try {
       await writer.flush();

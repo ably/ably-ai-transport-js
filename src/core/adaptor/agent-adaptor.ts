@@ -25,7 +25,13 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
 import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
-import { pipeEach, type PipeResult, type PipeSource, pipeStream, type Published } from './pipe-stream.js';
+import {
+  pipeEach as pipeEachDriver,
+  type PipeResult,
+  type PipeSource,
+  pipeStream,
+  type Published,
+} from './pipe-stream.js';
 import { type ChannelWriter, createPipeWriter } from './pipe-writer.js';
 
 /** Options for an agent adaptor factory. */
@@ -120,18 +126,23 @@ export interface AgentAdaptor<E> {
    * at once, before its ack, so nothing caps the appends in flight: a source
    * faster than the connection queues them in ably-js. A failed append is
    * repaired before the event that ends its stream; a failed repair throws
-   * from that event, which is never yielded. When the source ends, the
-   * adaptor flushes and repairs what it wrote before the loop finishes.
+   * from that event, which is never yielded. When the source ends, or the
+   * pipe itself fails, the adaptor flushes and repairs what it wrote before
+   * the loop finishes or the failure is thrown.
    *
    * Leaving the loop early (`break`, `return`, a throw in the loop body) or
    * the signal firing stops where the pipe has got to. Nothing more is
    * written, nothing is flushed or repaired, and no open stream is ended, so
    * subscribers see those streams stay open and a decoder keeps their state.
-   * Track the last serial inside the loop if it is needed after it.
+   * Leaving early does not stop the source: a `ReadableStream` is released,
+   * not cancelled, so its producer (a model call, say) keeps running until
+   * the caller stops it, for example by aborting the model call with the
+   * same signal. Track the last serial inside the loop if it is needed after
+   * it.
    * @param source - The events to write, a ReadableStream or an async iterable.
    * @param options - The pipe's abort signal and the call's headers.
    * @returns The events, each with the serial of the message it landed on.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, before the source is touched; from the loop, `OperationCancelled` when the signal fires and `PipeFailed` when the source throws, the codec cannot encode an event, a publish or update fails, or a repair fails, with the failure as `cause`.
+   * @throws {Ably.ErrorInfo} `InvalidArgument`, thrown by this call itself and not from the loop, when a header value is not a string, number, boolean or null; from the loop, `OperationCancelled` when the signal fires and `PipeFailed` when the source throws, the codec cannot encode an event, a publish or update fails, or a repair fails, with the failure as `cause`.
    */
   pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<Published<E>>;
 }
@@ -205,7 +216,7 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
     this._logger.trace('AgentAdaptor.pipeEach();', { headers: Object.keys(options?.headers ?? {}) });
     const headers = mergeHeaders(this._headers, prepareHeaders(options?.headers, 'pipe'));
     const writer = createPipeWriter(this._channel, this._logger);
-    return pipeEach(source, this._codec, writer, { signal: options?.signal, headers, logger: this._logger });
+    return pipeEachDriver(source, this._codec, writer, { signal: options?.signal, headers, logger: this._logger });
   }
 
   /**

@@ -12,8 +12,11 @@ transport relies on arrived in patch releases within each major. The peer
 range still names majors. The factory's TSDoc names the release each such
 behaviour needs and what an older release does without it, and the `ai` dev
 dependency's floor sits at or past the newest `ai` release named there, so the
-tests exercise those behaviours. A parameter type that gained a member within
-the range is widened structurally.
+tests exercise those behaviours. `@ai-sdk/react` is not a dependency: the
+suite that drives `AbstractChat` stands in for `useChat`. A test of a
+behaviour that some supported releases lack detects it at runtime and skips,
+and a parameter type that gained a member within the range is widened
+structurally.
 
 **The codec's union is the SDK's `UIMessageChunk` plus the chunk types some
 supported releases lack.** `VercelCrossMajorChunk` in

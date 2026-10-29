@@ -19,6 +19,8 @@ Every exported function and every non-trivial internal module gets its own test 
 
 One exception: the React surface is tested per _surface_, not per module. A provider and the hooks that read from it only mean anything together, since a hook test needs the provider mounted around it, so `test/react/` holds one suite per provider-and-its-hooks rather than one per file.
 
+An adapter to a provider's client framework is also tested through that framework's own client, so the framework's reducer, stop and resume run against it: the `useChat` transport has a suite that drives it with the AI SDK's `AbstractChat`, beside its per-module suites.
+
 ### Style
 
 - Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` records publishes, appends and updates and serves history pages, and `test/helper/mock-client.ts` is the client a transport resolves it from, recording the name and options each `channels.get` received. `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.

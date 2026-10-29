@@ -7,7 +7,6 @@
  */
 
 import type { Codec } from '../../src/core/codec/index.js';
-import { CODEC_FIELD, MESSAGE_NAME, readOwnExtras } from '../../src/core/wire.js';
 
 export type SplitEvent =
   /** One message, one event. */
@@ -18,9 +17,9 @@ export type SplitEvent =
   | { type: 'mixed'; text: string };
 
 /**
- * Build the split codec. A message the transport wrote for it decodes to one
- * `half` per `|`-separated piece of its data; any other message decodes to
- * nothing.
+ * Build the split codec. A message decodes to one `half` per `|`-separated
+ * piece of its data. The decoder hands it only the messages the transport
+ * wrote for it.
  * @returns The codec.
  */
 export const createSplitCodec = (): Codec<SplitEvent> => ({
@@ -40,8 +39,7 @@ export const createSplitCodec = (): Codec<SplitEvent> => ({
   },
   decode: (message) => {
     const data: unknown = message.data;
-    const own = message.name === MESSAGE_NAME && readOwnExtras(message.extras)?.[CODEC_FIELD] === 'split';
-    if (!own || typeof data !== 'string') return [];
+    if (typeof data !== 'string') return [];
     return data.split('|').map((text): SplitEvent => ({ type: 'half', text }));
   },
 });

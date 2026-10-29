@@ -1,12 +1,12 @@
 /**
- * Decoder core — the per-serial state a built codec keeps so that one codec
- * instance can decode live delivery and history together.
+ * Decoder core — the per-serial state a decoder keeps so that it can decode
+ * live delivery and history together.
  *
  * Ably delivers a streamed message three ways. A live append carries only its
  * fragment. The first delivery after an attach carries the full content so far
  * as a `message.update`. A history read returns the whole message at whatever
  * version it has reached. The core reduces all three to one shape before a
- * codec row's decode runs: `data` is what this delivery adds.
+ * codec decodes it: `data` is what this delivery adds.
  *
  * To do that it keeps, per serial, the text it has handed on and the highest
  * `version.serial` it has incorporated. The version guard drops a delivery the

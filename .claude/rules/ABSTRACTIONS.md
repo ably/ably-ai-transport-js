@@ -34,8 +34,9 @@ layer is implemented once per provider, and each implementation is a _codec_
 preserve.
 
 - **Generic layer** (`src/core/`, `src/react/`) defines the codec contract
-  (`src/core/codec/codec.ts`), the `defineCodec` builder with its decoder core
-  (`src/core/codec/`), and the transport (`src/core/transport/`). It knows
+  (`src/core/codec/codec.ts`), the `defineCodec` builder (`src/core/codec/`),
+  the decoder with its core (`src/core/decoder/`), and the transport
+  (`src/core/transport/`). It knows
   nothing about any provider's wire types (Vercel's `UIMessageChunk`, OpenAI's
   `ResponseStreamEvent`) and reads nothing a codec writes: the builder's own
   `type` field is the one thing it looks at, and only to pick a row. The

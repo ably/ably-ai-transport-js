@@ -30,8 +30,8 @@ import type {
   ChannelWriter,
   Codec,
   DecodedRow,
-  DecoderCore,
-  DecoderCoreOptions,
+  Decoder,
+  DecoderOptions,
   DefineCodecConfig,
   Delivery,
   EncodedMessage,
@@ -66,7 +66,7 @@ import type {
 } from '../src/index.js';
 import {
   consoleLogger,
-  createDecoderCore,
+  createDecoder,
   createTransport,
   defineCodec,
   ErrorCode,
@@ -107,9 +107,9 @@ describe('@ably/ai-transport', () => {
     expect(Array.isArray(OBJECT_MODES)).toBe(true);
   });
 
-  it('exports the codec builder and decoder core', () => {
+  it('exports the codec builder and the decoder', () => {
     expect(typeof defineCodec).toBe('function');
-    expect(typeof createDecoderCore).toBe('function');
+    expect(typeof createDecoder).toBe('function');
   });
 
   it('builds a codec that carries encode, decode and its id and nothing else', () => {
@@ -154,8 +154,9 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<Codec<TestEvent>['decode']>().returns.toEqualTypeOf<TestEvent[]>();
     expectTypeOf<EncodedMessage>().toHaveProperty('message');
     expectTypeOf<Delivery<TestEvent>>().toHaveProperty('message');
-    expectTypeOf<DecoderCore>().toHaveProperty('prepare');
-    expectTypeOf<DecoderCoreOptions>().toHaveProperty('logger');
+    expectTypeOf<Decoder<TestEvent>>().toHaveProperty('receive');
+    expectTypeOf<Decoder<TestEvent>['decode']>().returns.toEqualTypeOf<Delivery<TestEvent>[]>();
+    expectTypeOf<DecoderOptions>().toHaveProperty('logger');
     expectTypeOf<DefineCodecConfig<TestEvent, TestEvent['type']>>().toHaveProperty('events');
     expectTypeOf<EventRows<TestEvent, TestEvent['type']>>().toHaveProperty('note');
     expectTypeOf<EventRow<TestEvent, 'note'>>().toHaveProperty('encode');

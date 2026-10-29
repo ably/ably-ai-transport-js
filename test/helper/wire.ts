@@ -2,13 +2,13 @@
  * A simulated Ably wire for codec round-trip tests: turn what a codec encodes
  * into the inbound messages a live subscriber would receive, with the serial
  * bookkeeping the pipe writer does on a real channel, and decode them back
- * through a decoder core.
+ * through a decoder.
  */
 
 import type * as Ably from 'ably';
 
 import type { Codec, EncodedMessage } from '../../src/core/codec/index.js';
-import { createDecoderCore } from '../../src/core/codec/index.js';
+import { createDecoder } from '../../src/core/decoder/index.js';
 import { ENDS_FIELD, STREAM_FIELD, withCodec, withOwnField } from '../../src/core/wire.js';
 
 /**
@@ -97,18 +97,14 @@ export const historyOf = (encoded: EncodedMessage[]): Ably.InboundMessage[] => {
 };
 
 /**
- * Decode inbound messages in order, through one decoder core and the codec,
- * as a reader that holds the per-serial state does.
+ * Decode inbound messages in order through one fresh decoder over the codec.
  * @param codec - The codec.
  * @param messages - The inbound messages, in order.
  * @returns The decoded events, in order.
  */
 export const decodeAll = <E>(codec: Codec<E>, messages: Ably.InboundMessage[]): E[] => {
-  const core = createDecoderCore();
-  return messages.flatMap((m) => {
-    const prepared = core.prepare(m);
-    return prepared === undefined ? [] : codec.decode(prepared);
-  });
+  const decoder = createDecoder(codec);
+  return messages.flatMap((m) => decoder.decode(m).flatMap(({ event }) => (event === undefined ? [] : [event])));
 };
 
 /**

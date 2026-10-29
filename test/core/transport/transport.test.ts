@@ -43,14 +43,17 @@ const noop = (): void => {};
 const CHANNEL = 'chat';
 
 /**
- * The `extras` the builder writes for a set of fields: `type` under `ai`, the
- * rest under `ai.fields` when there are any.
+ * The `extras` the transport writes for a set of fields through the test
+ * codec: the codec's id and `type` under `ai`, the rest under `ai.fields` when
+ * there are any.
  * @param fields - The fields.
  * @param fields.type - The event type.
  * @returns The extras.
  */
 const extrasFor = ({ type, ...fields }: Record<string, unknown>): Record<string, unknown> =>
-  Object.keys(fields).length > 0 ? { ai: { type, fields } } : { ai: { type } };
+  Object.keys(fields).length > 0
+    ? { ai: { codec: 'test-codec', type, fields } }
+    : { ai: { codec: 'test-codec', type } };
 
 const inbound = (opts: {
   action?: Ably.InboundMessage['action'];
@@ -64,6 +67,7 @@ const inbound = (opts: {
 }): Ably.InboundMessage =>
   ({
     action: opts.action ?? 'message.create',
+    name: 'ai',
     serial: opts.serial,
     data: 'data' in opts ? opts.data : '',
     extras: 'extras' in opts ? opts.extras : extrasFor(opts.fields ?? { type: 'note' }),
@@ -82,7 +86,11 @@ const noteMessage = (serial: string, text: string): Ably.InboundMessage =>
  * @returns The inbound message.
  */
 const deltaMessage = (serial: string, text: string): Ably.InboundMessage =>
-  inbound({ serial, data: text, extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } } });
+  inbound({
+    serial,
+    data: text,
+    extras: { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } },
+  });
 
 /**
  * A promise the test settles, so a replay function can keep a history replay

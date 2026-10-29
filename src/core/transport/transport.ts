@@ -45,15 +45,9 @@ import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
-import { createDecoderCore, type DecoderCore } from '../codec/decoder.js';
+import { createDecoder, type Decoder } from '../decoder/decoder.js';
 import { withCodec } from '../wire.js';
-import {
-  bestEffortDetach,
-  closedError,
-  ContinuityWatcher,
-  subscribeAndAttach,
-  wrapMessageProcessingError,
-} from './channel-support.js';
+import { bestEffortDetach, closedError, ContinuityWatcher, subscribeAndAttach } from './channel-support.js';
 import { type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import { type HistoryOptions, type HistoryPage, openHistoryWalk } from './history-pager.js';
 import { type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
@@ -362,8 +356,8 @@ const wrapPublishError = (error: unknown): Ably.ErrorInfo => {
 class DefaultTransport<E> implements Transport<E> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<E>;
-  /** The per-serial state behind every decode, live and history alike, so a message both carry decodes once. */
-  private readonly _core: DecoderCore;
+  /** One decoder for live and history alike, so a message both carry decodes once. */
+  private readonly _decoder: Decoder<E>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<TransportEvents>;
   private readonly _pipes = new Set<InFlightPipe>();
@@ -386,8 +380,11 @@ class DefaultTransport<E> implements Transport<E> {
     });
     this._channel = resolveChannel(options, this._logger);
     this._codec = options.codec;
-    this._core = createDecoderCore({ logger: this._logger });
     this._emitter = new EventEmitter<TransportEvents>(this._logger);
+    this._decoder = createDecoder(options.codec, { logger: this._logger });
+    this._decoder.onError((error) => {
+      this._emitter.emit('error', error);
+    });
     this._listener = (message: Ably.InboundMessage) => {
       if (!this._closed) this._deliverNow(message);
     };
@@ -652,29 +649,16 @@ class DefaultTransport<E> implements Transport<E> {
   }
 
   /**
-   * Decode one message into its deliveries. Every message is delivered: one
-   * delivery per event the codec decodes from it, and one with
-   * `event: undefined` when the codec has nothing for it (a foreign message, a
-   * replay its version guard dropped, a delete) or its decode threw, so the
-   * application always sees the raw message.
+   * Decode one message into its deliveries through the transport's decoder.
+   * Every message is delivered: one delivery per event the codec decodes from
+   * it, and one with `event: undefined` when the codec has nothing for it (a
+   * foreign message, a replay its version guard dropped, a delete) or its
+   * decode threw, which the decoder reports on the error stream.
    * @param message - The inbound message.
    * @returns The deliveries, in order.
    */
   private _toDeliveries(message: Ably.InboundMessage): Delivery<E>[] {
-    this._logger.trace('Transport; inbound message', { serial: message.serial, action: message.action });
-    let events: E[] = [];
-    try {
-      const prepared = this._core.prepare(message);
-      if (prepared !== undefined) events = this._codec.decode(prepared);
-    } catch (error) {
-      const wrapped = wrapMessageProcessingError(error);
-      this._logger.error('Transport; decode failed, delivering the message without an event', {
-        serial: message.serial,
-        error: wrapped.message,
-      });
-      this._emitter.emit('error', wrapped);
-    }
-    return events.length === 0 ? [{ event: undefined, message }] : events.map((event) => ({ event, message }));
+    return this._decoder.decode(message);
   }
 }
 

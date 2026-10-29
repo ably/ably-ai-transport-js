@@ -23,7 +23,7 @@ type LogContext = Record<string, any>;
 | -------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `Trace`  | Routine operations — entry point of every key method. The most verbose level.                                          |
 | `Debug`  | Useful for debugging but superfluous in normal operation — successful completions, state transitions, decision points. |
-| `Info`   | Operationally significant but expected — transport connect/close, lifecycle events.                                    |
+| `Info`   | Operationally significant but expected — lifecycle events.                                                             |
 | `Warn`   | Not an error yet, but could cause problems — unexpected but recoverable states.                                        |
 | `Error`  | An operation has failed and cannot be automatically recovered.                                                         |
 | `Silent` | No logging.                                                                                                            |
@@ -32,12 +32,12 @@ Levels are hierarchical. Setting the level to `Debug` suppresses `Trace` but sho
 
 ## Logger Initialization and Propagation
 
-Create the logger once at the top-level transport, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
+Create the logger once in the top-level component a consumer creates (an adaptor, a decoder), then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
 
 ```ts
-// Top level — a transport always resolves a logger, defaulting to Silent
+// Top level — an adaptor always resolves a logger, defaulting to Silent
 this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
-  component: 'ClientTransport',
+  component: 'AgentAdaptor',
 });
 
 // Passed to child components — always the resolved logger, so context
@@ -48,7 +48,7 @@ this._writer = createPipeWriter(channel, this._logger);
 this._logger = logger?.withContext({ component: 'PipeWriter' });
 ```
 
-A top-level transport accepts `logger?` but never stores an unresolved one: it
+A top-level component accepts `logger?` but never stores an unresolved one: it
 resolves to the Silent default at construction. Only sub-components take
 `logger?` and pass it down.
 
@@ -78,8 +78,8 @@ The default console logger formats as:
 Log messages follow the pattern `ClassName.methodName(); <description>`.
 Prefix with the component a reader would name: the class where one backs the
 component (`DefaultDecoderCore.`), the public component name where a factory
-composes an object literal (`Transport.`, `PipeWriter.`), and the bare
-function name for a standalone helper (`pipeStream`, `subscribeAndAttach`).
+composes an object literal (`AgentAdaptor.`, `PipeWriter.`), and the bare
+function name for a standalone helper (`pipeStream`, `pipeEach`).
 
 ```ts
 // Method entry (trace)
@@ -111,7 +111,7 @@ this._logger.error('DefaultFoo(); subscribe failed');
 - **Debug** — after an operation completes, when taking a branch, or when state
   changes.
 - **Info** — operationally significant but expected lifecycle events
-  (transport connect/close).
+  (a component's lifecycle).
 - **Warn** — not yet an error, but something that could cascade.
 - **Error** — immediately before throwing or rejecting, and when a
   developer-provided callback throws (e.g. `callback threw`, with the error in

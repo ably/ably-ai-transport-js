@@ -5,8 +5,8 @@ import * as Ably from '@ably/pubsub-core';
  *
  * The `Session*` member names mirror the canonical identifiers in the
  * ably-common error registry (`session_send_failed`, …), so they are kept even
- * though this SDK has no session. Read `Session` as the adaptor or decoder
- * that raised it.
+ * though this SDK has no session. Read `Session` as the adaptor, decoder or
+ * `useChat` transport that raised it.
  */
 export enum ErrorCode {
   /**
@@ -18,7 +18,12 @@ export enum ErrorCode {
    * The operation was cancelled (Ably 40033): a caller-supplied `AbortSignal`
    * fired during a history load or a history page wait, or a pipe's signal
    * fired, `close()` included. A cancelled pipe has flushed and repaired what
-   * it wrote before it rejects with this.
+   * it wrote before it rejects with this. The useChat transport ends a reply
+   * with this when `useChat` stops it, when `close()` is called, or when a
+   * later call reads the channel again after the channel lost continuity. It
+   * rejects a call with this when `useChat`'s abort signal fires, or
+   * `close()` ends a `sendMessages`, while the call is still waiting. It names
+   * the error `AbortError`, so `useChat` reads it as a stop.
    */
   OperationCancelled = 40033,
 
@@ -48,7 +53,9 @@ export enum ErrorCode {
   /**
    * A publish through an agent adaptor's `send` was rejected. A capability rejection surfaces as
    * {@link ErrorCode.InsufficientCapability} instead. The underlying Ably
-   * failure is the `cause`.
+   * failure is the `cause`. The useChat transport uses it too, when the POST
+   * of a turn fails or answers with a status outside 2xx. That error has no
+   * `cause`, and for an answer outside 2xx its `statusCode` is that status.
    */
   SessionSendFailed = 104005,
 
@@ -64,7 +71,10 @@ export enum ErrorCode {
   /**
    * The codec threw while the decoder decoded a channel message. The message
    * is still delivered with no event, and the decoder carries on. The thrown
-   * value is the `cause`.
+   * value is the `cause`. The useChat transport ends a reply that is reading a
+   * turn with this when a message arrives live during that turn and cannot be
+   * decoded. A message it reads from history that cannot be decoded is only
+   * logged, and the reply goes on without it.
    */
   SessionMessageProcessingFailed = 104009,
 }

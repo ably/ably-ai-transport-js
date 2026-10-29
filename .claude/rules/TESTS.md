@@ -19,8 +19,9 @@ Every exported function and every non-trivial internal module gets its own test 
 ### Style
 
 - Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` is the channel an adaptor writes to: it records publishes, appends and updates. A decoder takes messages, not a channel, so a decoder test hands it fixture messages directly. The `useChat` transport reads the channel it is handed, so its suites get one from `test/vercel/chat-transport/fixtures.ts` that serves history and live delivery and moves through its states as ably-js does. `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.
+- An adapter's backend is replaced at `fetch` with `vi.stubGlobal`, undone in `afterEach`.
 - A codec suite round-trips through `test/helper/wire.ts`, which turns what the codec encoded into the inbound messages a subscriber would receive, with the serial bookkeeping the pipe writer does on a real channel, and decodes them back through a fresh decoder core on each call, since a codec holds no state of its own.
-- `flushMicrotasks()` or a `setImmediate` hop instead of `setTimeout`; never a clock in a test.
+- `flushMicrotasks()` or a `setImmediate` hop (`nextMacrotask()`) to let async work run; never a clock in a test.
 - For streams that stay open, simulate a terminal event to close deterministically, then drain the reader.
 
 ### What to unit test

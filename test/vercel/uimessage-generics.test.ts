@@ -11,7 +11,7 @@
 import type * as AI from 'ai';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { createVercelCodec, vercelDecoder,type VercelEvent } from '../../src/vercel/index.js';
+import { createVercelCodec, vercelDecoder, type VercelEvent } from '../../src/vercel/index.js';
 
 interface MyMetadata {
   userId: string;

@@ -19,7 +19,6 @@ import {
 } from './fixtures.js';
 
 type SendMessagesOptions = Parameters<AblyChatTransport['sendMessages']>[0];
-
 const prompt: AI.UIMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'Hello?' }] };
 const reply = textTurn('t1', ['Hel', 'lo']);
 
@@ -626,5 +625,98 @@ describe('close', () => {
     await nextMacrotask();
 
     expect(fixture.channel.detach).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconnectToStream', () => {
+  /** A turn that started before the transport read the channel, and goes on live. */
+  const running = wireAcross(reply.slice(0, 3), reply.slice(3));
+
+  it('replays the turn running on the channel from its start chunk, then follows it live', async () => {
+    const { transport, fixture } = setup(running.stored);
+
+    const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+    fixture.deliver(running.live);
+
+    expect(await drain(stream)).toEqual(reply);
+  });
+
+  it('resolves null when the latest turn has finished', async () => {
+    const { transport } = setup(wireOf([...reply, ...textTurn('t2', ['Bye'])]).stored);
+    expect(await transport.reconnectToStream({ chatId: 'chat-1' })).toBeNull();
+  });
+
+  it('resolves null on a channel with no turn', async () => {
+    const { transport } = setup();
+    expect(await transport.reconnectToStream({ chatId: 'chat-1' })).toBeNull();
+  });
+
+  it('keeps reading after null, so a later call rejoins a turn that started in between', async () => {
+    const { transport, fixture } = setup();
+    expect(await transport.reconnectToStream({ chatId: 'chat-1' })).toBeNull();
+    const wire = wireOf(reply).live;
+    fixture.deliver(wire.slice(0, 3));
+
+    const stream = await transport.reconnectToStream({ chatId: 'chat-1' });
+    fixture.deliver(wire.slice(3));
+
+    expect(fixture.channel.history).toHaveBeenCalledTimes(1);
+    expect(await drain(stream)).toEqual(reply);
+  });
+
+  it('rejects with OperationCancelled when stopped while it reads the channel', async () => {
+    const { transport } = setup(running.stored);
+    const controller = new AbortController();
+
+    const reconnecting = transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal });
+    controller.abort();
+
+    await expect(reconnecting).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+  });
+
+  it('resolves null, leaving the channel unread, when the transport closes while it opens the channel', async () => {
+    const { transport, fixture } = setup(running.stored);
+
+    const reconnecting = transport.reconnectToStream({ chatId: 'chat-1' });
+    transport.close();
+
+    expect(await reconnecting).toBeNull();
+    await nextMacrotask();
+    expect(fixture.channel.subscribe).not.toHaveBeenCalled();
+  });
+
+  it('ends the stream with OperationCancelled when stopped after it rejoined', async () => {
+    const { transport } = setup(running.stored);
+    const controller = new AbortController();
+    const stream = await transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal });
+
+    controller.abort();
+
+    const read = drain(stream);
+    await expect(read).rejects.toBeErrorInfo({ code: ErrorCode.OperationCancelled });
+    await expect(read).rejects.toHaveProperty('name', 'AbortError');
+  });
+
+  it('replays the turn again on a call made straight after an abort, as useChat replacing a resumed reply makes', async () => {
+    const { transport, fixture } = setup(running.stored);
+    const controller = new AbortController();
+    const first = await transport.reconnectToStream({ chatId: 'chat-1', abortSignal: controller.signal });
+
+    controller.abort();
+    const second = await transport.reconnectToStream({ chatId: 'chat-1' });
+    fixture.deliver(running.live);
+
+    await expect(drain(first)).rejects.toHaveProperty('name', 'AbortError');
+    expect(await drain(second)).toEqual(reply);
+  });
+
+  it('rejects with SessionSubscriptionFailed when the channel cannot be attached', async () => {
+    const { transport, fixture } = setup();
+    fixture.channel.attach.mockRejectedValue(new Ably.ErrorInfo('channel failed', 90000, 400));
+
+    await expect(transport.reconnectToStream({ chatId: 'chat-1' })).rejects.toBeErrorInfo({
+      code: ErrorCode.SessionSubscriptionFailed,
+      cause: { message: 'channel failed' },
+    });
   });
 });

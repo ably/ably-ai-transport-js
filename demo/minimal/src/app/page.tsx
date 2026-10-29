@@ -1,9 +1,7 @@
 'use client';
 
-import { TransportProvider } from '@ably/ai-transport/react';
-import { vercel } from '@ably/ai-transport/vercel';
 import { createClient, type PubSubClient } from '@ably/pubsub-device';
-import { PubSubClientProvider } from '@ably/pubsub-device/react';
+import { ChannelProvider, PubSubClientProvider } from '@ably/pubsub-device/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
@@ -49,12 +47,12 @@ function ChatPage() {
 
   return (
     <PubSubClientProvider client={client}>
-      <TransportProvider
-        channelName={channelName}
-        codec={vercel}
-      >
-        <Chat channelName={channelName} />
-      </TransportProvider>
+      <ChannelProvider channelName={channelName}>
+        <Chat
+          key={channelName}
+          channelName={channelName}
+        />
+      </ChannelProvider>
     </PubSubClientProvider>
   );
 }

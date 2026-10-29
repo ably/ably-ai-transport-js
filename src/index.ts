@@ -1,18 +1,26 @@
-// The transport
+// The agent adaptor
 export type {
+  AgentAdaptor,
+  AgentAdaptorOptions,
   ChannelWriter,
-  FromSerialOptions,
-  HistoryOptions,
-  HistoryPage,
   MessageHeaders,
   PipeOptions,
   PipeResult,
   PipeSource,
+  Published,
+  SendOptions,
+  SendResult,
+} from './core/adaptor/index.js';
+export { createAgentAdaptor } from './core/adaptor/index.js';
+
+// The transport
+export type {
+  FromSerialOptions,
+  HistoryOptions,
+  HistoryPage,
   Replay,
   ReplayFn,
   ReplayResult,
-  SendOptions,
-  SendResult,
   SubscribeHistory,
   SubscribeOptions,
   Subscription,

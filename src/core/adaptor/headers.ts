@@ -1,9 +1,11 @@
 /**
- * The headers a `send` or `pipe` call attaches to every message it publishes.
+ * The headers a `send` or `pipe` call attaches to every message it publishes,
+ * over the defaults an agent adaptor was created with.
  *
  * They ride under `extras.headers`, the key Ably provides for a publisher's
- * own fields, alongside the headers the codec's encode row wrote. Where both
- * name a key the row's value is preferred, so a row keeps a header it sets.
+ * own fields, alongside the headers the codec's encode row wrote. Where two
+ * sources name a key, the row's value wins over the call's, and the call's
+ * over the adaptor's default, so a row keeps a header it sets.
  * Ably admits only a flat map of string, number, boolean and null values under
  * that key, so the type admits the same, and `prepareHeaders` checks it once
  * per call, before anything is published, for a caller outside TypeScript or
@@ -32,7 +34,7 @@ export type MessageHeaders = Record<string, HeaderPrimitive>;
  */
 export const prepareHeaders = (
   headers: Record<string, unknown> | undefined,
-  operation: 'send' | 'pipe',
+  operation: 'send' | 'pipe' | 'create agent adaptor',
 ): MessageHeaders | undefined => {
   if (headers === undefined) return undefined;
   const prepared: MessageHeaders = {};
@@ -65,4 +67,20 @@ export const withHeaders = (message: Ably.Message, headers: MessageHeaders): Abl
   const extras = isRecord(current) ? current : {};
   const own = isRecord(extras[HEADERS_KEY]) ? extras[HEADERS_KEY] : {};
   return { ...message, extras: { ...extras, [HEADERS_KEY]: { ...headers, ...own } } };
+};
+
+/**
+ * The call's headers over an adaptor's defaults, the call's winning where both
+ * name a key.
+ * @param defaults - The adaptor's checked defaults, or `undefined` for none.
+ * @param call - The call's checked headers, or `undefined` for none.
+ * @returns The merged headers, or `undefined` when neither has any.
+ */
+export const mergeHeaders = (
+  defaults: MessageHeaders | undefined,
+  call: MessageHeaders | undefined,
+): MessageHeaders | undefined => {
+  if (defaults === undefined) return call;
+  if (call === undefined) return defaults;
+  return { ...defaults, ...call };
 };

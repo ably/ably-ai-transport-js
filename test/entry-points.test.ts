@@ -25,7 +25,7 @@ import type * as Ably from 'ably';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
-import { agui, agUiAdaptor, agUiDecoder, createAGUICodec } from '../src/ag-ui/index.js';
+import { agUiAdaptor, agUiDecoder } from '../src/ag-ui/index.js';
 import type {
   AgentAdaptor,
   AgentAdaptorOptions,
@@ -70,9 +70,9 @@ import {
   stripUndefined,
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
-import { createOpenAICodec, openai, openaiAdaptor, openaiDecoder } from '../src/openai/index.js';
+import { openaiAdaptor, openaiDecoder } from '../src/openai/index.js';
 import type { VercelCrossMajorChunk, VercelEvent, VercelUserMessage } from '../src/vercel/index.js';
-import { createVercelCodec, vercel, vercelAdaptor, vercelDecoder } from '../src/vercel/index.js';
+import { vercelAdaptor, vercelDecoder } from '../src/vercel/index.js';
 import { createMockChannel } from './helper/mock-channel.js';
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
@@ -155,9 +155,7 @@ describe('@ably/ai-transport/vercel', () => {
     expect(typeof vercelDecoder().decode).toBe('function');
   });
 
-  it('exports the codec, its factory and its event types', () => {
-    expect(typeof createVercelCodec).toBe('function');
-    expect(Object.keys(vercel).toSorted()).toEqual(CODEC_KEYS);
+  it('exports its event types', () => {
     expectTypeOf<VercelEvent>().toHaveProperty('type');
     expectTypeOf<VercelUserMessage>().toHaveProperty('message');
     expectTypeOf<VercelCrossMajorChunk>().toHaveProperty('type');
@@ -177,9 +175,7 @@ describe('@ably/ai-transport/openai', () => {
     expect(typeof openaiDecoder().decode).toBe('function');
   });
 
-  it('exports the codec, its factory and its event types', () => {
-    expect(typeof createOpenAICodec).toBe('function');
-    expect(Object.keys(openai).toSorted()).toEqual(CODEC_KEYS);
+  it('exports its event types', () => {
     expectTypeOf<OpenAIEvent>().toHaveProperty('type');
     expectTypeOf<OpenAIInput>().toHaveProperty('items');
     expectTypeOf<OpenAIStreamEvent>().toHaveProperty('type');
@@ -199,9 +195,7 @@ describe('@ably/ai-transport/ag-ui', () => {
     expect(typeof agUiDecoder().decode).toBe('function');
   });
 
-  it('exports the codec, its factory and its event types', () => {
-    expect(typeof createAGUICodec).toBe('function');
-    expect(Object.keys(agui).toSorted()).toEqual(CODEC_KEYS);
+  it('exports its event types', () => {
     expectTypeOf<AGUIEvent>().toHaveProperty('type');
     expectTypeOf<AGUIRunInput>().toHaveProperty('input');
   });

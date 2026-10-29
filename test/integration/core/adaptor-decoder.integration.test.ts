@@ -130,7 +130,7 @@ describe('agent adaptor and decoder over Ably', () => {
 
     const publisher = ablyRealtimeClient().channels.get(name);
     await publisher.publish({ name: 'chat.typing', data: { user: 'u1' } });
-    await createAgentAdaptor(publisher, { ...createTestCodec(), id: 'other-codec' }).send({
+    await createAgentAdaptor(publisher, createTestCodec('other-codec')).send({
       type: 'note',
       text: 'not yours',
     });

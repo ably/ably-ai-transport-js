@@ -41,9 +41,14 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import { type MessageHeaders, prepareHeaders, withHeaders } from '../adaptor/headers.js';
-import { type PipeResult, type PipeSource, pipeStream } from '../adaptor/pipe-stream.js';
-import { createPipeWriter } from '../adaptor/pipe-writer.js';
+import {
+  type AgentAdaptor,
+  createAgentAdaptor,
+  type PipeOptions,
+  type SendOptions,
+  type SendResult,
+} from '../adaptor/agent-adaptor.js';
+import type { PipeResult, PipeSource } from '../adaptor/pipe-stream.js';
 import { registerAgent } from '../agent.js';
 import { transportChannelOptions } from '../channel-options.js';
 import type { Codec, Delivery } from '../codec/codec.js';
@@ -75,46 +80,6 @@ export interface TransportOptions<E> {
   echoMessages?: boolean;
   /** Logger for diagnostics. Silent when omitted. */
   logger?: Logger;
-}
-
-/** The result of {@link Transport.send}. */
-export interface SendResult {
-  /** The ack serial of the last message published for the event, or `undefined` when the codec published nothing for it. */
-  serial: string | undefined;
-}
-
-/** Options for {@link Transport.send}. */
-export interface SendOptions {
-  /**
-   * Headers for every message the call publishes, under `extras.headers`, the
-   * key Ably provides for a publisher's own fields. Where the codec's row sets
-   * the same key, the row's value is preferred, so a row keeps a header it
-   * writes. The merged map reaches the row's `decode` in its `headers`, since
-   * the wire cannot tell a caller's headers from a row's; the shipped Vercel
-   * and OpenAI codecs write no headers and rebuild their events from the
-   * message body and `extras.ai.fields`, so a decoded provider event carries
-   * none of these. An `undefined` value is dropped; any other value
-   * outside string, number, boolean and null rejects the call with
-   * `InvalidArgument` before anything is published. A subscriber reads them
-   * off `delivery.message.extras.headers`.
-   */
-  headers?: MessageHeaders;
-}
-
-/** Options for {@link Transport.pipe}. */
-export interface PipeOptions {
-  /** Fires to cancel the pipe. The pipe stops reading at the next event boundary, flushes what it has written, and rejects `OperationCancelled`. */
-  signal?: AbortSignal;
-  /**
-   * Headers for every message the pipe publishes: the publish that opens a
-   * stream, each append, each update, the repair of a failed append and the
-   * message that ends a stream. Ably keeps the last write's `extras` on an
-   * appended message, so a header on every write is what keeps it on the
-   * stored message. Merged and checked as {@link SendOptions.headers}; a
-   * rejected pipe has not touched its source. They ride on every append, so
-   * keep them small.
-   */
-  headers?: MessageHeaders;
 }
 
 /**
@@ -332,28 +297,10 @@ const resolveChannel = <E>(options: TransportOptions<E>, logger: Logger): Ably.R
   }
 };
 
-/**
- * Wrap a publish failure. A capability rejection gets its own code so an
- * application can tell a missing channel capability from a transient failure.
- * @param error - The thrown value.
- * @returns The wrapped error.
- */
-const wrapPublishError = (error: unknown): Ably.ErrorInfo => {
-  const cause = errorCause(error);
-  const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
-  return new Ably.ErrorInfo(
-    isPermission
-      ? 'unable to publish; missing publish capability on the channel'
-      : `unable to publish; ${errorMessage(error)}`,
-    isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
-    isPermission ? 401 : 500,
-    cause,
-  );
-};
-
 class DefaultTransport<E> implements Transport<E> {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: Codec<E>;
+  /** Publishes for `send` and `pipe`; the transport adds its closed check and its own abort. */
+  private readonly _adaptor: AgentAdaptor<E>;
   /** One decoder for live and history alike, so a message both carry decodes once. */
   private readonly _decoder: Decoder<E>;
   private readonly _logger: Logger;
@@ -377,7 +324,7 @@ class DefaultTransport<E> implements Transport<E> {
       component: 'Transport',
     });
     this._channel = resolveChannel(options, this._logger);
-    this._codec = options.codec;
+    this._adaptor = createAgentAdaptor(this._channel, options.codec, { logger: this._logger });
     this._emitter = new EventEmitter<TransportEvents>(this._logger);
     this._decoder = createDecoder(options.codec, { logger: this._logger });
     this._decoder.onError((error) => {
@@ -398,58 +345,16 @@ class DefaultTransport<E> implements Transport<E> {
   async send(event: E, options?: SendOptions): Promise<SendResult> {
     this._logger.trace('Transport.send();', { headers: Object.keys(options?.headers ?? {}) });
     if (this._closed) throw closedError('send');
-    const headers = prepareHeaders(options?.headers, 'send');
-    const encoded = this._codec.encode(event);
-    // Checked before the first publish, so an event that mixes a publish with
-    // an append writes nothing.
-    if (encoded.some((m) => m.append !== undefined || m.update !== undefined)) {
-      throw new Ably.ErrorInfo(
-        'unable to send; the event appends to or updates a stream, which needs a pipe',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    let serial: string | undefined;
-    for (const { message } of encoded) {
-      serial = await this._publish(headers === undefined ? message : withHeaders(message, headers));
-    }
-    this._logger.debug('Transport.send(); published', { serial, messages: encoded.length });
-    return { serial };
-  }
-
-  /**
-   * Publish one message and return its ack serial.
-   * @param message - The message.
-   * @returns The ack serial.
-   * @throws {Ably.ErrorInfo} `InsufficientCapability` or `SessionSendFailed` when the publish fails; `InternalError` when the ack carries no serial.
-   */
-  private async _publish(message: Ably.Message): Promise<string> {
-    let result: Ably.PublishResult;
-    try {
-      result = await this._channel.publish(message);
-    } catch (error) {
-      const wrapped = wrapPublishError(error);
-      this._logger.error('Transport.send(); publish failed', { error: wrapped.message });
-      throw wrapped;
-    }
-    const serial = result.serials[0] ?? undefined;
-    if (serial === undefined) {
-      throw new Ably.ErrorInfo('unable to send; no serial returned', ErrorCode.InternalError, 500);
-    }
-    return serial;
+    return this._adaptor.send(event, options);
   }
 
   async pipe(source: PipeSource<E>, options?: PipeOptions): Promise<PipeResult> {
     this._logger.trace('Transport.pipe();', { headers: Object.keys(options?.headers ?? {}) });
     if (this._closed) throw closedError('pipe');
-    // Checked before the source is read, so a rejected pipe has locked no
-    // stream and called no iterator's return().
-    const headers = prepareHeaders(options?.headers, 'pipe');
     const controller = new AbortController();
     // The pipe stops on the caller's signal or on close(), whichever fires first.
     const signal = options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
-    const writer = createPipeWriter(this._channel, this._logger);
-    const done = pipeStream(source, this._codec, writer, { signal, headers, logger: this._logger });
+    const done = this._adaptor.pipe(source, { headers: options?.headers, signal });
     const inFlight: InFlightPipe = { controller, done };
     this._pipes.add(inFlight);
     try {

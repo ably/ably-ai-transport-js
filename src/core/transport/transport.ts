@@ -301,14 +301,19 @@ const inChannelOrder = <E>(returned: Delivery<E>[]): Delivery<E>[] =>
  * reaches the caller as the cause.
  * @param options - The transport's options.
  * @param logger - Logger for the resolution and its failure.
+ * @param operation - What the component is doing, for the error message.
  * @returns The channel.
  * @throws {Ably.ErrorInfo} `InvalidArgument` when `channelName` is empty; the wrapped `channels.get` failure otherwise.
  */
-const resolveChannel = <E>(options: TransportOptions<E>, logger: Logger): Ably.RealtimeChannel => {
+export const resolveChannel = <E>(
+  options: TransportOptions<E>,
+  logger: Logger,
+  operation = 'create transport',
+): Ably.RealtimeChannel => {
   if (options.channelName === '') {
-    logger.error('Transport(); channel name is empty');
+    logger.error('resolveChannel(); channel name is empty');
     throw new Ably.ErrorInfo(
-      'unable to create transport; channelName must be a non-empty string',
+      `unable to ${operation}; channelName must be a non-empty string`,
       ErrorCode.InvalidArgument,
       400,
     );
@@ -317,17 +322,17 @@ const resolveChannel = <E>(options: TransportOptions<E>, logger: Logger): Ably.R
   registerAgent(options.client, options.codec);
   try {
     const channel = options.client.channels.get(options.channelName, channelOptions);
-    logger.debug('Transport(); resolved channel', { channel: channel.name, modes: channelOptions.modes });
+    logger.debug('resolveChannel(); resolved channel', { channel: channel.name, modes: channelOptions.modes });
     return channel;
   } catch (error) {
     const cause = errorCause(error);
     const wrapped = new Ably.ErrorInfo(
-      `unable to create transport; ${errorMessage(error)}`,
+      `unable to ${operation}; ${errorMessage(error)}`,
       cause?.code ?? ErrorCode.InternalError,
       cause?.statusCode ?? 500,
       cause,
     );
-    logger.error('Transport(); channel resolution failed', {
+    logger.error('resolveChannel(); channel resolution failed', {
       channel: options.channelName,
       error: wrapped.message,
     });

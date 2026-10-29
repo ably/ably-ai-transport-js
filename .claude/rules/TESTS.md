@@ -44,10 +44,11 @@ An adapter to a provider's client framework is also tested through that framewor
 
 Prove the system works over real Ably. Don't duplicate unit-test edge cases. Each test exercises a user-visible scenario end-to-end. Use fixture event streams (deterministic, no LLM calls needed).
 
-Integration tests are written at two levels:
+Integration tests are written at three levels:
 
-- **Codec level** (`test/integration/vercel/`, `test/integration/openai/`, `test/integration/ag-ui/`): a provider's fixture stream piped through `createTransport` with that codec and decoded by a subscriber over a real channel. Where the provider has a reducer, the decoded sequence is folded with it, which is the proof the wire is one the provider accepts.
+- **Codec level** (`wire-codec.integration.test.ts` in `test/integration/vercel/`, `test/integration/openai/` and `test/integration/ag-ui/`): a provider's fixture stream piped through `createTransport` with that codec and decoded by a subscriber over a real channel. Where the provider has a reducer, the decoded sequence is folded with it, which is the proof the wire is one the provider accepts.
 - **Transport level** (`test/integration/core/`): send, pipe, subscribe, history, delete, abort, repair and close over a real channel, with the test codec so nothing on screen belongs to a provider.
+- **Adapter level** (`test/integration/vercel/chat-transport.integration.test.ts`): the `useChat` transport against a stubbed backend and an agent piping with the Vercel codec, over a real channel.
 
 ### Environment
 
@@ -67,7 +68,7 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
 - A test that waits on channel state, or stands in for another application on the shared channel, gets the channel from a bare `client.channels.get(name)`. The transport owns that channel's options, so asking with none of its own returns the instance the transport resolved and cannot conflict with it.
-- A scenario uses one connection to both write and read, which the platform's own echo allows. A test of the `echoMessages: false` opt-out uses a second connection as its barrier, since a message that never arrives cannot be waited for.
+- A scenario uses one connection to both write and read, which the platform's own echo allows. A test of the `echoMessages: false` opt-out uses a second connection as its barrier, since a message that never arrives cannot be waited for. An adapter-level scenario gives each party, the agent and the browser, a connection of its own, as they would have.
 - Clean up clients in `afterEach` via `closeAllClients()`
 - Shared unit-tier helpers live in `test/helper/`; the integration tier's own recorder and history drain live in `test/integration/helpers.ts`
 - **Await events, never clocks.** `createDeliveryRecorder()` buffers every delivery as it arrives and re-checks pending predicates on each one, so a test awaits the delivery it needs instead of polling a growing array. Recorders take no timeout: vitest's own test timeout is the only deadline, and a test that hangs is a test that found something.
@@ -84,6 +85,8 @@ Each one has three jobs, and they matter equally: exercise only the public API (
 
 **Codec level**, in `test/integration/vercel/wire-codec.integration.test.ts`, `test/integration/openai/wire-codec.integration.test.ts` and `test/integration/ag-ui/wire-codec.integration.test.ts`: a tool-calling turn streamed event for event and folded by the AI SDK's own reducer, a user message under the serial `send` returned, a finished turn read from history as the events the agent produced with each stream's deltas joined into one, a transient data part flagged ephemeral on delivery, the two Responses of a function call round-tripped with the call's output published as input, and an AG-UI run's text, tool-call and chunk streams merged by AG-UI's own reducer from live deliveries and from history into the same messages, with a messages snapshot kept off the channel.
 
+**Adapter level**, in `test/integration/vercel/chat-transport.integration.test.ts`: the `useChat` transport sending, rejoining and stopping turns against a stubbed backend and a real agent, and reading the channel again after a close.
+
 Rather than list the scenarios here (the suite's own `it` titles are the authoritative list), this is what the tier is _for_, and what a new scenario should need to earn a place in it:
 
 - **Message appends.** The streaming wire is one message updated in place, and a mock channel cannot reproduce the platform's append semantics.
@@ -91,6 +94,7 @@ Rather than list the scenarios here (the suite's own `it` titles are the authori
 - **The first post-attach append**, which the platform converts into a full-content update. That conversion is what the decoder core's tail reduction exists for.
 - **`untilAttach` paging and serial allocation.** Both the attach boundary and every serial an ack reports come from the platform.
 - **The ephemeral flag.** Whether `extras.ephemeral` is echoed on delivery is the platform's to decide.
+- **Detach timing.** A detach takes a round trip, so a subscription made while one is in flight can be cut off; a mock channel detaches at once.
 
 `test/core/transport/transport.test.ts` composes the real test codec with the real transport against the mock channel, so the codec-to-transport boundary is guarded in the fast tier as well.
 

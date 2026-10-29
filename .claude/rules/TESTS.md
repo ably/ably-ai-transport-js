@@ -15,16 +15,13 @@ match a `.tsx` suffix as well, so a suite written with JSX runs in its tier.
 
 ### Scope
 
-Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage on non-React code, 80%+ on React hooks.
-
-One exception: the React surface is tested per _surface_, not per module. A provider and the hooks that read from it only mean anything together, since a hook test needs the provider mounted around it, so `test/react/` holds one suite per provider-and-its-hooks rather than one per file.
+Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage.
 
 ### Style
 
-- Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` records publishes, appends and updates and serves history pages, and `test/helper/mock-client.ts` is the client a transport resolves it from, recording the name and options each `channels.get` received. `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.
+- Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` is the channel an adaptor writes to: it records publishes, appends and updates. A decoder takes messages, not a channel, so a decoder test hands it fixture messages directly. `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.
 - A codec suite round-trips through `test/helper/wire.ts`, which turns what the codec encoded into the inbound messages a subscriber would receive, with the serial bookkeeping the pipe writer does on a real channel, and decodes them back through a fresh decoder core on each call, since a codec holds no state of its own.
 - `flushMicrotasks()` or a `setImmediate` hop instead of `setTimeout`; never a clock in a test.
-- React suites select jsdom per file with a `// @vitest-environment jsdom` docblock and drive components through `@testing-library/react`; the vitest config carries no environment setting.
 - For streams that stay open, simulate a terminal event to close deterministically, then drain the reader.
 
 ### What to unit test
@@ -33,7 +30,6 @@ One exception: the React surface is tested per _surface_, not per module. A prov
 - Error handler isolation (one throwing handler doesn't kill others)
 - State transitions: the per-pipe key table, the append chain and its repair, the decoder core's version guard and the state it frees when a stream ends
 - Invalid input validation
-- React hook lifecycle (with `renderHook` / jsdom)
 
 ## Integration tests
 
@@ -43,8 +39,8 @@ Prove the system works over real Ably. Don't duplicate unit-test edge cases. Eac
 
 Integration tests are written at two levels:
 
-- **Codec level** (`test/integration/vercel/`, `test/integration/openai/`, `test/integration/ag-ui/`): a provider's fixture stream piped through `createTransport` with that codec and decoded by a subscriber over a real channel. Where the provider has a reducer, the decoded sequence is folded with it, which is the proof the wire is one the provider accepts.
-- **Transport level** (`test/integration/core/`): send, pipe, subscribe, history, delete, abort, repair and close over a real channel, with the test codec so nothing on screen belongs to a provider.
+- **Codec level** (`test/integration/vercel/`, `test/integration/openai/`, `test/integration/ag-ui/`): a provider's fixture stream piped through an adaptor over that codec and decoded by a decoder subscribed to a real channel. Where the provider has a reducer, the decoded sequence is folded with it, which is the proof the wire is one the provider accepts.
+- **Adaptor and decoder level** (`test/integration/core/`): send, both pipes, live and late subscription, history, foreign messages and repair over a real channel, with the test codec so nothing on screen belongs to a provider.
 
 ### Environment
 
@@ -63,21 +59,18 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 ### Conventions
 
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
-- A test that waits on channel state, or stands in for another application on the shared channel, gets the channel from a bare `client.channels.get(name)`. The transport owns that channel's options, so asking with none of its own returns the instance the transport resolved and cannot conflict with it.
-- A scenario uses one connection to both write and read, which the platform's own echo allows. A test of the `echoMessages: false` opt-out uses a second connection as its barrier, since a message that never arrives cannot be waited for.
+- A test gets each channel from `ablyRealtimeClient().channels.get(name)`, as an application does, and subscribes a decoder with `channel.subscribe(decoder.receive)`; awaiting that subscribe is the attach barrier.
 - Clean up clients in `afterEach` via `closeAllClients()`
 - Shared unit-tier helpers live in `test/helper/`; the integration tier's own recorder and history drain live in `test/integration/helpers.ts`
 - **Await events, never clocks.** `createDeliveryRecorder()` buffers every delivery as it arrives and re-checks pending predicates on each one, so a test awaits the delivery it needs instead of polling a growing array. Recorders take no timeout: vitest's own test timeout is the only deadline, and a test that hangs is a test that found something.
 - A test waiting for a partial reply waits for a delta rather than any delivery: a stream's start event is its own message, and its text arrives on the deltas' message, which the first delta opens.
-- `history()` needs no retry: it is bounded at the attach point, and a transport attached after the pipe finished reads what the platform has persisted.
+- History needs no retry: `untilAttach` bounds it at the attach point, and a channel attached after the pipe finished reads what the platform has persisted.
 
 ### What every test in the tier owes
 
 Each one has three jobs, and they matter equally: exercise only the public API (what an `index.ts` re-exports, never a private field), read as the code a developer would write to get the behaviour, and fail when the behaviour breaks. The second one constrains how a test is written. The API calls stay in the body of the test, and helpers cover only what a developer does not write themselves: a channel name, a fixture stream, and waiting for a delivery. A local helper that wraps a sequence of API calls hides the thing the test exists to show.
 
 ### What the tier covers today
-
-**Transport level**, in `test/integration/core/transport.integration.test.ts`: a whole turn from `send` to a streamed reply, a subscriber attaching mid-stream, a gap recovered by reading history back to the last serial seen, a foreign publish delivered raw with no event, a delete delivered with no event, a pipe aborted by its signal, a failed append repaired by one update, and `close()` during a pipe.
 
 **Adaptor and decoder**, in `test/integration/core/adaptor-decoder.integration.test.ts`: a reply piped through `pipeEach` and decoded by `channel.subscribe(decoder.receive)` with the serial each event landed on, a decoder subscribing mid-stream, history paged back and fed newest first through `decode()`, the application's own publish and another codec's delivered with no event, and a failed append repaired by one update. Each provider suite also pipes through its provider adaptor and decodes through its provider decoder.
 
@@ -91,12 +84,11 @@ Rather than list the scenarios here (the suite's own `it` titles are the authori
 - **`untilAttach` paging and serial allocation.** Both the attach boundary and every serial an ack reports come from the platform.
 - **The ephemeral flag.** Whether `extras.ephemeral` is echoed on delivery is the platform's to decide.
 
-`test/core/transport/transport.test.ts` composes the real test codec with the real transport against the mock channel, so the codec-to-transport boundary is guarded in the fast tier as well.
+`test/core/adaptor/agent-adaptor.test.ts` composes the real test codec with the real adaptor against the mock channel, and `test/core/decoder/decoder.test.ts` decodes what the test codec encoded, so both codec boundaries are guarded in the fast tier as well.
 
 ### What NOT to integration test
 
 - Encoding/decoding edge cases (unit tests)
 - Error handler isolation (unit tests)
 - Invalid input validation (unit tests)
-- React hook lifecycle (unit tests with jsdom)
 - Whether an ephemeral message reaches history. The sandbox serves recent messages from memory and an ephemeral one can appear there, so the assertion is not stable.

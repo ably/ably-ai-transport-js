@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createDecoderCore } from '../../../src/core/codec/decoder.js';
+import { createDecoderCore } from '../../../src/core/decoder/decoder-core.js';
 import type { Logger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------

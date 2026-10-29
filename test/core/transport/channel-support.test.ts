@@ -6,7 +6,6 @@ import {
   ContinuityWatcher,
   isContinuityLost,
   subscribeAndAttach,
-  wrapMessageProcessingError,
 } from '../../../src/core/transport/channel-support.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -111,25 +110,6 @@ describe('subscribeAndAttach', () => {
     const [subOrder = 0] = subscribe.mock.invocationCallOrder;
     expect(unsubOrder).toBeGreaterThan(0);
     expect(unsubOrder).toBeLessThan(subOrder);
-  });
-});
-
-describe('wrapMessageProcessingError', () => {
-  it('wraps a thrown value as a SessionMessageProcessingFailed preserving the cause', () => {
-    const cause = new Ably.ErrorInfo('boom', 50000, 500);
-    expect(wrapMessageProcessingError(cause)).toBeErrorInfo({
-      code: ErrorCode.SessionMessageProcessingFailed,
-      statusCode: 500,
-      message: 'unable to process channel message; boom',
-      cause: { code: 50000 },
-    });
-  });
-
-  it('wraps a plain Error with no cause', () => {
-    const wrapped = wrapMessageProcessingError(new Error('bad payload'));
-    expect(wrapped).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
-    expect(wrapped.message).toBe('unable to process channel message; bad payload');
-    expect(wrapped.cause).toBeUndefined();
   });
 });
 

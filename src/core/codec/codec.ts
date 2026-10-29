@@ -55,7 +55,7 @@ export interface EncodedMessage {
  * produced none for it: a message that is not the codec's (a foreign publish
  * on the shared channel), a replay the codec's version guard dropped, a
  * `message.delete`, or a message whose decode threw (the error is reported on
- * the transport's error stream as well).
+ * the decoder's error stream as well).
  * @template E - The codec's event union.
  */
 export interface Delivery<E> {

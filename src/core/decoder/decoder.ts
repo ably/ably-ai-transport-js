@@ -27,10 +27,13 @@
  * application that renders across pages orders them itself, by serial or by
  * collecting the pages first.
  *
- * One limit comes from the platform. When an append fails after later appends
+ * Two limits come from the platform. When an append fails after later appends
  * were delivered, the agent repairs the stream with a full-content update
  * that does not extend what the decoder handed on, and the decoder delivers
- * the whole content again as a replacement.
+ * the whole content again as a replacement. And when an application decodes
+ * live messages as they arrive but applies history first, a stream in flight
+ * can come out of order: if history holds the stream at a later version than
+ * the first live update, history's tail is applied before that update's head.
  */
 
 import * as Ably from 'ably';
@@ -133,6 +136,13 @@ class DefaultDecoder<E> implements Decoder<E> {
 
   decode(message: Ably.InboundMessage): Delivery<E>[] {
     this._logger.trace('DefaultDecoder.decode();', { serial: message.serial, action: message.action });
+    // A delete reaches the core whoever sent it, so the core forgets a stream
+    // even when a bare `deleteMessage({ serial })` arrives without the name
+    // and codec id. A delete never carries an event.
+    if (message.action === 'message.delete') {
+      this._core.prepare(message);
+      return [{ event: undefined, message }];
+    }
     if (!this._isOwn(message)) return [{ event: undefined, message }];
     let events: E[] = [];
     try {
@@ -175,8 +185,8 @@ class DefaultDecoder<E> implements Decoder<E> {
 }
 
 /**
- * Create a decoder over a codec. Use one decoder per channel, for live
- * delivery and history together.
+ * Create a decoder over a codec. Use one decoder per codec per channel, for
+ * live delivery and history together.
  * @param codec - The codec the agent published through.
  * @param options - See {@link DecoderOptions}.
  * @returns The decoder.

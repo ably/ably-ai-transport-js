@@ -119,6 +119,19 @@ describe('createDecoder', () => {
       expect(eventsOf(decoder.decode(message as Ably.InboundMessage))).toEqual([undefined]);
     });
 
+    it('forgets a stream on a bare delete that carries no name or codec id', () => {
+      const { live } = wire([{ type: 'text-delta', id: 'm1', delta: 'Hello' }]);
+      const [opener] = live;
+      if (opener === undefined) throw new Error('fixture has no opener');
+      decoder.decode(opener);
+      // CAST: a delete as `deleteMessage({ serial })` delivers it, with no name or extras.
+      const bare = { action: 'message.delete', serial: opener.serial, version: {} } as Ably.InboundMessage;
+      expect(decoder.decode(bare)).toEqual([{ event: undefined, message: bare }]);
+      // The core forgot the serial, so the same create decodes again rather
+      // than being dropped as a duplicate.
+      expect(eventsOf(decoder.decode(opener))).toEqual([{ type: 'text-delta', id: 'm1', delta: 'Hello' }]);
+    });
+
     it('returns a message whose decode threw with no event, and reports the error', () => {
       const failing: Codec<TestEvent> = {
         id: 'test-codec',

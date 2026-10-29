@@ -50,12 +50,12 @@ export interface EncodedMessage {
 
 /**
  * One delivery to a subscriber: a decoded event and the Ably message it came
- * from. Every message on the channel is delivered: one delivery per event the
- * codec decodes from it, and one with `event: undefined` when the codec
- * produced none for it: a message that is not the codec's (a foreign publish
- * on the shared channel), a replay the codec's version guard dropped, a
- * `message.delete`, or a message whose decode threw (the error is reported on
- * the decoder's error stream as well).
+ * from. Every message a decoder is given is delivered: one delivery per event
+ * the codec decodes from it, and one with `event: undefined` when there is
+ * none: a message that is not the codec's (a foreign publish on the shared
+ * channel, or another codec's), a replay the decoder's version guard dropped,
+ * a `message.delete`, or a message whose decode threw (the error is reported
+ * on the decoder's error stream as well).
  * @template E - The codec's event union.
  */
 export interface Delivery<E> {
@@ -68,9 +68,12 @@ export interface Delivery<E> {
 /**
  * A codec: encode an event to the Ably messages that carry it, decode an Ably
  * message to the events it carries. Both directions are pure functions of
- * their input, and a codec holds no state. Reducing a full-content update to
- * what it adds, and dropping a delivery already seen, happen before `decode`
- * runs, in the reader that holds the per-serial state.
+ * their input, and a codec holds no state. The decoder sits in front of
+ * `decode`: it hands on only messages named `ai` with this codec's `id`, and
+ * runs each through its core first, which drops a delivery already seen and
+ * reduces a full-content update to the text not yet handed on. The core reads
+ * `data` as a string, so a hand-written codec that updates a stream with
+ * object `data` has the update dropped as adding nothing.
  * @template E - The codec's event union, covering everything either side publishes.
  */
 export interface Codec<E> {
@@ -93,13 +96,13 @@ export interface Codec<E> {
    */
   encode(event: E): EncodedMessage[];
   /**
-   * Decode one Ably message to the events it carries, in order. An empty
-   * array is a message that is not this codec's, or one that carries no event
-   * for the application. `data` is what this delivery adds: an append's
-   * fragment, the unseen tail of a full-content update, or a plain publish's
-   * body. `defineCodec` builds a codec whose
-   * rows produce at most one event; a hand-written codec may fold one message
-   * into several. Throws for a message the codec recognises as its own but
+   * Decode one Ably message to the events it carries, in order. The decoder
+   * calls this only for a message named `ai` with this codec's `id`. An empty
+   * array is a message that carries no event for the application. `data` is
+   * what this delivery adds: an append's fragment, the unseen tail of a
+   * full-content update, or a plain publish's body. `defineCodec` builds a
+   * codec whose rows produce at most one event; a hand-written codec may fold
+   * one message into several. Throws for a message the codec recognises as its own but
    * cannot decode.
    * @param message - The inbound message, as the channel delivered it.
    * @returns The events, in order.

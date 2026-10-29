@@ -2,7 +2,7 @@ import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
-import type { Delivery } from '../../../src/core/codec/index.js';
+import type { Codec, Delivery } from '../../../src/core/codec/index.js';
 import { defineCodec } from '../../../src/core/codec/index.js';
 import { fromSerial } from '../../../src/core/transport/from-serial.js';
 import type { MessageHeaders } from '../../../src/core/transport/headers.js';
@@ -203,7 +203,20 @@ describe('createTransport', () => {
   describe('send', () => {
     it('publishes one event as one message and returns the serial', async () => {
       await expect(transport.send({ type: 'note', text: 'hello' })).resolves.toEqual({ serial: 'serial-1' });
-      expect(channel.publishCalls).toEqual([{ name: 'test', data: 'hello', extras: { ai: { type: 'note' } } }]);
+      expect(channel.publishCalls).toEqual([
+        { name: 'ai', data: 'hello', extras: { ai: { codec: 'test-codec', type: 'note' } } },
+      ]);
+    });
+
+    it('names the message ai and writes the codec id over any name the codec gave', async () => {
+      const named: Codec<{ type: 'x' }> = {
+        id: 'named',
+        encode: () => [{ message: { name: 'own', data: 'x', extras: { ai: { type: 'x' } } } }],
+        decode: () => [],
+      };
+      const namedTransport = createTransport({ client: createMockClient(channel), channelName: CHANNEL, codec: named });
+      await namedTransport.send({ type: 'x' });
+      expect(channel.publishCalls).toEqual([{ name: 'ai', data: 'x', extras: { ai: { type: 'x', codec: 'named' } } }]);
     });
 
     it('resolves with no serial when the codec publishes nothing', async () => {
@@ -309,7 +322,6 @@ describe('createTransport', () => {
       }
       const tagged = defineCodec({
         id: 'tagged',
-        name: 'tagged',
         typeOf: (e: TaggedEvent) => e.type,
         events: {
           note: {
@@ -325,7 +337,7 @@ describe('createTransport', () => {
       });
       await taggedTransport.send({ type: 'note' }, { headers: { tenant: 'caller', requestId: 'r1' } });
       expect(channel.publishCalls[0]?.extras).toEqual({
-        ai: { type: 'note' },
+        ai: { codec: 'tagged', type: 'note' },
         headers: { tenant: 'row', requestId: 'r1' },
       });
     });
@@ -333,7 +345,7 @@ describe('createTransport', () => {
     it("carries the call's headers alone when the codec's rows write none", async () => {
       await transport.send({ type: 'text-start', id: 'm1' }, { headers: { requestId: 'r1' } });
       expect(channel.publishCalls[0]?.extras).toEqual({
-        ai: { type: 'text-start', fields: { id: 'm1' } },
+        ai: { codec: 'test-codec', type: 'text-start', fields: { id: 'm1' } },
         headers: { requestId: 'r1' },
       });
     });
@@ -538,10 +550,10 @@ describe('createTransport', () => {
       });
       const deliveries: Delivery<SplitEvent>[] = [];
       split.subscribe((d) => deliveries.push(d));
-      // CAST: a fixture inbound message with the name the split codec reads.
+      // CAST: a fixture inbound message as the transport writes it for the split codec.
       const message = {
-        ...inbound({ serial: 's1', data: 'x|y', extras: undefined }),
-        name: 'split',
+        ...inbound({ serial: 's1', data: 'x|y', extras: { ai: { codec: 'split' } } }),
+        name: 'ai',
       } as Ably.InboundMessage;
       channel.listener?.(message);
       expect(deliveries.map((d) => d.event)).toEqual([
@@ -644,10 +656,10 @@ describe('createTransport', () => {
     });
 
     it('lists one delivery per event when the codec decodes a message to several', async () => {
-      // CAST: a fixture inbound message with the name the split codec reads.
+      // CAST: a fixture inbound message as the transport writes it for the split codec.
       const twin = {
-        ...inbound({ serial: 's1', data: 'x|y', extras: undefined }),
-        name: 'split',
+        ...inbound({ serial: 's1', data: 'x|y', extras: { ai: { codec: 'split' } } }),
+        name: 'ai',
       } as Ably.InboundMessage;
       channel = createMockChannel([[twin]]);
       const split = createTransport({
@@ -770,10 +782,10 @@ describe('createTransport', () => {
     });
 
     it('keeps the deliveries of one message in the order the codec decoded them', async () => {
-      // CAST: a fixture inbound message with the name the split codec reads.
+      // CAST: a fixture inbound message as the transport writes it for the split codec.
       const twin = {
-        ...inbound({ serial: 's1', data: 'x|y', extras: undefined }),
-        name: 'split',
+        ...inbound({ serial: 's1', data: 'x|y', extras: { ai: { codec: 'split' } } }),
+        name: 'ai',
       } as Ably.InboundMessage;
       channel = createMockChannel([[twin]]);
       const split = createTransport({

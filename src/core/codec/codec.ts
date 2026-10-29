@@ -8,13 +8,14 @@
  * can split a payload that is too large for one message, or fold one message
  * into several events. A codec holds the wire format and nothing else: the
  * transport owns the channel, the per-pipe key table that turns a stream key
- * into the serial an append targets, and delivery. The SDK owns two
- * fields on the wire, both the transport's and both under `extras.ai`:
- * `stream`, on every write under a live key, and `ends`, on the message that
- * ends one, carrying the serial it ends. The transport also adds the headers
- * of the `send` or `pipe` call under `extras.headers`, preferring the codec's
- * own where both name a key. Everything else in `name`, `data` and `extras` is
- * the codec's.
+ * into the serial an append targets, and delivery. The SDK owns the message
+ * name, `ai` on every message, and three fields on the wire, all the
+ * transport's and all under `extras.ai`: `codec`, the codec's `id` on every
+ * message, `stream`, on every write under a live key, and `ends`, on the
+ * message that ends one, carrying the serial it ends. The transport also adds
+ * the headers of the `send` or `pipe` call under `extras.headers`, preferring
+ * the codec's own where both name a key. Everything else in `data` and
+ * `extras` is the codec's.
  */
 
 import type * as Ably from 'ably';
@@ -25,7 +26,7 @@ import type * as Ably from 'ably';
  * plain publish that nothing will append to.
  */
 export interface EncodedMessage {
-  /** The message the transport publishes, appends or updates. `name`, `data` and `extras` are the codec's; the transport adds its own two fields under `extras.ai` to a write under a key and to the message that ends one, and adds the call's headers under `extras.headers`, preferring the codec's. */
+  /** The message the transport publishes, appends or updates. `data` and `extras` are the codec's. The transport names every message `ai`, replacing any name the codec gave, writes the codec's `id` under `extras.ai`, adds its own two fields there to a write under a key and to the message that ends one, and adds the call's headers under `extras.headers`, preferring the codec's. */
   message: Ably.Message;
   /**
    * Publish `message` and remember the serial the ack returns under this key,
@@ -74,9 +75,11 @@ export interface Delivery<E> {
  */
 export interface Codec<E> {
   /**
-   * The codec's identity. The transport appends it to its channel's
-   * `params.agent`, so traffic is attributed to this codec. An empty id
-   * contributes nothing to the attribution.
+   * The codec's identity. The transport writes it under `extras.ai` on every
+   * message it publishes through the codec, so a reader can tell this codec's
+   * messages from another's on the same channel, and appends it to its
+   * channel's `params.agent`, so traffic is attributed to this codec. An empty
+   * id contributes nothing to the attribution.
    */
   readonly id: string;
   /**

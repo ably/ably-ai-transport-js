@@ -144,7 +144,6 @@ const isRunAgentInput = (data: unknown): data is AGUIRunInput['input'] =>
  */
 export const createAGUICodec = (): Codec<AGUIEvent> =>
   defineCodec({
-    name: 'ag-ui',
     id: CODEC_ID,
     typeOf: (e: AGUIEvent): AGUIEventType => e.type,
     events: {

@@ -191,6 +191,14 @@ describe('createPipeWriter', () => {
         { serial: 'serial-1', data: 'The weather', extras: { type: 'text-delta', id: 'k1', ai: { stream: true } } },
       ]);
     });
+
+    it('repairs with the name the last write carried, since Ably replaces the name on update', async () => {
+      await writer.write({ message: { name: 'ai', data: 'The' }, append: 'k1' });
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await writer.write({ message: { name: 'ai', data: ' weather' }, append: 'k1' });
+      await writer.flush();
+      expect(channel.updateCalls[0]?.name).toBe('ai');
+    });
   });
 
   describe('stream markers', () => {

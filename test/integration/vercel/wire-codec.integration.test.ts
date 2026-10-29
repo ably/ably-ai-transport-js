@@ -90,12 +90,13 @@ describe('Vercel codec over Ably', () => {
     const available = recorder.deliveries.find((d) => d.event?.type === 'tool-input-available');
     expect(available?.message.data).toEqual(turn[5]);
     expect(available?.message.extras).toEqual({
-      ai: { type: 'tool-input-available', ends: toolInput?.message.serial },
+      ai: { codec: 'vercel-ai-sdk-ui-message', type: 'tool-input-available', ends: toolInput?.message.serial },
     });
     const delta = recorder.deliveries.find((d) => d.event?.type === 'text-delta');
     expect(delta?.message.data).toBe('It is 21°C');
     expect(delta?.message.extras).toEqual({
       ai: {
+        codec: 'vercel-ai-sdk-ui-message',
         type: 'text-delta',
         stream: true,
         fields: { type: 'text-delta', id: 'txt_1', providerMetadata: { openai: { itemId: 'msg_1' } } },

@@ -70,12 +70,10 @@ describe('the Vercel codec', () => {
 
     it('carries a plain publish whole as the message body, with only its type under extras.ai', () => {
       expect(codec.encode({ type: 'finish', finishReason: 'stop' })[0]?.message).toEqual({
-        name: 'ai',
         data: { type: 'finish', finishReason: 'stop' },
         extras: { ai: { type: 'finish' } },
       });
       expect(codec.encode({ type: 'start-step' })[0]?.message).toEqual({
-        name: 'ai',
         data: { type: 'start-step' },
         extras: { ai: { type: 'start-step' } },
       });
@@ -83,7 +81,6 @@ describe('the Vercel codec', () => {
 
     it('carries a delta’s text as the body and the rest of the chunk under extras.ai.fields, with no headers', () => {
       expect(codec.encode({ type: 'text-delta', id: 'txt_1', delta: 'hi' })[0]?.message).toEqual({
-        name: 'ai',
         data: 'hi',
         extras: { ai: { type: 'text-delta', fields: { type: 'text-delta', id: 'txt_1' } } },
       });
@@ -113,7 +110,6 @@ describe('the Vercel codec', () => {
       };
       const [encoded] = codec.encode(chunk);
       expect(encoded?.message).toEqual({
-        name: 'ai',
         data: chunk,
         extras: { ai: { type: 'tool-input-available' } },
       });
@@ -129,7 +125,6 @@ describe('the Vercel codec', () => {
       expect(codec.encode({ type: 'data-weather', id: 'w1', data: { temp: 21 } })).toEqual([
         {
           message: {
-            name: 'ai',
             data: { type: 'data-weather', id: 'w1', data: { temp: 21 } },
             extras: { ai: { type: 'data-weather' } },
           },
@@ -144,7 +139,7 @@ describe('the Vercel codec', () => {
     it('publishes a user message as the message data', () => {
       const message: AI.UIMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
       expect(codec.encode({ type: 'user-message', message })).toEqual([
-        { message: { name: 'ai', data: message, extras: { ai: { type: 'user-message' } } } },
+        { message: { data: message, extras: { ai: { type: 'user-message' } } } },
       ]);
     });
 

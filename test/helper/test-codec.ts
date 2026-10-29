@@ -28,7 +28,6 @@ const idOf = (fields: Record<string, unknown> = {}): string => asString(fields.i
  */
 export const createTestCodec = (): Codec<TestEvent> =>
   defineCodec({
-    name: 'test',
     id: 'test-codec',
     typeOf: (e: TestEvent) => e.type,
     events: {

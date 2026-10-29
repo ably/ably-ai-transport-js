@@ -123,11 +123,22 @@ describe('transport over Ably', () => {
     expect(
       recorder.deliveries.map((d) => [d.message.name, d.message.data as unknown, d.message.extras as unknown]),
     ).toEqual([
-      ['test', 'What is the weather?', { ai: { type: 'note' } }],
-      ['test', '', { ai: { type: 'text-start', fields: { id: 'm1' } } }],
-      ['test', 'The weather', { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } }],
-      ['test', ' is mild.', { ai: { type: 'text-delta', stream: true, fields: { id: 'm1' } } }],
-      ['test', '', { ai: { type: 'text-end', ends: recorder.deliveries[2]?.message.serial, fields: { id: 'm1' } } }],
+      ['ai', 'What is the weather?', { ai: { codec: 'test-codec', type: 'note' } }],
+      ['ai', '', { ai: { codec: 'test-codec', type: 'text-start', fields: { id: 'm1' } } }],
+      ['ai', 'The weather', { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } }],
+      ['ai', ' is mild.', { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } }],
+      [
+        'ai',
+        '',
+        {
+          ai: {
+            codec: 'test-codec',
+            type: 'text-end',
+            ends: recorder.deliveries[2]?.message.serial,
+            fields: { id: 'm1' },
+          },
+        },
+      ],
     ]);
   });
 

@@ -354,7 +354,7 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       }
       const body: DecodedRow = {
         type: own.type,
-        data: message.data as unknown,
+        data: message.data,
         fields: own.fields,
         headers: readHeaders(message),
       };

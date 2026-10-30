@@ -2,7 +2,6 @@
 
 import type { Delivery } from '@ably/ai-transport';
 import { type VercelEvent, vercelAdaptor, vercelDecoder } from '@ably/ai-transport/vercel';
-import type * as Ably from '@ably/pubsub-device';
 import { useChannelStateListener, usePubSubClient } from '@ably/pubsub-device/react';
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -98,7 +97,7 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
     [upsert],
   );
 
-  // The subscribe below attaches the channel; the indicator and the
+  // The effect below attaches the channel; the indicator and the
   // composer follow the channel's own state. The listener reports
   // transitions only, so the initial value is read off the channel: a mount
   // on a channel that is already ATTACHED would otherwise show connecting…
@@ -169,17 +168,25 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
   // and clears the wire tab, so a re-run starts from what it receives.
   useEffect(() => {
     const decoder = vercelDecoder();
-    const listener = (message: Ably.InboundMessage) => {
-      for (const delivery of decoder.decode(message)) apply(delivery);
+    decoder.onEvent(apply);
+    decoder.onError((error) => {
+      console.error('decode failed', error);
+    });
+    // ChannelProvider turns off ably-js's attach on subscribe, so the effect
+    // attaches the channel itself. The listener goes on first, so the
+    // messages the rewind delivers on attach reach it.
+    const start = async (): Promise<void> => {
+      await channel.subscribe(decoder.receive);
+      await channel.attach();
     };
-    channel.subscribe(listener).catch((error: unknown) => {
+    start().catch((error: unknown) => {
       // The channel did not attach: the page stays on connecting… and Send
       // stays disabled.
-      console.error('subscribe failed', error);
+      console.error('attach failed', error);
     });
     const open = replies.current;
     return () => {
-      channel.unsubscribe(listener);
+      channel.unsubscribe(decoder.receive);
       for (const controller of open.values()) callReply(() => controller.close());
       open.clear();
       setStreaming(false);

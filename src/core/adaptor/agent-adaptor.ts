@@ -113,7 +113,9 @@ export interface AgentAdaptor<E> {
    * Read a source of events and write each one as the codec directs,
    * unattended. Resolves when the source ends, with the ack serial of the
    * last publish. Before it settles either way the pipe flushes and repairs
-   * what it wrote, so a cancelled pipe leaves whole messages behind.
+   * what it wrote, so every message it wrote holds its full text. A stream
+   * the source had not ended gets no closing message, so a subscriber sees it
+   * stay open.
    * @param source - The events to write, a ReadableStream or an async iterable.
    * @param options - The pipe's abort signal and the call's headers.
    * @returns The serial of the last publish; see {@link PipeResult}.

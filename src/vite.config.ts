@@ -19,10 +19,10 @@ export default defineConfig({
       fileName: 'ably-ai-transport',
     },
     rollupOptions: {
-      external: ['ably'],
+      external: ['@ably/pubsub-core'],
       output: {
         globals: {
-          ably: 'Ably',
+          '@ably/pubsub-core': 'AblyPubSub',
         },
       },
     },

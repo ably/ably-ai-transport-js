@@ -16,7 +16,7 @@
     "external": true
   },
   "externalSymbolLinkMappings": {
-    "ably": {
+    "@ably/pubsub-core": {
       "*": "https://sdk.ably.com/builds/ably/ably-js/main/typedoc/"
     }
   },

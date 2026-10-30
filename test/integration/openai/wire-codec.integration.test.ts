@@ -8,20 +8,20 @@
  * with the text joined.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import type { Responses } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createTransport, type Transport } from '../../../src/index.js';
 import { createOpenAICodec, type OpenAIEvent } from '../../../src/openai/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
-import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
+import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { at, decodedOf, textResponse, toolCallResponse } from '../../openai/codec/fixtures.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
 const transportOn = (name: string): Transport<OpenAIEvent> =>
-  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createOpenAICodec() });
+  createTransport({ client: pubsubClient(), channelName: name, codec: createOpenAICodec() });
 
 /**
  * A transport with the channel it reads, for a subscriber that waits for the attach.
@@ -31,7 +31,7 @@ const transportOn = (name: string): Transport<OpenAIEvent> =>
  * @returns The transport and its channel.
  */
 const readerOn = (name: string): { transport: Transport<OpenAIEvent>; channel: Ably.RealtimeChannel } => {
-  const client = ablyRealtimeClient();
+  const client = pubsubClient();
   const transport = createTransport({ client, channelName: name, codec: createOpenAICodec() });
   return { transport, channel: client.channels.get(name) };
 };

@@ -5,7 +5,7 @@
  * channel names are all reachable by name, and the nearest one is the default.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { createContext } from 'react';
 
 import type { Transport } from '../../core/transport/index.js';

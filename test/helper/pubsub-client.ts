@@ -1,9 +1,10 @@
-import * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-server';
+import { createRealtimeClient } from '@ably/pubsub-server';
 
 import { ablyApiKey, isLocalEnvironment, localSandboxRouting, testEndpoint } from './environment.js';
 import { randomClientId } from './identifier.js';
 
-const clients: Ably.Realtime[] = [];
+const clients: Ably.PubSubRealtimeClient[] = [];
 
 const baseOptions = (options?: Ably.ClientOptions): Ably.ClientOptions => {
   const merged: Ably.ClientOptions = { ...options };
@@ -41,19 +42,19 @@ const baseOptions = (options?: Ably.ClientOptions): Ably.ClientOptions => {
 };
 
 /**
- * Create a Realtime client with the given options, or sandbox defaults if not specified.
+ * Create a Pub/Sub client with the given options, or sandbox defaults if not specified.
  * Registers the client for cleanup via {@link closeAllClients}.
  * @param options - Optional Ably client options to override defaults.
- * @returns A new Ably.Realtime client.
+ * @returns A new Pub/Sub client.
  */
-export const ablyRealtimeClient = (options?: Ably.ClientOptions): Ably.Realtime => {
-  const client = new Ably.Realtime(baseOptions(options));
+export const pubsubClient = (options?: Ably.ClientOptions): Ably.PubSubRealtimeClient => {
+  const client = createRealtimeClient(baseOptions(options));
   clients.push(client);
   return client;
 };
 
 /**
- * Close and clean up all clients created via {@link ablyRealtimeClient}.
+ * Close and clean up all clients created via {@link pubsubClient}.
  * Call in `afterEach` to prevent connection leaks between tests.
  */
 export const closeAllClients = (): void => {

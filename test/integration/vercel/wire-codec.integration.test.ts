@@ -9,20 +9,20 @@
  * transient data part is echoed on delivery.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createTransport, type Transport } from '../../../src/index.js';
 import { createVercelCodec, type VercelEvent } from '../../../src/vercel/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
-import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
+import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
 const transportOn = (name: string): Transport<VercelEvent> =>
-  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createVercelCodec() });
+  createTransport({ client: pubsubClient(), channelName: name, codec: createVercelCodec() });
 
 /**
  * A transport with the channel it reads, for a subscriber that waits for the attach.
@@ -32,7 +32,7 @@ const transportOn = (name: string): Transport<VercelEvent> =>
  * @returns The transport and its channel.
  */
 const readerOn = (name: string): { transport: Transport<VercelEvent>; channel: Ably.RealtimeChannel } => {
-  const client = ablyRealtimeClient();
+  const client = pubsubClient();
   const transport = createTransport({ client, channelName: name, codec: createVercelCodec() });
   return { transport, channel: client.channels.get(name) };
 };

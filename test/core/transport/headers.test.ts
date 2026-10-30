@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { describe, expect, it } from 'vitest';
 
 import { prepareHeaders, withHeaders } from '../../../src/core/transport/headers.js';

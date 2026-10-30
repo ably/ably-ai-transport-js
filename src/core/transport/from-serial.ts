@@ -4,7 +4,7 @@
  * to replay.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import type { Delivery } from '../codec/codec.js';

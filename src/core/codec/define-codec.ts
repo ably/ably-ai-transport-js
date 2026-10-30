@@ -39,7 +39,7 @@
  * its type anywhere Ably allows.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import {

@@ -43,7 +43,7 @@
  * subscription delivers both in order, or drop repeats by serial.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';

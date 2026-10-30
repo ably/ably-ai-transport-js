@@ -1,6 +1,6 @@
 /** A HistoryPage chain over fixture deliveries, for testing replay functions without a channel. */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import type { Delivery, HistoryPage } from '../../src/index.js';
 

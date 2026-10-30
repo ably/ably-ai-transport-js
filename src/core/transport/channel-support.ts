@@ -4,7 +4,7 @@
  * channel state change into a discontinuity report.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';

@@ -19,10 +19,10 @@ export default defineConfig({
       formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably', 'openai'],
+      external: ['@ably/pubsub-core', 'openai'],
       output: {
         globals: {
-          ably: 'Ably',
+          '@ably/pubsub-core': 'AblyPubSub',
           openai: 'OpenAI',
         },
       },

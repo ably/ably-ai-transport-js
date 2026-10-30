@@ -6,7 +6,7 @@
  * as every codec must.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import type { Codec } from '../../src/core/codec/index.js';
 

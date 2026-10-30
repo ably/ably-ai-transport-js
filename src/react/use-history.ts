@@ -3,7 +3,7 @@
  * oldest first in the accumulated list.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { Delivery } from '../core/codec/index.js';

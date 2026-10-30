@@ -1,6 +1,6 @@
 /** Shared mock Ably channel and paginated-history fakes for transport unit tests. */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { type Mock, vi } from 'vitest';
 
 /** The mock surface a test drives and asserts on, alongside the channel cast. */

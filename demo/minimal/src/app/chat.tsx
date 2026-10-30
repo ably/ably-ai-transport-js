@@ -134,7 +134,9 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
   // built per run: a run that is torn down and started again (a Strict Mode
   // remount, Fast Refresh) must not reuse one that has already seen the
   // messages. Rewind applies only when the channel attaches, so a re-run on a
-  // channel that is still attached replays nothing.
+  // channel that is still attached replays nothing and misses what arrived
+  // while it was unsubscribed. Teardown closes the reply streams still open
+  // and clears the wire tab, so a re-run starts from what it receives.
   useEffect(() => {
     const decoder = vercelDecoder();
     const listener = (message: Ably.InboundMessage) => {
@@ -145,8 +147,13 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
       // stays disabled.
       console.error('subscribe failed', error);
     });
+    const open = replies.current;
     return () => {
       channel.unsubscribe(listener);
+      for (const controller of open.values()) controller.close();
+      open.clear();
+      setStreaming(false);
+      setDeliveries([]);
     };
   }, [channel, apply]);
 

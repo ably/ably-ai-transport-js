@@ -3,7 +3,7 @@
 import { type Delivery, fromSerial, type Subscription } from '@ably/ai-transport';
 import { useTransport } from '@ably/ai-transport/react';
 import type { VercelEvent } from '@ably/ai-transport/vercel';
-import { useAbly, useChannelStateListener } from 'ably/react';
+import { useChannelStateListener, usePubSubClient } from '@ably/pubsub-device/react';
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
@@ -77,7 +77,7 @@ export function Chat({ channelName }: { channelName: string }) {
   // transitions only, so the initial value is read off the channel: a mount
   // on a channel that is already ATTACHED would otherwise show connecting…
   // until the next change.
-  const client = useAbly();
+  const client = usePubSubClient();
   const channel = client.channels.get(channelName);
   const [attached, setAttached] = useState(channel.state === 'attached');
   useChannelStateListener(channelName, (change) => {

@@ -5,7 +5,7 @@
  * through a decoder.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import type { Codec, EncodedMessage } from '../../src/core/codec/index.js';
 import { createDecoder } from '../../src/core/decoder/index.js';

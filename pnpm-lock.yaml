@@ -207,10 +207,16 @@ importers:
 
   .:
     dependencies:
-      ably:
-        specifier: ^2.23.0
-        version: 2.23.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@ably/pubsub-core':
+        specifier: ^3.0.0
+        version: 3.0.0
     devDependencies:
+      '@ably/pubsub-device':
+        specifier: ^3.0.0
+        version: 3.0.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@ably/pubsub-server':
+        specifier: ^3.0.0
+        version: 3.0.0
       '@ag-ui/client':
         specifier: 1.0.0
         version: 1.0.0
@@ -282,7 +288,7 @@ importers:
         version: 29.1.1
       openai:
         specifier: 6.45.0
-        version: 6.45.0(zod@4.4.3)
+        version: 6.45.0(ws@8.20.1)(zod@4.4.3)
       prettier:
         specifier: ^3.5.3
         version: 3.8.3
@@ -322,8 +328,25 @@ importers:
 
 packages:
 
-  '@ably/msgpack-js@0.4.1':
-    resolution: {integrity: sha512-Sjxj6SOr17hExAVrsycN7u6oV4PhZcK7Z2S8dM71CH/butgO47cSo/TL6FJPCXUyDAzKkOWjMUpJGyZkEpyu4Q==}
+  '@ably/pubsub-core@3.0.0':
+    resolution: {integrity: sha512-dRB1ekY4sg5od1ab3FuFwS8xJiBn5xjhvvQ4EZZJZ1Yu23HwvM2rqYlY3UxaPTta24LwgO8jIUnX+/0BGkEpbA==}
+    engines: {node: '>=22'}
+
+  '@ably/pubsub-device@3.0.0':
+    resolution: {integrity: sha512-xkNIgRQ5mxnddzmY7W6eB8lgIbOmY9erDXrl49/7Nkm4WFd/5voKY81d6/+v2IodCSRe1lP/Nh5DpzDXuxptLQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      react: '>=16.8.0'
+      react-dom: '>=16.8.0'
+    peerDependenciesMeta:
+      react:
+        optional: true
+      react-dom:
+        optional: true
+
+  '@ably/pubsub-server@3.0.0':
+    resolution: {integrity: sha512-TnYCKSFxsiA/702U57Ih0BzQWH+b42blCWNGWYSq2U4HAFUDlXHOLrih9crJFM4qPN7lAvDiXm5VlybHOCyKoA==}
+    engines: {node: '>=22'}
 
   '@ag-ui/client@1.0.0':
     resolution: {integrity: sha512-Q24E4yuK35tz7ROOC0yWYltdOZK1K+5GmM2Syh/PReFE9e8lDcE8LoMoY5HZyxpQZ+0IizwpQm9LyVqAHP8mpw==}
@@ -1300,18 +1323,6 @@ packages:
   '@workflow/serde@4.1.0':
     resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
 
-  ably@2.23.0:
-    resolution: {integrity: sha512-hDmCmNNS/XS/+1g00kVmuFkNW2PPPgeerX7bAp2ALMBsH7nTesvJwvZs/x9VEljBpB8mS0oWDDrLkitJDkUyRg==}
-    engines: {node: '>=16'}
-    peerDependencies:
-      react: '>=16.8.0'
-      react-dom: '>=16.8.0'
-    peerDependenciesMeta:
-      react:
-        optional: true
-      react-dom:
-        optional: true
-
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
     peerDependencies:
@@ -1388,10 +1399,6 @@ packages:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
 
-  base64-js@1.0.2:
-    resolution: {integrity: sha512-ZXBDPMt/v/8fsIqn+Z5VwrhdR6jVka0bYobHdGia0Nxi7BJ9i/Uvml3AocHIBtIIBhZjBw5MR0aR4ROs/8+SNg==}
-    engines: {node: '>= 0.4'}
-
   baseline-browser-mapping@2.10.31:
     resolution: {integrity: sha512-MujYO3eP72uvmSE0i4wltsodRfIpZATP3jvzRNRGGxgzId7aVocVJJV3nf01qnzzKFGxQVC9bpWxl5cjxTr/7Q==}
     engines: {node: '>=6.0.0'}
@@ -1399,9 +1406,6 @@ packages:
 
   bidi-js@1.0.3:
     resolution: {integrity: sha512-RKshQI1R3YQ+n9YJz2QQ147P66ELpa1FQEg20Dk8oW9t2KgLbpDLLp9aGZ7y8WHSshDknG0bknqGw5/tyCs5tw==}
-
-  bops@1.0.1:
-    resolution: {integrity: sha512-qCMBuZKP36tELrrgXpAfM+gHzqa0nLsWZ+L37ncsb8txYlnAoxOPpVp+g7fK0sGkMXfA0wl8uQkESqw3v4HNag==}
 
   brace-expansion@1.1.14:
     resolution: {integrity: sha512-MWPGfDxnyzKU7rNOW9SP/c50vi3xrmrua/+6hfPbCS2ABNWfx24vPidzvC7krjU/RTo235sV776ymlsMtGKj8g==}
@@ -2416,9 +2420,6 @@ packages:
     resolution: {integrity: sha512-aBiNayCfTQxuIJBm06M+xR14cYaYlDlSXZbgsnKzKNxDKUVq7KFwTjwBSsb7m9Y5xO8WfPnBc63WaYFMTGlvqw==}
     hasBin: true
 
-  to-utf8@0.0.1:
-    resolution: {integrity: sha512-zks18/TWT1iHO3v0vFp5qLKOG27m67ycq/Y7a7cTiRuUNlc4gf3HGnkRgMv0NyhnfTamtkYBJl+YeD1/j07gBQ==}
-
   to-valid-identifier@1.0.0:
     resolution: {integrity: sha512-41wJyvKep3yT2tyPqX/4blcfybknGB4D+oETKLs7Q76UiPqRpUJK3hr1nxelyYO0PHKVzJwlu0aCeEAsGI6rpw==}
     engines: {node: '>=20'}
@@ -2692,9 +2693,32 @@ packages:
 
 snapshots:
 
-  '@ably/msgpack-js@0.4.1':
+  '@ably/pubsub-core@3.0.0': {}
+
+  '@ably/pubsub-device@3.0.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      bops: 1.0.1
+      '@ably/pubsub-core': 3.0.0
+      dequal: 2.0.3
+      fastestsmallesttextencoderdecoder: 1.0.22
+      got: 11.8.6
+      ulid: 2.4.0
+      ws: 8.20.1
+    optionalDependencies:
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@ably/pubsub-server@3.0.0':
+    dependencies:
+      '@ably/pubsub-core': 3.0.0
+      dequal: 2.0.3
+      got: 11.8.6
+      ws: 8.20.1
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@ag-ui/client@1.0.0':
     dependencies:
@@ -3634,21 +3658,6 @@ snapshots:
 
   '@workflow/serde@4.1.0': {}
 
-  ably@2.23.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
-    dependencies:
-      '@ably/msgpack-js': 0.4.1
-      dequal: 2.0.3
-      fastestsmallesttextencoderdecoder: 1.0.22
-      got: 11.8.6
-      ulid: 2.4.0
-      ws: 8.20.1
-    optionalDependencies:
-      react: 19.2.8
-      react-dom: 19.2.8(react@19.2.8)
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
-
   acorn-jsx@5.3.2(acorn@8.16.0):
     dependencies:
       acorn: 8.16.0
@@ -3714,18 +3723,11 @@ snapshots:
 
   balanced-match@4.0.4: {}
 
-  base64-js@1.0.2: {}
-
   baseline-browser-mapping@2.10.31: {}
 
   bidi-js@1.0.3:
     dependencies:
       require-from-string: 2.0.2
-
-  bops@1.0.1:
-    dependencies:
-      base64-js: 1.0.2
-      to-utf8: 0.0.1
 
   brace-expansion@1.1.14:
     dependencies:
@@ -4448,8 +4450,9 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  openai@6.45.0(zod@4.4.3):
+  openai@6.45.0(ws@8.20.1)(zod@4.4.3):
     optionalDependencies:
+      ws: 8.20.1
       zod: 4.4.3
 
   optionator@0.9.4:
@@ -4682,8 +4685,6 @@ snapshots:
   tldts@7.4.11:
     dependencies:
       tldts-core: 7.4.11
-
-  to-utf8@0.0.1: {}
 
   to-valid-identifier@1.0.0:
     dependencies:

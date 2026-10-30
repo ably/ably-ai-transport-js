@@ -43,28 +43,29 @@ This SDK supports the following platforms:
 | OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                   |
 | AG-UI         | Version 1 events, through `@ably/ai-transport/ag-ui`.                                     |
 
-The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, `@ag-ui/core`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
+The Ably Pub/Sub SDK version 3 is required in every case: `@ably/pubsub-server` or `@ably/pubsub-device` to build the client, and `@ably/pubsub-device` for the React entry point. `ai`, `openai`, `@ag-ui/core`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
 
 ---
 
 ## Installation
 
-The AI Transport SDK is available as an [npm module](https://www.npmjs.com/package/@ably/ai-transport). It is built on top of the Ably Pub/Sub SDK and uses that to establish a connection with Ably, so install both:
+The AI Transport SDK is available as an [npm module](https://www.npmjs.com/package/@ably/ai-transport). It is built on top of the Ably Pub/Sub SDK and uses that to establish a connection with Ably, so install it alongside the Pub/Sub package for where your code runs: `@ably/pubsub-server` for an agent on infrastructure you operate, `@ably/pubsub-device` for a client on an end user's device.
 
 ```sh
-npm install ably @ably/ai-transport
+npm install @ably/ai-transport @ably/pubsub-server   # in your agent
+npm install @ably/ai-transport @ably/pubsub-device   # in your client
 ```
 
 For a Vercel AI SDK project, add `ai` as well:
 
 ```sh
-npm install ably @ably/ai-transport ai
+npm install @ably/ai-transport @ably/pubsub-server ai
 ```
 
-For a React project, add `react`. The React entry point builds on ably-js's own React hooks, which ship inside the `ably` package:
+For a React project, add `react`. The React entry point builds on the Pub/Sub SDK's own React hooks, which ship inside `@ably/pubsub-device`:
 
 ```sh
-npm install ably @ably/ai-transport react
+npm install @ably/ai-transport @ably/pubsub-device react
 ```
 
 AI Transport streams a response by appending tokens to a single Ably message, which requires the `mutableMessages` channel rule on the namespace your conversations live in. This is a one-time setup per Ably app: without it the first append fails with error `93002` and no tokens reach the client. See [configure channel rules](https://ably.com/docs/ai-transport/getting-started/channel-rules).
@@ -80,11 +81,11 @@ The following code streams a model response from a Next.js route handler onto an
 ```typescript
 import { streamText, convertToModelMessages, toUIMessageStream, type UIMessage } from 'ai';
 import { openai } from '@ai-sdk/openai';
-import * as Ably from 'ably';
+import { createRealtimeClient, ErrorInfo } from '@ably/pubsub-server';
 import { createTransport, ErrorCode } from '@ably/ai-transport';
 import { vercel } from '@ably/ai-transport/vercel';
 
-const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
+const pubsubClient = createRealtimeClient({ key: process.env.ABLY_API_KEY });
 
 export async function POST(req: Request) {
   // The client has already published its message on the channel; the POST
@@ -99,7 +100,7 @@ export async function POST(req: Request) {
   // The transport resolves the channel off the client and owns its options.
   // You keep the client: close() never closes it, and detaches the channel
   // only when the transport attached it.
-  const transport = createTransport({ client: ably, channelName, codec: vercel });
+  const transport = createTransport({ client: pubsubClient, channelName, codec: vercel });
 
   const result = streamText({
     model: openai('gpt-4o-mini'),
@@ -121,7 +122,7 @@ export async function POST(req: Request) {
     });
     return new Response(null, { status: 204 });
   } catch (error) {
-    const cancelled = error instanceof Ably.ErrorInfo && error.code === ErrorCode.OperationCancelled;
+    const cancelled = error instanceof ErrorInfo && error.code === ErrorCode.OperationCancelled;
     return new Response(null, { status: cancelled ? 204 : 500 });
   } finally {
     await transport.close();
@@ -135,14 +136,14 @@ Publishing a message is one call, and reading the reply is a subscription. Each 
 
 ```typescript
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
-import * as Ably from 'ably';
+import { createClient } from '@ably/pubsub-device';
 import { createTransport, type Delivery } from '@ably/ai-transport';
 import { vercel, type VercelEvent } from '@ably/ai-transport/vercel';
 
-const ably = new Ably.Realtime({ authUrl: '/api/auth/token' });
+const pubsubClient = createClient({ authUrl: '/api/auth/token' });
 const channelName = 'conversations:abc';
 
-const transport = createTransport({ client: ably, channelName, codec: vercel });
+const transport = createTransport({ client: pubsubClient, channelName, codec: vercel });
 
 // One delivery per inbound Ably message. The first subscribe attaches the
 // channel; nothing here assembles a message list, that is yours. Here the AI
@@ -160,7 +161,7 @@ const unsubscribe = transport.subscribe(({ event }) => {
 });
 // To read the channel's state, ask for it by name with no options of your own
 // and you get the one the transport resolved.
-await ably.channels.get(channelName).whenState('attached');
+await pubsubClient.channels.get(channelName).whenState('attached');
 
 async function merge(stream: ReadableStream<UIMessageChunk>) {
   for await (const message of readUIMessageStream({ stream })) render(message);
@@ -236,7 +237,7 @@ The AG-UI codec carries [AG-UI](https://docs.ag-ui.com) events. An agent pipes i
 ```typescript
 import { createAGUICodec } from '@ably/ai-transport/ag-ui';
 
-const transport = createTransport({ client: ably, channelName, codec: createAGUICodec() });
+const transport = createTransport({ client: pubsubClient, channelName, codec: createAGUICodec() });
 
 // Client: send only the messages this run adds.
 await transport.send({ type: 'run-input', input: { threadId, runId, messages: [userMessage], tools, context } });
@@ -258,26 +259,26 @@ AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its
 
 ### React client
 
-`@ably/ai-transport/react` is the same transport behind a provider and four hooks. The provider resolves the channel from the surrounding `<AblyProvider>`, so the channel wiring the example above does by hand is handled for you.
+`@ably/ai-transport/react` is the same transport behind a provider and four hooks. The provider resolves the channel from the surrounding `<PubSubClientProvider>`, so the channel wiring the example above does by hand is handled for you.
 
 ```tsx
-import * as Ably from 'ably';
-import { AblyProvider } from 'ably/react';
+import { createClient } from '@ably/pubsub-device';
+import { PubSubClientProvider } from '@ably/pubsub-device/react';
 import { TransportProvider, useDeliveries, useTransport } from '@ably/ai-transport/react';
 import { vercel, type VercelEvent } from '@ably/ai-transport/vercel';
 
-const ably = new Ably.Realtime({ authUrl: '/api/auth/token' });
+const pubsubClient = createClient({ authUrl: '/api/auth/token' });
 
 function App() {
   return (
-    <AblyProvider client={ably}>
+    <PubSubClientProvider client={pubsubClient}>
       <TransportProvider
         channelName="conversations:abc"
         codec={vercel}
       >
         <Chat />
       </TransportProvider>
-    </AblyProvider>
+    </PubSubClientProvider>
   );
 }
 
@@ -314,7 +315,7 @@ function Chat() {
 }
 ```
 
-`useHistory({ limit })` reads the channel's history one page at a time, `useTransportStatus()` reports the transport's errors, and the channel's own state is ably-js's `useChannelStateListener` under the provider. Nesting providers with distinct channel names holds more than one conversation at once; pass `channelName` to any hook to pick which one it reads.
+`useHistory({ limit })` reads the channel's history one page at a time, `useTransportStatus()` reports the transport's errors, and the channel's own state is the Pub/Sub SDK's `useChannelStateListener` under the provider. Nesting providers with distinct channel names holds more than one conversation at once; pass `channelName` to any hook to pick which one it reads.
 
 ---
 

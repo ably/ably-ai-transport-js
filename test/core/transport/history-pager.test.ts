@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Delivery } from '../../../src/core/codec/index.js';

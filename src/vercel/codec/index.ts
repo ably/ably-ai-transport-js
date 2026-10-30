@@ -25,7 +25,7 @@
  * No row writes Ably `headers`: every field a chunk carries is a chunk field.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 import type * as AI from 'ai';
 
 import type { Codec, DecodedRow, EventRow } from '../../core/codec/index.js';

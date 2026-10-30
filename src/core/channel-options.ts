@@ -24,7 +24,7 @@
  * reversion when one writer omits modes another set.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import { channelAgent } from './agent.js';
 

@@ -10,7 +10,7 @@
  * behind a cast.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import { type HeaderPrimitive, HEADERS_KEY, isHeaderPrimitive, isRecord } from '../wire.js';

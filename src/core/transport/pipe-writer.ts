@@ -50,7 +50,7 @@
  * one delivery per append, and the wait then costs one round trip per stream.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';

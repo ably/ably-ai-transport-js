@@ -21,7 +21,7 @@
  * is `pnpm run build`'s job, which fails if a declared subpath has no bundle.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';

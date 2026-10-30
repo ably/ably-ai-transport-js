@@ -20,7 +20,7 @@
  * `extras` is the codec's.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 /**
  * What a codec's `encode` returns for one event: the Ably message to write and

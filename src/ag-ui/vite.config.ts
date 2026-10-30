@@ -19,10 +19,10 @@ export default defineConfig({
       formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably', '@ag-ui/core'],
+      external: ['@ably/pubsub-core', '@ag-ui/core'],
       output: {
         globals: {
-          ably: 'Ably',
+          '@ably/pubsub-core': 'AblyPubSub',
           '@ag-ui/core': 'AGUI',
         },
       },

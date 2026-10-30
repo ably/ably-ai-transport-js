@@ -47,7 +47,7 @@
  * `headers`: every field an event carries is an event field.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 import type { Responses } from 'openai/resources/responses/responses';
 
 import type { Codec, DecodedRow, EventRow } from '../../core/codec/index.js';

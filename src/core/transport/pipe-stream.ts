@@ -13,7 +13,7 @@
  * reaches the writer, so the writer's repair snapshot carries them too.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';

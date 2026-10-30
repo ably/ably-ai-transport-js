@@ -12,9 +12,10 @@
   },
   "dependencies": {
     "@ably/ai-transport": "link:../..",
+    "@ably/pubsub-device": "link:../../node_modules/@ably/pubsub-device",
+    "@ably/pubsub-server": "link:../../node_modules/@ably/pubsub-server",
     "@ai-sdk/anthropic": "^4.0.49",
     "@ai-sdk/openai": "^4",
-    "ably": "link:../../node_modules/ably",
     "ai": "^7",
     "next": "^16",
     "react": "^19",

@@ -142,23 +142,6 @@ export default [
     },
   },
   {
-    files: ['test/**/*.{ts,tsx}'],
-
-    rules: {
-      // ably 2.22 added @deprecated v1-callback overloads to these channel
-      // methods. The rule resolves real call sites to the v2 overload and
-      // stays quiet, but bare references (mock assignment, expect() args)
-      // fall back to the symbol and flag because *an* overload is deprecated.
-      // We only ever use the v2 signatures, so allow these symbols in tests.
-      '@typescript-eslint/no-deprecated': [
-        'error',
-        {
-          allow: [{ from: 'package', package: 'ably', name: ['subscribe', 'unsubscribe', 'publish', 'history'] }],
-        },
-      ],
-    },
-  },
-  {
     // The hook contract, over the SDK's React source and its suite. The two
     // rules here are the contract itself; the compiler rules the plugin's
     // recommended preset adds flag the render-phase ref writes and the
@@ -180,6 +163,14 @@ export default [
     rules: {
       '@typescript-eslint/no-unused-vars': ['error'],
       'import-x/no-unresolved': 'off',
+      // Pub/Sub declares Message as a class for its static helpers, but a
+      // message is plain data that the codec and transport copy by spreading.
+      '@typescript-eslint/no-misused-spread': [
+        'error',
+        {
+          allow: [{ from: 'package', package: '@ably/pubsub-core', name: ['Message'] }],
+        },
+      ],
       'no-undef': 'off',
       'no-dupe-class-members': 'off',
       'require-await': 'off',

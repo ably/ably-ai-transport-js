@@ -14,7 +14,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createTransport, type Transport } from '../../../src/index.js';
-import { createVercelCodec, type VercelEvent } from '../../../src/vercel/index.js';
+import { createVercelCodec, vercelAdaptor, vercelDecoder, type VercelEvent } from '../../../src/vercel/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { streamOf } from '../../helper/test-codec.js';
@@ -61,6 +61,23 @@ const isFinish = (deliveries: { event?: VercelEvent }[]): boolean => deliveries.
 describe('Vercel codec over Ably', () => {
   afterEach(() => {
     closeAllClients();
+  });
+
+  it('pipes a turn through vercelAdaptor that vercelDecoder decodes and the AI SDK’s reducer folds', async () => {
+    const name = uniqueChannelName('vercel');
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const decoder = vercelDecoder();
+    const recorder = createDeliveryRecorder<VercelEvent>();
+    decoder.onEvent(recorder.record);
+    await clientChannel.subscribe(decoder.receive);
+
+    await vercelAdaptor(ablyRealtimeClient().channels.get(name)).pipe(streamOf(...turn));
+    await recorder.waitFor(isFinish);
+
+    expect(recorder.events()).toStrictEqual(turn);
+    const message = await foldWithProviderReducer(recorder.events().filter(isChunk));
+    const textPart = message?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+    expect(textPart?.text).toBe('It is 21°C in London.');
   });
 
   it('streams a turn chunk for chunk, and the AI SDK’s reducer folds what a subscriber decodes', async () => {

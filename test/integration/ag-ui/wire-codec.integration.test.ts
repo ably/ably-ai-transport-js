@@ -12,7 +12,13 @@ import { EventType } from '@ag-ui/core';
 import type * as Ably from 'ably';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { type AGUIEvent, type AGUIRunInput, createAGUICodec } from '../../../src/ag-ui/index.js';
+import {
+  agUiAdaptor,
+  agUiDecoder,
+  type AGUIEvent,
+  type AGUIRunInput,
+  createAGUICodec,
+} from '../../../src/ag-ui/index.js';
 import { createTransport, type Transport } from '../../../src/index.js';
 import {
   chunkRun,
@@ -697,6 +703,28 @@ describe('AG-UI codec over Ably', () => {
     );
     expect(fromHistory).toStrictEqual(live);
     expect(live.slice(history.length)).toStrictEqual([
+      {
+        id: 'm4',
+        role: 'assistant',
+        toolCalls: [{ id: 't2', type: 'function', function: { name: 'weather', arguments: '{"city":"Paris"}' } }],
+      },
+      { id: 'm5', role: 'assistant', content: 'Paris is sunny.' },
+    ]);
+  });
+
+  it('pipes a run through agUiAdaptor that agUiDecoder decodes and AG-UI’s reducer merges', async () => {
+    const name = uniqueChannelName('ag-ui');
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const decoder = agUiDecoder();
+    const recorder = createDeliveryRecorder<AGUIEvent>();
+    decoder.onEvent(recorder.record);
+    await clientChannel.subscribe(decoder.receive);
+
+    await agUiAdaptor(ablyRealtimeClient().channels.get(name)).pipe(streamOf(...chunkRun));
+    await recorder.waitFor((d) => finished(d) === 1);
+
+    const merged = await foldWithAGUIReducer(recorder.events(), history);
+    expect(merged.slice(history.length)).toStrictEqual([
       {
         id: 'm4',
         role: 'assistant',

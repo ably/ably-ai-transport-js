@@ -13,7 +13,7 @@ import type { Responses } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createTransport, type Transport } from '../../../src/index.js';
-import { createOpenAICodec, type OpenAIEvent } from '../../../src/openai/index.js';
+import { createOpenAICodec, openaiAdaptor, openaiDecoder, type OpenAIEvent } from '../../../src/openai/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { streamOf } from '../../helper/test-codec.js';
@@ -42,6 +42,20 @@ const completions = (deliveries: { event?: OpenAIEvent }[]): number =>
 describe('OpenAI codec over Ably', () => {
   afterEach(() => {
     closeAllClients();
+  });
+
+  it('pipes a response through openaiAdaptor that openaiDecoder decodes event for event', async () => {
+    const name = uniqueChannelName('openai');
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const decoder = openaiDecoder();
+    const recorder = createDeliveryRecorder<OpenAIEvent>();
+    decoder.onEvent(recorder.record);
+    await clientChannel.subscribe(decoder.receive);
+
+    await openaiAdaptor(ablyRealtimeClient().channels.get(name)).pipe(streamOf(...textResponse));
+    await recorder.waitFor((d) => completions(d) === 1);
+
+    expect(recorder.events()).toStrictEqual(decodedOf(textResponse));
   });
 
   it('streams a tool call, its output as input, and the answer, event for event', async () => {

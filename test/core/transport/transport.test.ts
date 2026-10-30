@@ -1,11 +1,11 @@
 import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { MessageHeaders } from '../../../src/core/adaptor/headers.js';
 import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
 import type { Codec, Delivery } from '../../../src/core/codec/index.js';
 import { defineCodec } from '../../../src/core/codec/index.js';
 import { fromSerial } from '../../../src/core/transport/from-serial.js';
-import type { MessageHeaders } from '../../../src/core/transport/headers.js';
 import type { Transport } from '../../../src/core/transport/transport.js';
 import { createTransport } from '../../../src/core/transport/transport.js';
 import { ErrorCode } from '../../../src/errors.js';

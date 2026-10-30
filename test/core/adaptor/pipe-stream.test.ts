@@ -1,10 +1,10 @@
 import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pipeEach, pipeStream, type Published } from '../../../src/core/adaptor/pipe-stream.js';
+import type { PipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
+import { createPipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
 import type { Codec } from '../../../src/core/codec/index.js';
-import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
-import type { PipeWriter } from '../../../src/core/transport/pipe-writer.js';
-import { createPipeWriter } from '../../../src/core/transport/pipe-writer.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
@@ -338,6 +338,19 @@ describe('pipeStream', () => {
       expect(channel.publish).toHaveBeenCalledTimes(1);
     });
 
+    it("stops at an event whose message lacks the codec's name or id, writing nothing for it", async () => {
+      const misnamed: Codec<TestEvent> = {
+        id: 'misnamed',
+        name: 'ai',
+        encode: () => [{ message: { name: 'chat', data: 'x', extras: { ai: { codec: 'misnamed', type: 'note' } } } }],
+        decode: () => [],
+      };
+      const error = await rejectionOf(pipeStream(streamOf<TestEvent>({ type: 'note', text: 'x' }), misnamed, writer));
+      expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+      expect((error as Ably.ErrorInfo).message).toContain("encoded a message named 'chat'");
+      expect(channel.publishCalls).toHaveLength(0);
+    });
+
     it('stops when the codec cannot encode an event', async () => {
       // CAST: an event outside the union, to exercise the encode failure path.
       const rogue = { type: 'rogue' } as unknown as TestEvent;
@@ -467,4 +480,234 @@ const returnThrowing = <E>(state: { returned: boolean }): AsyncIterator<E> => ({
     state.returned = true;
     throw new Error('teardown failed');
   },
+});
+
+/**
+ * Drain the iterable pipe, collecting what it yields.
+ * @param iterable - The iterable pipe.
+ * @returns What was yielded, and the error the loop threw, if any.
+ */
+const drain = async <E>(
+  iterable: AsyncIterable<Published<E>>,
+): Promise<{ yielded: Published<E>[]; error: unknown }> => {
+  const yielded: Published<E>[] = [];
+  try {
+    for await (const published of iterable) yielded.push(published);
+  } catch (error) {
+    return { yielded, error };
+  }
+  return { yielded, error: undefined };
+};
+
+describe('pipeEach', () => {
+  let channel: MockChannel & Ably.RealtimeChannel;
+  let writer: PipeWriter;
+  let codec: Codec<TestEvent>;
+
+  beforeEach(() => {
+    channel = createMockChannel();
+    writer = createPipeWriter(channel);
+    codec = createTestCodec();
+  });
+
+  it('yields each event with the serial of the message it landed on', async () => {
+    const events: TestEvent[] = [...textEvents('m1', 'a', 'b'), { type: 'note', text: 'n' }, { type: 'ping' }];
+    const { yielded, error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeUndefined();
+    // The first delta publishes the stream's message and the second appends
+    // to it, so both land on its serial. The ping encodes to nothing.
+    expect(yielded).toEqual([
+      { event: events[0], serial: 'serial-1' },
+      { event: events[1], serial: 'serial-2' },
+      { event: events[2], serial: 'serial-2' },
+      { event: events[3], serial: 'serial-3' },
+      { event: events[4], serial: 'serial-4' },
+      { event: events[5], serial: undefined },
+    ]);
+  });
+
+  it('writes nothing until the loop asks for the first event', async () => {
+    const iterable = pipeEach(streamOf<TestEvent>({ type: 'note', text: 'n' }), codec, writer);
+    await flushMicrotasks();
+    expect(channel.publish).not.toHaveBeenCalled();
+    await drain(iterable);
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read the next event while the loop body runs', async () => {
+    let pulls = 0;
+    const source: AsyncIterable<TestEvent> = {
+      [Symbol.asyncIterator]: () => ({
+        // eslint-disable-next-line @typescript-eslint/require-await -- fixture iterator
+        next: async () => {
+          pulls += 1;
+          return pulls > 2 ? { done: true, value: undefined } : { done: false, value: { type: 'note', text: 'n' } };
+        },
+      }),
+    };
+    for await (const published of pipeEach(source, codec, writer)) {
+      expect(published.event.type).toBe('note');
+      const before = pulls;
+      await flushMicrotasks();
+      expect(pulls).toBe(before);
+    }
+    expect(pulls).toBe(3);
+  });
+
+  it('yields an append before its ack', async () => {
+    channel.appendMessage.mockImplementationOnce(async () => neverSettles());
+    const iterator = pipeEach(streamOf<TestEvent>(...textEvents('m1', 'a', 'b')), codec, writer)[
+      Symbol.asyncIterator
+    ]();
+    await iterator.next();
+    await iterator.next();
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { event: { type: 'text-delta', id: 'm1', delta: 'b' }, serial: 'serial-2' },
+    });
+    await iterator.return();
+  });
+
+  it('flushes and repairs what it wrote when the source ends', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    const events: TestEvent[] = [
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'a' },
+      { type: 'text-delta', id: 'm1', delta: 'b' },
+    ];
+    const { error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeUndefined();
+    expect(channel.updateCalls).toHaveLength(1);
+    expect(channel.updateCalls[0]?.data).toBe('ab');
+  });
+
+  it('throws PipeFailed from the closer when its repair fails, and does not yield it', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+    const { yielded, error } = await drain(pipeEach(streamOf(...textEvents('m1', 'a', 'b')), codec, writer));
+    expect(error).toBeErrorInfo({
+      code: ErrorCode.PipeFailed,
+      cause: { code: ErrorCode.StreamedMessageFinalizeFailed },
+    });
+    expect(yielded.map((p) => p.event.type)).toEqual(['text-start', 'text-delta', 'text-delta']);
+  });
+
+  it('repairs what it wrote before throwing when the pipe itself fails', async () => {
+    // The second delta's append fails and is held; the note's publish then
+    // fails and ends the loop. The repair runs before the failure is thrown.
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.publish
+      .mockResolvedValueOnce({ serials: ['serial-1'] })
+      .mockResolvedValueOnce({ serials: ['serial-2'] })
+      .mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 50000, 500));
+    const events: TestEvent[] = [
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'a' },
+      { type: 'text-delta', id: 'm1', delta: 'b' },
+      { type: 'note', text: 'n' },
+    ];
+    const { yielded, error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: 50000 } });
+    expect(yielded).toHaveLength(3);
+    expect(channel.updateCalls).toHaveLength(1);
+    expect(channel.updateCalls[0]?.data).toBe('ab');
+  });
+
+  it('keeps the failure as the error when the repair after it also fails', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+    // CAST: force a type the codec has no row for past the compile-time check.
+    const rogue = { type: 'rogue' } as unknown as TestEvent;
+    const events: TestEvent[] = [{ type: 'text-start', id: 'm1' }, ...textEvents('m1', 'a', 'b').slice(1, 3), rogue];
+    const { error } = await drain(pipeEach(streamOf(...events), codec, writer));
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+    expect(channel.updateMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops dead on break: no closer, no flush, no repair, and releases the source', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    const { iterable, state } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a', 'b'));
+    for await (const { event } of pipeEach(iterable, codec, writer)) {
+      if (event.type === 'text-delta' && event.delta === 'b') break;
+    }
+    await flushMicrotasks();
+    expect(state.returned).toBe(true);
+    // The failed append is dropped: nothing repairs it, and the closer is never written.
+    expect(channel.updateMessage).not.toHaveBeenCalled();
+    expect(channel.publishCalls.map((m) => m.data as unknown)).toEqual(['', 'a']);
+  });
+
+  it('stops dead when the loop body throws, and the throw reaches the caller', async () => {
+    const { iterable, state } = asyncIterableOf<TestEvent>(...textEvents('m1', 'a'));
+    const thrown = new Error('loop body failed');
+    const run = async (): Promise<void> => {
+      for await (const published of pipeEach(iterable, codec, writer)) {
+        if (published.serial !== undefined) throw thrown;
+      }
+    };
+    await expect(run()).rejects.toBe(thrown);
+    expect(state.returned).toBe(true);
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws OperationCancelled when the signal fires, without flushing', async () => {
+    channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+    const controller = new AbortController();
+    const source = abortingAfter<TestEvent>(
+      controller,
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'a' },
+      { type: 'text-delta', id: 'm1', delta: 'b' },
+    );
+    const { yielded, error } = await drain(pipeEach(source, codec, writer, { signal: controller.signal }));
+    expect(error).toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    expect(yielded).toHaveLength(3);
+    expect(channel.updateMessage).not.toHaveBeenCalled();
+  });
+
+  it('throws OperationCancelled at once for an already-aborted signal, writing nothing', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { error } = await drain(
+      pipeEach(streamOf<TestEvent>({ type: 'note', text: 'n' }), codec, writer, { signal: controller.signal }),
+    );
+    expect(error).toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    expect(channel.publish).not.toHaveBeenCalled();
+  });
+
+  it('throws PipeFailed with the cause when the source throws', async () => {
+    const { error } = await drain(
+      pipeEach(erroringIterableOf<TestEvent>([], new Ably.ErrorInfo('upstream', 50000, 500)), codec, writer),
+    );
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: 50000 } });
+  });
+
+  it("throws PipeFailed from the loop for a message without the codec's id", async () => {
+    const unstamped: Codec<TestEvent> = {
+      id: 'unstamped',
+      name: 'ai',
+      encode: () => [{ message: { name: 'ai', data: 'x', extras: { ai: { type: 'note' } } } }],
+      decode: () => [],
+    };
+    const { yielded, error } = await drain(
+      pipeEach(streamOf<TestEvent>({ type: 'note', text: 'x' }), unstamped, writer),
+    );
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+    expect(yielded).toHaveLength(0);
+    expect(channel.publishCalls).toHaveLength(0);
+  });
+
+  it('throws PipeFailed naming the event when the codec cannot encode it', async () => {
+    // CAST: force a type the codec has no row for past the compile-time check.
+    const rogue = { type: 'rogue' } as unknown as TestEvent;
+    const { error } = await drain(pipeEach(streamOf(rogue), codec, writer));
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+    expect((error as Ably.ErrorInfo).message).toContain('encode failed for event {"type":"rogue"}');
+  });
+
+  it("stamps the call's headers on every message", async () => {
+    await drain(pipeEach(streamOf(...textEvents('m1', 'a', 'b')), codec, writer, { headers: { requestId: 'r1' } }));
+    const written = [...channel.publishCalls, ...channel.appendCalls];
+    expect(written.map((m) => headersOf(m))).toEqual(written.map(() => ({ requestId: 'r1' })));
+  });
 });

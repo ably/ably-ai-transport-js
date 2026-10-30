@@ -1,9 +1,9 @@
 import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { PipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
+import { createPipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
 import type { EncodedMessage } from '../../../src/core/codec/index.js';
-import type { PipeWriter } from '../../../src/core/transport/pipe-writer.js';
-import { createPipeWriter } from '../../../src/core/transport/pipe-writer.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 
@@ -67,7 +67,7 @@ describe('createPipeWriter', () => {
 
   describe('publish', () => {
     it('publishes and returns the ack serial', async () => {
-      await expect(writer.write(publish(undefined, 'hello'))).resolves.toBe('serial-1');
+      await expect(writer.write(publish(undefined, 'hello'))).resolves.toEqual({ serial: 'serial-1', published: true });
       expect(channel.publishCalls).toEqual([{ name: 'ai', data: 'hello', extras: {} }]);
     });
 
@@ -81,7 +81,7 @@ describe('createPipeWriter', () => {
       await writer.write(publish('k1'));
       const releases = holdAppends(channel);
       await writer.write(append('k1', 'a'));
-      await expect(writer.write(publish(undefined, 'after'))).resolves.toBe('serial-2');
+      await expect(writer.write(publish(undefined, 'after'))).resolves.toEqual({ serial: 'serial-2', published: true });
       expect(dataOf(channel.publishCalls)).toEqual(['', 'after']);
       for (const release of releases) release();
     });
@@ -98,7 +98,7 @@ describe('createPipeWriter', () => {
     it('allows a key to be reused once ended', async () => {
       await writer.write(publish('k1'));
       await writer.write(end('k1'));
-      await expect(writer.write(publish('k1'))).resolves.toBe('serial-2');
+      await expect(writer.write(publish('k1'))).resolves.toEqual({ serial: 'serial-2', published: true });
     });
 
     it('throws InternalError when the ack carries no serial', async () => {
@@ -119,7 +119,8 @@ describe('createPipeWriter', () => {
           };
         }),
       );
-      await expect(writer.write(append('k1', 'Hello'))).resolves.toBeUndefined();
+      // Resolves before the ack, with the serial of the stream's message.
+      await expect(writer.write(append('k1', 'Hello'))).resolves.toEqual({ serial: 'serial-1', published: false });
       expect(release).toBeDefined();
       release?.();
     });
@@ -146,7 +147,7 @@ describe('createPipeWriter', () => {
 
     it('publishes an append to a key that is not live, opening the key under the ack serial', async () => {
       const opener: EncodedMessage = { message: { name: 'ai', data: 'Hello', extras: { type: 'd' } }, append: 'k9' };
-      await expect(writer.write(opener)).resolves.toBe('serial-1');
+      await expect(writer.write(opener)).resolves.toEqual({ serial: 'serial-1', published: true });
       expect(channel.publishCalls).toEqual([
         { name: 'ai', data: 'Hello', extras: { type: 'd', ai: { stream: true } } },
       ]);
@@ -178,7 +179,7 @@ describe('createPipeWriter', () => {
     it('opens a key again with a publish once it has ended', async () => {
       await writer.write(publish('k1'));
       await writer.write(end('k1'));
-      await expect(writer.write(append('k1', 'late'))).resolves.toBe('serial-2');
+      await expect(writer.write(append('k1', 'late'))).resolves.toEqual({ serial: 'serial-2', published: true });
       expect(dataOf(channel.publishCalls)).toEqual(['', 'late']);
     });
 
@@ -250,7 +251,10 @@ describe('createPipeWriter', () => {
   describe('update', () => {
     it('awaits the update and routes it to the key', async () => {
       await writer.write(publish('k1', 'draft'));
-      await expect(writer.write(update('k1', 'final', { type: 'r' }))).resolves.toBeUndefined();
+      await expect(writer.write(update('k1', 'final', { type: 'r' }))).resolves.toEqual({
+        serial: 'serial-1',
+        published: false,
+      });
       expect(channel.updateCalls).toEqual([
         { serial: 'serial-1', data: 'final', extras: { type: 'r', ai: { stream: true } } },
       ]);

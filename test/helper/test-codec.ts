@@ -23,11 +23,12 @@ const idOf = (fields: Record<string, unknown> = {}): string => asString(fields.i
 
 /**
  * Build the test codec.
+ * @param id - The codec's id, for a test that needs a second codec on one channel.
  * @returns The codec.
  */
-export const createTestCodec = (): Codec<TestEvent> =>
+export const createTestCodec = (id = 'test-codec'): Codec<TestEvent> =>
   defineCodec({
-    id: 'test-codec',
+    id,
     typeOf: (e: TestEvent) => e.type,
     events: {
       'text-start': {

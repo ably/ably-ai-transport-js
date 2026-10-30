@@ -25,8 +25,10 @@ import type * as Ably from 'ably';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
-import { agui, agUiDecoder, createAGUICodec } from '../src/ag-ui/index.js';
+import { agui, agUiAdaptor, agUiDecoder, createAGUICodec } from '../src/ag-ui/index.js';
 import type {
+  AgentAdaptor,
+  AgentAdaptorOptions,
   ChannelWriter,
   Codec,
   DecodedRow,
@@ -49,6 +51,7 @@ import type {
   PipeOptions,
   PipeResult,
   PipeSource,
+  Published,
   Replay,
   ReplayFn,
   ReplayResult,
@@ -66,6 +69,7 @@ import type {
 } from '../src/index.js';
 import {
   consoleLogger,
+  createAgentAdaptor,
   createDecoder,
   createTransport,
   defineCodec,
@@ -80,7 +84,7 @@ import {
   untilEvent,
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
-import { createOpenAICodec, openai, openaiDecoder } from '../src/openai/index.js';
+import { createOpenAICodec, openai, openaiAdaptor, openaiDecoder } from '../src/openai/index.js';
 import type {
   HistoryHandle,
   TransportHandle,
@@ -93,7 +97,8 @@ import type {
 } from '../src/react/index.js';
 import { TransportProvider, useDeliveries, useHistory, useTransport, useTransportStatus } from '../src/react/index.js';
 import type { VercelCrossMajorChunk, VercelEvent, VercelUserMessage } from '../src/vercel/index.js';
-import { createVercelCodec, vercel, vercelDecoder } from '../src/vercel/index.js';
+import { createVercelCodec, vercel, vercelAdaptor, vercelDecoder } from '../src/vercel/index.js';
+import { createMockChannel } from './helper/mock-channel.js';
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
 /** The only keys a built codec may carry. */
@@ -105,6 +110,13 @@ describe('@ably/ai-transport', () => {
     expect(typeof fromSerial).toBe('function');
     expect(typeof untilEvent).toBe('function');
     expect(Array.isArray(OBJECT_MODES)).toBe(true);
+  });
+
+  it('exports the agent adaptor factory', () => {
+    expect(typeof createAgentAdaptor).toBe('function');
+    expectTypeOf<AgentAdaptor<TestEvent>>().toHaveProperty('pipeEach');
+    expectTypeOf<AgentAdaptorOptions>().toHaveProperty('headers');
+    expectTypeOf<Published<TestEvent>>().toHaveProperty('serial');
   });
 
   it('exports the codec builder and the decoder', () => {
@@ -177,6 +189,13 @@ describe('@ably/ai-transport', () => {
 });
 
 describe('@ably/ai-transport/vercel', () => {
+  it('exports an agent adaptor factory', () => {
+    const adaptor = vercelAdaptor(createMockChannel());
+    expect(typeof adaptor.send).toBe('function');
+    expect(typeof adaptor.pipe).toBe('function');
+    expect(typeof adaptor.pipeEach).toBe('function');
+  });
+
   it('exports a decoder factory', () => {
     expect(typeof vercelDecoder().receive).toBe('function');
     expect(typeof vercelDecoder().decode).toBe('function');
@@ -211,6 +230,13 @@ describe('@ably/ai-transport/react', () => {
 });
 
 describe('@ably/ai-transport/openai', () => {
+  it('exports an agent adaptor factory', () => {
+    const adaptor = openaiAdaptor(createMockChannel());
+    expect(typeof adaptor.send).toBe('function');
+    expect(typeof adaptor.pipe).toBe('function');
+    expect(typeof adaptor.pipeEach).toBe('function');
+  });
+
   it('exports a decoder factory', () => {
     expect(typeof openaiDecoder().receive).toBe('function');
     expect(typeof openaiDecoder().decode).toBe('function');
@@ -226,6 +252,13 @@ describe('@ably/ai-transport/openai', () => {
 });
 
 describe('@ably/ai-transport/ag-ui', () => {
+  it('exports an agent adaptor factory', () => {
+    const adaptor = agUiAdaptor(createMockChannel());
+    expect(typeof adaptor.send).toBe('function');
+    expect(typeof adaptor.pipe).toBe('function');
+    expect(typeof adaptor.pipeEach).toBe('function');
+  });
+
   it('exports a decoder factory', () => {
     expect(typeof agUiDecoder().receive).toBe('function');
     expect(typeof agUiDecoder().decode).toBe('function');

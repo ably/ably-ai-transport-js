@@ -20,7 +20,7 @@ export interface MockChannel {
   /** Clears {@link MockChannel.listener} when called with the captured listener. */
   unsubscribe: ReturnType<typeof vi.fn>;
   /** Resolves immediately. */
-  attach: ReturnType<typeof vi.fn>;
+  attach: Mock<() => Promise<void>>;
   /** Resolves immediately. */
   detach: Mock<() => Promise<void>>;
   /** Resolves with a paginated result over the pages given to {@link createMockChannel}. */

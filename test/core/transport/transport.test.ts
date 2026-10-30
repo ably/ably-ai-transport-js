@@ -9,8 +9,9 @@ import type { MessageHeaders } from '../../../src/core/transport/headers.js';
 import type { Transport } from '../../../src/core/transport/transport.js';
 import { createTransport } from '../../../src/core/transport/transport.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { VERSION } from '../../../src/version.js';
-import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import { createMockChannel, makePaginated, type MockChannel } from '../../helper/mock-channel.js';
 import { createMockClient } from '../../helper/mock-client.js';
 import { createSplitCodec, type SplitEvent } from '../../helper/split-codec.js';
 import { flushMicrotasks } from '../../helper/streams.js';
@@ -909,6 +910,40 @@ describe('createTransport', () => {
       expect(seen).toEqual([]);
       channel.listener?.(noteMessage('s3', 'three'));
       expect(seen).toEqual([]);
+    });
+
+    it('logs a history replay that an unsubscribe stops at debug, and only a failed one at error', async () => {
+      channel = createMockChannel([[noteMessage('s1', 'one')]]);
+      const logHandler = vi.fn();
+      transport = createTransport({
+        client: createMockClient(channel),
+        channelName: CHANNEL,
+        codec: createTestCodec(),
+        logger: makeLogger({ logLevel: LogLevel.Error, logHandler }),
+      });
+      const page = Promise.withResolvers<Ably.PaginatedResult<Ably.InboundMessage>>();
+      channel.history.mockReturnValueOnce(page.promise);
+      const stopped = transport.subscribe(noop, { history: { replay: (first) => first.items } });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(channel.history).toHaveBeenCalledTimes(1);
+      stopped();
+      page.resolve(makePaginated([[noteMessage('s1', 'one')]]));
+      await expect(stopped.replayed).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      expect(logHandler).not.toHaveBeenCalled();
+
+      const failed = transport.subscribe(noop, {
+        history: {
+          replay: () => {
+            throw new Error('replay bug');
+          },
+        },
+      });
+      await expect(failed.replayed).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
+      expect(logHandler).toHaveBeenCalledWith(
+        'Transport.subscribe(); history replay failed, handler is live with a gap',
+        LogLevel.Error,
+        expect.anything(),
+      );
     });
 
     it('runs one history replay at a time, so a second subscribe with history waits for the first', async () => {

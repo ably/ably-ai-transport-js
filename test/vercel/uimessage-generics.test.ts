@@ -2,7 +2,8 @@
  * Type-level tests: the Vercel codec carries the AI SDK's `UIMessage` generic
  * parameters (metadata / data parts / tools) through to its event union, so a
  * consumer that supplies concrete types gets them back off `encode` and
- * `decode` rather than the SDK defaults (`metadata: unknown`).
+ * `decode` rather than the SDK defaults (`metadata: unknown`). The `useChat`
+ * transport serves a chat of the consumer's own message type as well.
  *
  * The assertions are checked by `pnpm run typecheck` (which includes `test/`).
  * The runtime bodies keep the cases live under `pnpm test`.
@@ -11,7 +12,7 @@
 import type * as AI from 'ai';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { createVercelCodec, type VercelEvent } from '../../src/vercel/index.js';
+import { type AblyChatTransport, createVercelCodec, type VercelEvent } from '../../src/vercel/index.js';
 
 interface MyMetadata {
   userId: string;
@@ -45,5 +46,11 @@ describe('Vercel UIMessage generic threading', () => {
     >();
     const message: MyMessage = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
     expect(message.id).toBe('m1');
+  });
+
+  it('serves useChat for the consumer’s message type', () => {
+    expectTypeOf<AblyChatTransport>().toExtend<AI.ChatTransport<MyMessage>>();
+    const message: MyMessage = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
+    expect(message.role).toBe('user');
   });
 });

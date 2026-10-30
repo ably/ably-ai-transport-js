@@ -316,6 +316,51 @@ function Chat() {
 
 `useHistory({ limit })` reads the channel's history one page at a time, `useTransportStatus()` reports the transport's errors, and the channel's own state is ably-js's `useChannelStateListener` under the provider. Nesting providers with distinct channel names holds more than one conversation at once; pass `channelName` to any hook to pick which one it reads.
 
+### useChat
+
+`@ably/ai-transport/vercel` also ships a `ChatTransport` for the AI SDK's `useChat`. It posts each turn to your backend as `useChat` describes it, and reads the reply off the conversation's channel rather than the response body. A reply therefore outlives the request: a tab that reloads, or opens mid-reply, rejoins it. The [Vercel AI SDK UI guide](https://ably.com/docs/ai-transport/frameworks/vercel-ai-sdk-ui) covers it in full.
+
+```tsx
+import { useChat } from '@ai-sdk/react';
+import { useAbly } from 'ably/react';
+import { createChatTransport } from '@ably/ai-transport/vercel';
+import { useEffect, useMemo } from 'react';
+
+// Inside the <AblyProvider> from the React client example above.
+function Chat({ channelName }: { channelName: string }) {
+  const client = useAbly();
+  // One transport per conversation, kept across renders. Read anything that
+  // changes from inside onStop through a ref, rather than recreating it.
+  const transport = useMemo(
+    () =>
+      createChatTransport({
+        client,
+        channelName,
+        // Called when useChat stops a reply. Reach the agent however yours
+        // listens: here, a cancel it is subscribed to on the channel.
+        onStop: async ({ channel }) => {
+          await channel.publish({ name: 'cancel', data: {} });
+        },
+      }),
+    [client, channelName],
+  );
+  // useChat never closes a transport, so close it with the conversation, in
+  // the component that calls useChat. On unmount React runs this cleanup
+  // beside useChat's own, so the unmount does not call onStop: an agent that
+  // runs past the request runs on, and the next mount rejoins its reply.
+  useEffect(() => () => transport.close(), [transport]);
+
+  const { messages } = useChat({ id: channelName, transport, resume: true });
+  return <p>{messages.length} messages</p>; // render as with any useChat transport
+}
+```
+
+`POST /api/chat` receives `{ chatId, trigger, messageId, messages }`, plus any `body` passed to `sendMessage` or `regenerate`. The AI SDK's own transport sends `id` where this one sends `chatId`. The transport reads only the response's status, and on a failure the start of its body, for the error. The reply goes over the channel, so the backend can answer at once and run the agent past the response, for example in Next.js `after()`. A reply then goes on when the tab that asked for it reloads or closes.
+
+The agent pipes `toUIMessageStream` onto the chat's channel with `createTransport` and the `vercel` codec. That opens each turn with a `start` chunk and ends it with `finish`, or with `abort` when the model call is aborted, as when the agent hears the cancel that `onStop` publishes. When the model fails it writes `error` and then `finish`, and the reply ends at the `error`. On any other exit the agent publishes `abort` or `error` itself, and an agent that fails before it streams anything publishes `error`. A turn has one `start` and one end: when merging several UI message streams into one turn, pass `sendStart: false` to every stream but the first and `sendFinish: false` to every stream but the last. A reply carries only what is written from `start` to the end, so write any data part that updates after the model finishes before the turn's `finish`: merge the model's stream with `sendFinish: false` and write `finish` last. By default the transport finds a running turn on the channel; pass `activeTurn` to answer that from your backend instead. Pass `logger` to see what the transport logs, such as an `onStop` that failed.
+
+Some of what the transport relies on arrived in patch releases of `ai` and `@ai-sdk/react`; `createChatTransport`'s documentation lists them.
+
 ---
 
 ## Contribute

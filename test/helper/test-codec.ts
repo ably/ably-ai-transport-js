@@ -1,8 +1,8 @@
 /**
- * A small codec for transport tests: one streamed type, a discrete type, a
+ * A small codec for adaptor and decoder tests: one streamed type, a discrete type, a
  * type that does not publish and does not decode to an event, and one that
  * replaces a stream's content. It belongs to no provider, so what a test
- * asserts is the transport's behaviour and nothing else.
+ * asserts is the adaptor's behaviour and nothing else.
  */
 
 import type { Codec } from '../../src/core/codec/index.js';

@@ -70,7 +70,7 @@ const abortingAfter = <E>(controller: AbortController, ...events: E[]): AsyncIte
 };
 
 describe('pipeStream', () => {
-  let channel: MockChannel & Ably.RealtimeChannel;
+  let channel: MockChannel;
   let writer: PipeWriter;
   let codec: Codec<TestEvent>;
 
@@ -90,7 +90,7 @@ describe('pipeStream', () => {
       // The start, the message the first delta opens, the end and the note are
       // publishes; only the second delta is an append.
       expect(result).toEqual({ serial: 'serial-4' });
-      // The deltas' writes carry the transport's stream marker and the end
+      // The deltas' writes carry the adaptor's stream marker and the end
       // names the message it ends; the start and the note carry neither.
       expect(channel.publishCalls.map((m) => m.extras as unknown)).toEqual([
         { ai: { codec: 'test-codec', type: 'text-start', fields: { id: 'm1' } } },
@@ -500,7 +500,7 @@ const drain = async <E>(
 };
 
 describe('pipeEach', () => {
-  let channel: MockChannel & Ably.RealtimeChannel;
+  let channel: MockChannel;
   let writer: PipeWriter;
   let codec: Codec<TestEvent>;
 

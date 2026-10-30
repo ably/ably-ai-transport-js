@@ -25,7 +25,7 @@ export const encodeAll = <E>(codec: Codec<E>, events: E[]): EncodedMessage[] => 
  * `message.create` with a fresh serial that is remembered under its key; an
  * append to a live key or an update becomes the matching action on the key's
  * serial with a fresh version; and `ends` forgets its key. Every write under a
- * live key carries the transport's `stream` marker and a closer carries `ends`
+ * live key carries the adaptor's `stream` marker and a closer carries `ends`
  * with the serial it ends, as the pipe writer stamps them. This mirrors the
  * pipe writer's key table.
  * @param encoded - The encoded messages, in order.

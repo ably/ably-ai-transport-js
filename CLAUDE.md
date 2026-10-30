@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`@ably/ai-transport` is an Ably transport and the wire codecs for building AI applications on it. A codec turns each provider event into one Ably message operation and back; the transport pipes an agent's stream onto one channel, delivers every decoded event to subscribers and pages history. It holds no conversation state: the application merges the event stream into its own messages. Ships as a single npm package with four entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
+`@ably/ai-transport` is the agent adaptors, the decoder and the wire codecs for building AI applications on Ably. The application holds its channel through ably-js. On the agent, an adaptor publishes a provider's events onto it through that provider's codec; in the application, a decoder turns each message the channel delivers, live or from history, back into the provider's events. A codec turns each provider event into one Ably message operation and back, and holds no state. Nothing holds conversation state: the application merges the event stream into its own messages. Ships as a single npm package with four entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
 
 ## Commands
 
@@ -25,23 +25,22 @@ pnpm run precommit         # format:check + lint + typecheck
 
 Detailed guidance lives in `.claude/rules/`. These files state durable **principles, conventions, and rationale** — what an agent cannot cheaply reconstruct by reading the code. They deliberately avoid mirroring code-discoverable detail (directory trees, exhaustive export/symbol lists, exact enum values, real log strings, copied signatures), which only drifts and creates a second source of truth. When editing a rule, state the rule and its reason and point to the authoritative source in code for the instance; prefer generic examples (`Foo.bar()`) that can't drift against real symbols.
 
-| Rule file         | Covers                                                                                                            |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `ABSTRACTIONS.md` | Two-layer architecture, the transport surface, directory layout, class pattern, composition, dependency injection |
-| `ERRORS.md`       | Error type (`Ably.ErrorInfo`), error codes, message format, wrapping, testing                                     |
-| `LOGGING.md`      | Logger interface, log levels, message format, context propagation                                                 |
-| `PROMISES.md`     | async/await policy, exception handling                                                                            |
-| `TYPES.md`        | Type safety rules, import conventions, no `any`/`as`/`!` policy                                                   |
-| `TESTS.md`        | Unit vs integration tests, mocking strategy, coverage expectations                                                |
-| `COMMENTS.md`     | Comments, JSDoc, and test descriptions anchor to present state, not prior/removed code                            |
-| `AISDK.md`        | Vercel AI SDK: supported majors, cross-major gotchas, dual-version discipline                                     |
+| Rule file         | Covers                                                                                                                      |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `ABSTRACTIONS.md` | Two-layer architecture, the adaptor and decoder surface, directory layout, class pattern, composition, dependency injection |
+| `ERRORS.md`       | Error type (`Ably.ErrorInfo`), error codes, message format, wrapping, testing                                               |
+| `LOGGING.md`      | Logger interface, log levels, message format, context propagation                                                           |
+| `PROMISES.md`     | async/await policy, exception handling                                                                                      |
+| `TYPES.md`        | Type safety rules, import conventions, no `any`/`as`/`!` policy                                                             |
+| `TESTS.md`        | Unit vs integration tests, mocking strategy, coverage expectations                                                          |
+| `COMMENTS.md`     | Comments, JSDoc, and test descriptions anchor to present state, not prior/removed code                                      |
+| `AISDK.md`        | Vercel AI SDK: supported majors, cross-major gotchas, dual-version discipline                                               |
 
 Additional conventions not covered by rule files:
 
 - **Channel state names in prose**: When referring to Ably channel states as state names (in comments, commit messages, documentation, and test descriptions), write them in UPPERCASE: INITIALIZED, ATTACHING, ATTACHED, DETACHING, DETACHED, SUSPENDED, FAILED. Do not use backticks or quotes — the capitalisation makes them self-evident. Keep lowercase when the word is used as a verb (e.g. "before re-attaching").
 - **Imports**: Always include `.js` extension. Import peer dependency types as namespaces (`import type * as Ably from "ably"`, `import type * as AI from "ai"`).
 - **JSDoc on exported types**: Every property and method on an exported interface or type must have a JSDoc comment. Exported interfaces themselves should also have a JSDoc comment describing their purpose. JSDoc comments must describe the **contract** — what the caller or implementor needs to know — not just restate the name. For callbacks and hooks, state whether they are called with a value to observe, to mutate in place, or to return a replacement.
-- **React hook types**: Every hook's parameter object must be a named `{HookName}Options` interface (e.g. `UseClientTransportOptions`). When the hook returns a structured object, name it `{HookNameWithoutUse}Handle` (e.g. `ClientTransportHandle`). Both types must be exported from the entry-point `index.ts`. Hooks that return primitives or library types (arrays, Maps) need no wrapper Handle type.
 
 ## Workflow rules
 

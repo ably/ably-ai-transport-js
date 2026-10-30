@@ -9,33 +9,18 @@
  * transient data part is echoed on delivery.
  */
 
-import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createTransport, type Transport } from '../../../src/index.js';
-import { createVercelCodec, vercelAdaptor, vercelDecoder, type VercelEvent } from '../../../src/vercel/index.js';
+import type { AgentAdaptor } from '../../../src/index.js';
+import { vercelAdaptor, vercelDecoder, type VercelEvent } from '../../../src/vercel/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { foldWithProviderReducer } from '../../helper/ui-message-fold.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
-const transportOn = (name: string): Transport<VercelEvent> =>
-  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createVercelCodec() });
-
-/**
- * A transport with the channel it reads, for a subscriber that waits for the attach.
- * The channel comes back from a bare `channels.get`, which is how an
- * application shares the channel the transport owns the options of.
- * @param name - The channel name.
- * @returns The transport and its channel.
- */
-const readerOn = (name: string): { transport: Transport<VercelEvent>; channel: Ably.RealtimeChannel } => {
-  const client = ablyRealtimeClient();
-  const transport = createTransport({ client, channelName: name, codec: createVercelCodec() });
-  return { transport, channel: client.channels.get(name) };
-};
+const adaptorOn = (name: string): AgentAdaptor<VercelEvent> => vercelAdaptor(ablyRealtimeClient().channels.get(name));
 
 /** The stream `toUIMessageStream` gives for a turn that calls a tool, then answers. */
 const turn: VercelEvent[] = [
@@ -82,11 +67,12 @@ describe('Vercel codec over Ably', () => {
 
   it('streams a turn chunk for chunk, and the AI SDK’s reducer folds what a subscriber decodes', async () => {
     const name = uniqueChannelName('vercel');
-    const agent = transportOn(name);
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const agent = adaptorOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = vercelDecoder();
     const recorder = createDeliveryRecorder<VercelEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
 
     const result = await agent.pipe(streamOf(...turn));
     await recorder.waitFor(isFinish);
@@ -100,7 +86,7 @@ describe('Vercel codec over Ably', () => {
     // delta carries its text as the body and the rest of the chunk under
     // extras.ai.fields, since an append grows the body and carries nothing
     // else; a nested value such as the provider metadata travels as an
-    // object, and nothing goes under extras.headers. The transport's own
+    // object, and nothing goes under extras.headers. The adaptor's own
     // fields sit beside the type: the closer names the serial of the tool
     // input's message, and the deltas' message carries the stream marker.
     const toolInput = recorder.deliveries.find((d) => d.event?.type === 'tool-input-delta');
@@ -129,11 +115,12 @@ describe('Vercel codec over Ably', () => {
 
   it('publishes a user message a subscriber decodes whole, under the serial send returns', async () => {
     const name = uniqueChannelName('vercel');
-    const client = transportOn(name);
-    const { transport: agent, channel: agentChannel } = readerOn(name);
+    const client = adaptorOn(name);
+    const agentChannel = ablyRealtimeClient().channels.get(name);
+    const agentDecoder = vercelDecoder();
     const recorder = createDeliveryRecorder<VercelEvent>();
-    agent.subscribe(recorder.record);
-    await agentChannel.whenState('attached');
+    agentDecoder.onEvent(recorder.record);
+    await agentChannel.subscribe(agentDecoder.receive);
 
     const message: AI.UIMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'What is the weather?' }] };
     const sent = await client.send({ type: 'user-message', message });
@@ -145,11 +132,10 @@ describe('Vercel codec over Ably', () => {
 
   it('reads a finished turn from history as the chunks the agent produced, with each stream’s deltas joined', async () => {
     const name = uniqueChannelName('vercel');
-    const agent = transportOn(name);
+    const agent = adaptorOn(name);
     await agent.pipe(streamOf(...turn));
 
-    const reader = transportOn(name);
-    const history = await drainHistory(reader);
+    const history = await drainHistory(ablyRealtimeClient().channels.get(name), vercelDecoder());
 
     // Every chunk reads back as itself except a stream's deltas, which share
     // one message and come back as one delta carrying the joined text. The
@@ -176,11 +162,12 @@ describe('Vercel codec over Ably', () => {
 
   it('delivers a transient data part live, flagged ephemeral on the wire', async () => {
     const name = uniqueChannelName('vercel');
-    const agent = transportOn(name);
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const agent = adaptorOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = vercelDecoder();
     const recorder = createDeliveryRecorder<VercelEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
 
     await agent.pipe(
       streamOf<VercelEvent>(

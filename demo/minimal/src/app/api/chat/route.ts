@@ -6,8 +6,8 @@
  * the reply and the pipe's last serial in the store.
  */
 
-import { createTransport, ErrorCode } from '@ably/ai-transport';
-import { vercel } from '@ably/ai-transport/vercel';
+import { ErrorCode } from '@ably/ai-transport';
+import { vercelAdaptor } from '@ably/ai-transport/vercel';
 import { convertToModelMessages, streamText, toUIMessageStream, type UIMessage } from 'ai';
 import Ably from 'ably';
 
@@ -18,22 +18,26 @@ interface ChatRequest {
   channelName: string;
   /** The user's new message, already published on the channel. */
   message: UIMessage;
+  /** The serial the message's publish returned, where a page that loads mid-reply rewinds to. */
+  serial?: string;
 }
 
 export async function POST(req: Request) {
-  const { channelName, message } = (await req.json()) as ChatRequest;
+  const { channelName, message, serial: promptSerial } = (await req.json()) as ChatRequest;
   // Record the message and an empty placeholder for its reply now, under the
   // id the reply will carry. That fixes the conversation's order before the
   // reply lands: a second turn sent meanwhile goes after the placeholder,
   // and a reply cancelled part-way keeps its place, which the page fills
-  // from channel history. The model gets the conversation without the
+  // when it rewinds the channel. The prompt's serial is recorded with them,
+  // so a page that loads while the reply streams rewinds to just after the
+  // prompt and receives the whole reply. The model gets the conversation without the
   // placeholders, since a reply still in flight has nothing to say yet.
   const replyId = crypto.randomUUID();
   // The prompt's own id tags every message of the turn: the client stamps it
   // on the prompt, and the reply and any abort carry it too, so the page can
   // tell one reply's chunks from another's.
   const headers = { requestId: message.id };
-  recordMessages(channelName, [message, { id: replyId, role: 'assistant', parts: [] }]);
+  recordMessages(channelName, [message, { id: replyId, role: 'assistant', parts: [] }], promptSerial);
   const messages = (loadConversation(channelName)?.messages ?? [message]).filter((m) => m.parts.length > 0);
   const apiKey = process.env.ABLY_API_KEY;
   if (apiKey === undefined) {
@@ -45,7 +49,7 @@ export async function POST(req: Request) {
   // Ably rolls the appends a connection publishes within 40ms into one
   // delivery; a window of 0 delivers every chunk as its own message.
   const ably = new Ably.Realtime({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
-  const transport = createTransport({ client: ably, channelName, codec: vercel });
+  const adaptor = vercelAdaptor(ably.channels.get(channelName));
 
   try {
     const result = streamText({
@@ -65,7 +69,7 @@ export async function POST(req: Request) {
     // it resolves, so the callback has run by the time the serial is known.
     let reply: UIMessage | undefined;
     try {
-      const { serial } = await transport.pipe(
+      const { serial } = await adaptor.pipe(
         toUIMessageStream({
           stream: result.fullStream,
           originalMessages: messages,
@@ -81,16 +85,16 @@ export async function POST(req: Request) {
       if (reply !== undefined && serial !== undefined) recordMessages(channelName, [reply], serial);
     } catch (error) {
       // A cancelled or failed pipe leaves the placeholder empty: a browser
-      // that comes back fills it from what did land on the channel.
+      // that comes back fills it from what did land on the channel. It
+      // published no `finish`, so tell every tab the reply has ended; a reply
+      // left open would hold every tab's composer, now and after a reload.
+      // Best effort: the publish may fail for the same reason the pipe did.
+      try {
+        await adaptor.send({ type: 'abort' }, { headers });
+      } catch (sendError) {
+        console.error('abort publish failed', sendError);
+      }
       if (error instanceof Ably.ErrorInfo && error.code === ErrorCode.OperationCancelled) {
-        // The cancelled pipe published no `finish`, so tell every tab the
-        // reply has ended. Best effort: a tab that misses it reads the
-        // channel on its next load.
-        try {
-          await transport.send({ type: 'abort' }, { headers });
-        } catch (sendError) {
-          console.error('abort publish failed', sendError);
-        }
         return new Response(null, { status: 204 });
       }
       console.error('pipe failed', error);
@@ -98,7 +102,6 @@ export async function POST(req: Request) {
     }
     return new Response(null, { status: 204 });
   } finally {
-    await transport.close();
     ably.close();
   }
 }

@@ -1,14 +1,13 @@
 'use client';
 
-import { type Delivery, fromSerial, type Subscription } from '@ably/ai-transport';
-import { useTransport } from '@ably/ai-transport/react';
-import type { VercelEvent } from '@ably/ai-transport/vercel';
+import type { Delivery } from '@ably/ai-transport';
+import { type VercelEvent, vercelAdaptor, vercelDecoder } from '@ably/ai-transport/vercel';
 import { useAbly, useChannelStateListener } from 'ably/react';
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
-import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-/** What `/api/messages` returns: the stored conversation, and the serial to read history from. */
-interface StoredConversation {
+/** What `/api/messages` returns: the stored conversation, and the serial the channel rewinds to. */
+export interface StoredConversation {
   messages: UIMessage[];
   serial?: string;
 }
@@ -35,9 +34,8 @@ const requestIdOf = (message: Delivery<VercelEvent>['message']): string | undefi
   return typeof requestId === 'string' ? requestId : undefined;
 };
 
-export function Chat({ channelName }: { channelName: string }) {
-  const { transport } = useTransport<VercelEvent>();
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+export function Chat({ channelName, stored }: { channelName: string; stored: UIMessage[] }) {
+  const [messages, setMessages] = useState<UIMessage[]>(stored);
   const [deliveries, setDeliveries] = useState<Delivery<VercelEvent>[]>([]);
   const [tab, setTab] = useState<'chat' | 'wire'>('chat');
   const [input, setInput] = useState('');
@@ -49,11 +47,12 @@ export function Chat({ channelName }: { channelName: string }) {
   // tabs, cannot land in each other's stream. The form still takes one prompt
   // at a time.
   const replies = useRef(new Map<string, ReadableStreamDefaultController<UIMessageChunk>>());
-  // Whether a reply is streaming now, which holds the composer. Set by a live
+  // Whether a reply is streaming now, which holds the composer. Set by a
   // chunk of a reply the page is merging and cleared when the last open reply
-  // ends, so a reply cut off in the past (a `start` in history with no
-  // `finish`) never locks the page, and a reply in flight when the page loads
-  // locks it once its next live chunk arrives.
+  // ends with its `finish` or `abort`. A reply the channel rewinds to while it
+  // is in flight locks the page too, and the route publishes an `abort` for
+  // any reply it could not finish, so a reply is left open only if the agent
+  // itself dies mid-stream.
   const [streaming, setStreaming] = useState(false);
 
   // Put a message in the list by id: a message the list already holds is
@@ -72,25 +71,20 @@ export function Chat({ channelName }: { channelName: string }) {
     [upsert],
   );
 
-  // The first subscribe below attaches the channel; the indicator and the
+  // The subscribe below attaches the channel; the indicator and the
   // composer follow the channel's own state. The listener reports
   // transitions only, so the initial value is read off the channel: a mount
   // on a channel that is already ATTACHED would otherwise show connecting…
   // until the next change.
   const client = useAbly();
   const channel = client.channels.get(channelName);
+  // The page publishes the user's message through an adaptor on the channel.
+  const adaptor = useMemo(() => vercelAdaptor(channel), [channel]);
   const [attached, setAttached] = useState(channel.state === 'attached');
   useChannelStateListener(channelName, (change) => {
     setAttached(change.current === 'attached');
   });
 
-  // The subscription in force, and whether the transport is still replaying
-  // its history. The transport buffers live deliveries while a replay runs and
-  // releases them after it, so the page tracks only whether a delivery is a
-  // replay, for the composer lock.
-  const subscription = useRef<Subscription | undefined>(undefined);
-  const replaying = useRef(false);
-  const [status, setStatus] = useState<'loading' | undefined>('loading');
 
   const apply = useCallback(
     (delivery: Delivery<VercelEvent>) => {
@@ -124,86 +118,60 @@ export function Chat({ channelName }: { channelName: string }) {
         replies.current.get(from)?.close();
         replies.current.delete(from);
         setStreaming(replies.current.size > 0);
-      } else if (!replaying.current && replies.current.has(from)) {
+      } else if (replies.current.has(from)) {
         setStreaming(true);
       }
     },
     [merge, upsert],
   );
 
-  // Subscribes with the history after `after` replayed first, the stored
-  // conversation's serial on load. The transport buffers this handler's live
-  // deliveries until the replay is done, so the page shows history before
-  // live, in channel order. Without `after` the server has nothing stored, so
-  // the channel holds nothing to replay and the page subscribes to live
-  // delivery alone.
-  const subscribeFrom = useCallback(
-    (after: string | undefined) => {
-      if (transport === undefined) return;
-      subscription.current?.();
-      replaying.current = true;
-      setStatus('loading');
-      const sub = transport.subscribe(apply, after === undefined ? undefined : { history: { replay: fromSerial(after) } });
-      subscription.current = sub;
-      void (async () => {
-        // A failed replay leaves the handler live with a gap, so the page
-        // goes live either way and logs the failure.
-        let failure: unknown;
-        try {
-          await sub.replayed;
-        } catch (error) {
-          failure = error;
-        }
-        // A subscription replaced underneath the history replay drops its result.
-        if (subscription.current !== sub) return;
-        replaying.current = false;
-        setStatus(undefined);
-        if (failure !== undefined) console.error('loading failed', failure);
-      })();
-    },
-    [transport, apply],
-  );
-
-  // On load, the conversation comes from the server's store, and the channel
-  // is read from the stored serial forward: the turns saved so far, then
-  // whatever arrived after them, then live delivery. A transport the provider
-  // rebuilt underneath the load (a Strict Mode remount, a channel change)
-  // drops its result.
+  // The page mounted the channel to rewind to the stored serial, so this one
+  // subscription delivers, in channel order, everything after the turns the
+  // server stored, then live messages. One decoder sees all of it, so a
+  // message is decoded once and a stream's first delivery, a full-content
+  // update, reduces the appends after it to their new text. A decoder is
+  // built per run: a run that is torn down and started again (a Strict Mode
+  // remount, Fast Refresh) must not reuse one that has already seen the
+  // messages. Rewind applies only when the channel attaches, so a re-run on a
+  // channel that is still attached replays nothing and misses what arrived
+  // while it was unsubscribed. Teardown closes the reply streams still open
+  // and clears the wire tab, so a re-run starts from what it receives.
   useEffect(() => {
-    if (transport === undefined) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/messages?channel=${encodeURIComponent(channelName)}`);
-        const stored = (await res.json()) as StoredConversation;
-        if (cancelled) return;
-        setMessages(stored.messages);
-        subscribeFrom(stored.serial);
-      } catch (error) {
-        if (!cancelled) console.error('load failed', error);
-      }
-    })();
+    const decoder = vercelDecoder();
+    decoder.onEvent(apply);
+    decoder.onError((error) => {
+      console.error('decode failed', error);
+    });
+    channel.subscribe(decoder.receive).catch((error: unknown) => {
+      // The channel did not attach: the page stays on connecting… and Send
+      // stays disabled.
+      console.error('subscribe failed', error);
+    });
+    const open = replies.current;
     return () => {
-      cancelled = true;
-      subscription.current?.();
-      subscription.current = undefined;
+      channel.unsubscribe(decoder.receive);
+      for (const controller of open.values()) controller.close();
+      open.clear();
+      setStreaming(false);
+      setDeliveries([]);
     };
-  }, [transport, channelName, subscribeFrom]);
+  }, [channel, apply]);
 
   const send = async (e: FormEvent) => {
     e.preventDefault();
     const text = input.trim();
-    if (text === '' || streaming || transport === undefined) return;
+    if (text === '' || streaming) return;
     setInput('');
     const message: UIMessage = { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }] };
     // Publish the message on the channel first, then wake the agent with it.
     // The server holds the conversation so far in its store and adds this
-    // message to it.
-    await transport.send({ type: 'user-message', message }, { headers: { requestId: message.id } });
+    // message to it, with the serial its publish returned, so a page that
+    // loads while the reply streams rewinds to just after this message.
+    const { serial } = await adaptor.send({ type: 'user-message', message }, { headers: { requestId: message.id } });
     await fetch('/api/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channelName, message }),
+      body: JSON.stringify({ channelName, message, serial }),
     });
   };
 
@@ -231,7 +199,7 @@ export function Chat({ channelName }: { channelName: string }) {
             Ably messages ({deliveries.length})
           </button>
         </nav>
-        <span>{status !== undefined ? `${status}…` : streaming ? 'streaming…' : attached ? 'live' : 'connecting…'}</span>
+        <span>{streaming ? 'streaming…' : attached ? 'live' : 'connecting…'}</span>
       </header>
       {tab === 'chat' ? (
         <>
@@ -264,7 +232,7 @@ export function Chat({ channelName }: { channelName: string }) {
       ) : (
         <>
           <div className="toolbar">
-            <span>Every delivery the transport gave the page, as its decoded event and the Ably message it came from.</span>
+            <span>Every delivery the decoder gave the page, as its decoded event and the Ably message it came from.</span>
             <button
               type="button"
               onClick={copyAll}

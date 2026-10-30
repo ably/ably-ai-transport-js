@@ -1,7 +1,8 @@
 import { EventType } from '@ag-ui/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { agui, type AGUIEvent, createAGUICodec } from '../../../src/ag-ui/index.js';
+import { agui, createAGUICodec } from '../../../src/ag-ui/codec/index.js';
+import type { AGUIEvent } from '../../../src/ag-ui/index.js';
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { foldWithAGUIReducer } from '../../helper/ag-ui-fold.js';
@@ -293,7 +294,7 @@ describe('the AG-UI codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying its id', () => {
+  it('builds a codec carrying its id and name and nothing else beside encode and decode', () => {
     expect(agui.id).toBe('ag-ui-events');
     expect(Object.keys(agui).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });

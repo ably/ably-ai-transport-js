@@ -230,4 +230,49 @@ describe('agent adaptor and decoder over Ably', () => {
     expect(deletion?.message.action).toBe('message.delete');
     expect(deletion?.message.serial).toBe(serial);
   });
+
+  it('catches up mid-reply by rewinding to the prompt serial, decoding the reply whole and in order', async () => {
+    const name = uniqueChannelName();
+    const agentChannel = ablyRealtimeClient().channels.get(name);
+    const adaptor = createAgentAdaptor(agentChannel, createTestCodec());
+
+    // A watcher that is attached from the start, so the test knows when the
+    // reply's first deltas have reached the channel.
+    const watcherChannel = ablyRealtimeClient().channels.get(name);
+    const watcher = createDecoder(createTestCodec());
+    const watched = createDeliveryRecorder<TestEvent>();
+    watcher.onEvent(watched.record);
+    await watcherChannel.subscribe(watcher.receive);
+
+    const { serial: promptSerial } = await adaptor.send({ type: 'note', text: 'What is the weather?' });
+    if (promptSerial === undefined) throw new Error('send returned no serial');
+    const { source, push, finish } = controlledStream<TestEvent>();
+    const piping = adaptor.pipe(source);
+    push({ type: 'text-start', id: 'm1' });
+    push({ type: 'text-delta', id: 'm1', delta: 'The' });
+    push({ type: 'text-delta', id: 'm1', delta: ' weather' });
+    await watched.waitFor((d) => d.filter((x) => x.event?.type === 'text-delta').length === 2);
+
+    // A second client joins mid-reply and rewinds to just after the prompt.
+    const lateChannel = ablyRealtimeClient().channels.get(name, { params: { rewind: promptSerial } });
+    const late = createDecoder(createTestCodec());
+    const caughtUp = createDeliveryRecorder<TestEvent>();
+    late.onEvent(caughtUp.record);
+    await lateChannel.subscribe(late.receive);
+
+    push({ type: 'text-delta', id: 'm1', delta: ' is mild.' });
+    push({ type: 'text-end', id: 'm1' });
+    finish();
+    await piping;
+    await caughtUp.waitFor(isTextEnd);
+
+    // The prompt itself is not replayed. The reply arrives in order, and its
+    // deltas join to the whole text however the platform grouped them.
+    const events = caughtUp.events();
+    expect(events[0]).toEqual({ type: 'text-start', id: 'm1' });
+    expect(events.at(-1)).toEqual({ type: 'text-end', id: 'm1' });
+    const text = events.flatMap((e) => (e.type === 'text-delta' ? [e.delta] : [])).join('');
+    expect(text).toBe('The weather is mild.');
+    expect(events.some((e) => e.type === 'note')).toBe(false);
+  });
 });

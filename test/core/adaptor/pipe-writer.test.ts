@@ -57,7 +57,7 @@ const holdAppends = (channel: MockChannel): (() => void)[] => {
 const dataOf = (calls: Ably.Message[]): unknown[] => calls.map((m) => m.data as unknown);
 
 describe('createPipeWriter', () => {
-  let channel: MockChannel & Ably.RealtimeChannel;
+  let channel: MockChannel;
   let writer: PipeWriter;
 
   beforeEach(() => {

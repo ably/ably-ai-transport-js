@@ -8,33 +8,18 @@
  * with the text joined.
  */
 
-import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createTransport, type Transport } from '../../../src/index.js';
-import { createOpenAICodec, openaiAdaptor, openaiDecoder, type OpenAIEvent } from '../../../src/openai/index.js';
+import type { AgentAdaptor } from '../../../src/index.js';
+import { openaiAdaptor, openaiDecoder, type OpenAIEvent } from '../../../src/openai/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { at, decodedOf, textResponse, toolCallResponse } from '../../openai/codec/fixtures.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
-const transportOn = (name: string): Transport<OpenAIEvent> =>
-  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createOpenAICodec() });
-
-/**
- * A transport with the channel it reads, for a subscriber that waits for the attach.
- * The channel comes back from a bare `channels.get`, which is how an
- * application shares the channel the transport owns the options of.
- * @param name - The channel name.
- * @returns The transport and its channel.
- */
-const readerOn = (name: string): { transport: Transport<OpenAIEvent>; channel: Ably.RealtimeChannel } => {
-  const client = ablyRealtimeClient();
-  const transport = createTransport({ client, channelName: name, codec: createOpenAICodec() });
-  return { transport, channel: client.channels.get(name) };
-};
+const adaptorOn = (name: string): AgentAdaptor<OpenAIEvent> => openaiAdaptor(ablyRealtimeClient().channels.get(name));
 
 const completions = (deliveries: { event?: OpenAIEvent }[]): number =>
   deliveries.filter((d) => d.event?.type === 'response.completed').length;
@@ -60,11 +45,12 @@ describe('OpenAI codec over Ably', () => {
 
   it('streams a tool call, its output as input, and the answer, event for event', async () => {
     const name = uniqueChannelName('openai');
-    const agent = transportOn(name);
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const agent = adaptorOn(name);
+    const clientChannel = ablyRealtimeClient().channels.get(name);
+    const clientDecoder = openaiDecoder();
     const recorder = createDeliveryRecorder<OpenAIEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
 
     const first = await agent.pipe(streamOf(...toolCallResponse));
     await recorder.waitFor((d) => completions(d) === 1);
@@ -72,7 +58,7 @@ describe('OpenAI codec over Ably', () => {
     const items: Responses.ResponseInputItem[] = [
       { type: 'function_call_output', call_id: 'call_1', output: '{"temp":21}' },
     ];
-    const sent = await client.send({ type: 'input', items });
+    const sent = await openaiAdaptor(clientChannel).send({ type: 'input', items });
     const second = await agent.pipe(streamOf(...textResponse));
     await recorder.waitFor((d) => completions(d) === 2);
 
@@ -91,7 +77,7 @@ describe('OpenAI codec over Ably', () => {
     // body; a delta carries its text as the body and the rest of the event
     // under extras.ai.fields, since an append grows the body and carries
     // nothing else. A nested value travels as it is, so the logprobs array
-    // reads back as an array, with the transport's stream marker beside the
+    // reads back as an array, with the adaptor's stream marker beside the
     // type on the deltas' message and nothing under extras.headers.
     const added = recorder.deliveries.find((d) => d.event?.type === 'response.output_item.added');
     expect(added?.message.data).toEqual(at(toolCallResponse, 1));
@@ -117,12 +103,12 @@ describe('OpenAI codec over Ably', () => {
 
   it('reads a finished response from history as the events the agent produced, with the text deltas joined', async () => {
     const name = uniqueChannelName('openai');
-    await transportOn(name).pipe(streamOf(...textResponse));
+    await adaptorOn(name).pipe(streamOf(...textResponse));
 
     // Every event reads back as itself except the text deltas, which share
     // one message and come back as one delta carrying the joined text under
     // the last delta's fields, since an append replaces the stored extras.
-    const history = await drainHistory(transportOn(name));
+    const history = await drainHistory(ablyRealtimeClient().channels.get(name), openaiDecoder());
     const expected = decodedOf(textResponse);
     expect(history.map((d) => d.event)).toStrictEqual([
       expected[0],

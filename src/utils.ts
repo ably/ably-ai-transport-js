@@ -1,5 +1,5 @@
 /**
- * Shared utilities used by the codec and transport layers. They live at the
+ * Shared utilities used by the codec, adaptor and decoder layers. They live at the
  * top level so neither layer depends on the other for them.
  */
 

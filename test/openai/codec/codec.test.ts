@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { createOpenAICodec, openai, type OpenAIEvent } from '../../../src/openai/index.js';
+import { createOpenAICodec, openai } from '../../../src/openai/codec/index.js';
+import type { OpenAIEvent } from '../../../src/openai/index.js';
 import { deliveriesOf, encodeAll, historyOf, roundTrip } from '../../helper/wire.js';
 import { at, decodedOf, functionCall, message, textResponse, toolCallResponse } from './fixtures.js';
 
@@ -448,7 +449,7 @@ describe('the OpenAI codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying its id', () => {
+  it('builds a codec carrying its id and name and nothing else beside encode and decode', () => {
     expect(openai.id).toBe('openai-responses');
     expect(Object.keys(openai).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });

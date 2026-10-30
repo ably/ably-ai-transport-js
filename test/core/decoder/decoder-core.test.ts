@@ -13,7 +13,7 @@ interface MessageOptions {
   serial?: string;
   data?: unknown;
   version?: string;
-  /** Fields under `extras.ai` beside the type: the transport's `stream` and `ends` markers. */
+  /** Fields under `extras.ai` beside the type: the adaptor's `stream` and `ends` markers. */
   ai?: Record<string, unknown>;
 }
 

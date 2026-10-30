@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { createVercelCodec, vercel, type VercelEvent } from '../../../src/vercel/index.js';
+import { createVercelCodec } from '../../../src/vercel/codec/index.js';
+import type { VercelEvent } from '../../../src/vercel/index.js';
 import { deliveriesOf, encodeAll, historyOf, roundTrip } from '../../helper/wire.js';
 
 /** The stream `toUIMessageStream` gives for a turn that calls a tool, then answers. */
@@ -263,8 +264,8 @@ describe('the Vercel codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying its id', () => {
-    expect(vercel.id).toBe('vercel-ai-sdk-ui-message');
-    expect(Object.keys(vercel).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
+  it('builds a codec carrying its id and name and nothing else beside encode and decode', () => {
+    expect(codec.id).toBe('vercel-ai-sdk-ui-message');
+    expect(Object.keys(codec).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });
 });

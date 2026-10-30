@@ -15,11 +15,10 @@
  *
  * `subscribe` is the receive side. The first call registers the transport's
  * channel listener and then attaches, so no message can arrive with nothing to
- * receive it. Every inbound message goes through the codec and is delivered:
- * one delivery per event the codec decodes from it, and one with
- * `event: undefined` when the codec has nothing for it (a foreign message, a
- * replay the codec's version guard dropped, a `message.delete`) or its decode
- * threw, so the application always sees the raw message and decides for
+ * receive it. Every inbound message goes through the transport's decoder and
+ * is delivered: one delivery per event the codec decodes from it, and one with
+ * `event: undefined` when there is none (a foreign message, a replay the
+ * decoder's version guard dropped, a `message.delete`) or the decode threw, so the application always sees the raw message and decides for
  * itself. A subscribe that asks for `history` immediately buffers live
  * messages for its handler, until the history replay is exhausted. A replay
  * function reads the channel's history back to the point it chooses. The
@@ -29,8 +28,8 @@
  * breaks continuity as a discontinuity, and the application recovers by
  * subscribing again with `fromSerial` at the last position it applied.
  *
- * `history` reads backwards from the attach point through the same codec, so
- * a message that history and live delivery both carry decodes once. It
+ * `history` reads backwards from the attach point through the same decoder,
+ * so a message that history and live delivery both carry decodes once. It
  * returns the page a replay function receives.
  *
  * `close` stops every pipe in flight, unsubscribes the listener and settles.

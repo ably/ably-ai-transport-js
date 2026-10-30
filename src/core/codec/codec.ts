@@ -74,8 +74,10 @@ export interface Delivery<E> {
  * `decode`: it hands on only messages with this codec's `name` and `id`, and
  * runs each through its core first, which drops a delivery already seen and
  * reduces a full-content update to the text not yet handed on. The core reads
- * `data` as a string, so a hand-written codec that updates a stream with
- * object `data` has the update dropped as adding nothing.
+ * `data` as a string, so when a hand-written codec updates a stream with
+ * object `data`, the update is dropped as adding nothing if the stream has no
+ * text yet, and handed on whole as a replacement if earlier writes carried
+ * text.
  * @template E - The codec's event union, covering everything either side publishes.
  */
 export interface Codec<E> {

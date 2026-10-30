@@ -38,10 +38,12 @@ preserve.
   the decoder with its core (`src/core/decoder/`), and the transport
   (`src/core/transport/`). It knows
   nothing about any provider's wire types (Vercel's `UIMessageChunk`, OpenAI's
-  `ResponseStreamEvent`) and reads nothing a codec writes: the builder's own
-  `type` field is the one thing it looks at, and only to pick a row. The
-  transport writes two fields of its own under `extras.ai`, which the decoder
-  core reads and no codec does.
+  `ResponseStreamEvent`). Of what a codec writes it reads only three things:
+  the decoder filters on the message name and `extras.ai.codec`, which every
+  codec writes as its own `name` and `id`, and the builder reads its own
+  `type` to pick a row. The transport writes two fields of its own under
+  `extras.ai`, `stream` and `ends`, which the decoder core reads and no codec
+  does.
 
   The two halves differ in what else they may depend on. `src/core/` is
   framework-agnostic. `src/react/` is codec-agnostic and React-only: it may
@@ -129,7 +131,7 @@ channel listener. See the module doc comment on
 
 A delivery is `{ event, message }`, and every message is delivered. `event` is
 `undefined` when the codec has nothing for the message: a foreign publish on
-the shared channel, a replay the codec's version guard dropped, a
+the shared channel, a replay the decoder's version guard dropped, a
 `message.delete`, or a decode that threw. The application always sees the raw
 message and decides for itself. Publishing emits nothing locally: the sender's
 own message comes back as the ordinary channel delivery, so an application that

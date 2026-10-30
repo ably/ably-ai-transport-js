@@ -1,7 +1,7 @@
 /**
  * The transport's history walk: a backward cursor from the channel's current
  * attach point, one Ably page per step, decoded through the transport's own
- * codec so a message history and live delivery both carry is decoded once.
+ * decoder so a message history and live delivery both carry is decoded once.
  *
  * Each `history()` call opens a new walk at the attach point the channel has
  * now, and the page it returns leads to the older pages through `next()`. A

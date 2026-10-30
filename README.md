@@ -183,47 +183,20 @@ await fetch('/api/chat', {
 
 `channel.unsubscribe(decoder.receive)` stops the subscription, since `receive` is bound to the decoder.
 
-### Catching up from history
+### Catching up from a stored serial
 
-This section's listener replaces `channel.subscribe(decoder.receive)` from the client example: do not use both. Each subscribes its own listener, so with both every live message goes through the decoder twice, and a `start`, `finish` or `user-message` comes out twice, since the decoder drops a repeat only for a stream's message.
-
-A client can join what its database holds with the channel, by reading history back to the last position it stored. Pass history messages to the same decoder with `decode`, which returns the deliveries without emitting them. History pages arrive newest first, and the decoder is built to take them in that order; reverse what it returns to apply it oldest first.
+A client can join what its database holds with the channel by rewinding the channel to the last serial it stored, the one a publish ack returned. Pass the serial as the channel's `rewind` param when you get the channel. When the channel attaches, the platform delivers every message after that serial through your subscription, then live messages, in channel order. The serial's own message is not replayed. A message that was appended to arrives first as one update with its full content, which the decoder hands on as one delta with all the text so far, and the appends after it as deltas.
 
 ```typescript
-import type { Delivery } from '@ably/ai-transport';
-import type { VercelEvent } from '@ably/ai-transport/vercel';
-
-const held: Delivery<VercelEvent>[] = [];
-let live = false;
-await channel.subscribe((message) => {
-  const deliveries = decoder.decode(message);
-  if (live) deliveries.forEach(apply);
-  else held.push(...deliveries);
+const channel = ably.channels.get(channelName, { params: { rewind: stored.serial } });
+const decoder = vercelDecoder();
+decoder.onEvent(({ event }) => {
+  /* as in the client example */
 });
-
-// Read back from the attach point to the serial your store holds, the one a
-// publish ack returned.
-const newer: Ably.InboundMessage[] = [];
-let page: Ably.PaginatedResult<Ably.InboundMessage> | null = await channel.history({ untilAttach: true });
-while (page) {
-  newer.push(...page.items.filter((m) => (m.serial ?? '') > stored.serial));
-  if (page.items.some((m) => (m.serial ?? '') <= stored.serial) || !page.hasNext()) break;
-  page = await page.next();
-}
-
-// History first, oldest first, then what arrived live meanwhile.
-newer
-  .map((m) => decoder.decode(m))
-  .toReversed()
-  .flat()
-  .forEach(apply);
-held.forEach(apply);
-live = true;
+await channel.subscribe(decoder.receive);
 ```
 
-Live messages go through the decoder as they arrive, before history does, so the decoder drops history's copy of a message that live delivery already gave it. `demo/minimal/src/app/chat.tsx` does this when the page loads, from the serial its server stored with the conversation.
-
-Two limits apply. If history returns a stream that was still in flight at a later version than the first live update the decoder held, history's text for that stream is applied before the update's, out of order. And `untilAttach` stops history at the point the channel attached, so a component that remounts on a channel that is still attached misses what arrived between that attach and its new subscription.
+Rewind applies only when the channel attaches, so set it before the first subscribe. It delivers at most 1,000 messages after the serial; appends to one message count as that message. One decoder sees every message in order, so nothing is decoded twice and nothing needs merging. `demo/minimal` stores the serial of each prompt and of each finished reply, and rewinds to the latest when the page loads.
 
 ### Tagging a turn
 
@@ -284,7 +257,7 @@ Every message a codec encodes carries the codec's `name`, `ai` unless you pass `
 
 ### React
 
-The SDK has no React entry point. Mount ably-js's own `<AblyProvider>` and `<ChannelProvider>`, get the channel from the client, and subscribe a decoder in an effect, as `demo/minimal/src/app/chat.tsx` does. Create the decoder inside the effect, one per run: an effect can run again, under Fast Refresh for example, and a decoder kept across runs drops text it has already seen.
+The SDK has no React entry point. Mount ably-js's own `<AblyProvider>` and `<ChannelProvider>`, passing the `rewind` param in the provider's `options` when you catch up from a stored serial, then get the channel from the client and subscribe a decoder in an effect, as `demo/minimal/src/app/page.tsx` and `chat.tsx` do. Create the decoder inside the effect, one per run: an effect can run again, under Fast Refresh for example, and a decoder kept across runs drops text it has already seen.
 
 ---
 

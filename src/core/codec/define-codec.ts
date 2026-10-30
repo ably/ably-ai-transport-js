@@ -283,9 +283,9 @@ const withoutUndefined = <V>(record: Record<string, V> | undefined): Record<stri
  * @throws {Ably.ErrorInfo} `InvalidArgument` when a row key carries the wildcard suffix with no prefix.
  */
 export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>): Codec<E> => {
+  const name = config.name ?? MESSAGE_NAME;
   // CAST: the table is typed per key for the author; the dispatcher reads it
   // by string, and invokes each row only with the member its key selects.
-  const name = config.name ?? MESSAGE_NAME;
   const rows = config.events as unknown as Record<string, EventRow<E, string>>;
   const wildcards = Object.keys(rows)
     .filter((key) => key.endsWith(WILDCARD_SUFFIX))

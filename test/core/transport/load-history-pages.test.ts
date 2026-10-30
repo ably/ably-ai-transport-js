@@ -11,7 +11,7 @@
  *  - signal aborts surface as `OperationCancelled`
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';

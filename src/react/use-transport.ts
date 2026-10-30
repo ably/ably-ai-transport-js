@@ -4,7 +4,7 @@
  * A thin context reader: it creates no state and manages no lifecycle.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 import { useContext } from 'react';
 
 import type { Transport } from '../core/transport/index.js';

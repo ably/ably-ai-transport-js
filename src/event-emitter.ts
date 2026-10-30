@@ -1,5 +1,5 @@
 /**
- * Type-safe EventEmitter wrapping Ably's internal EventEmitter.
+ * Type-safe EventEmitter wrapping the Pub/Sub EventEmitter.
  *
  * Takes a single `EventsMap` type parameter — an interface mapping event names
  * to payload types — rather than Ably's three type parameters. Adapted from
@@ -17,7 +17,7 @@
  * ```
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import type { Logger } from './logger.js';
 
@@ -31,7 +31,7 @@ type CallbackSingle<K> = (arg: K) => void;
  * Type-safe interface for the Ably EventEmitter, parameterized by an EventsMap
  * that maps event names to their payload types.
  */
-interface InterfaceEventEmitter<EventsMap> extends Ably.EventEmitter<Callback<EventsMap>, void, keyof EventsMap> {
+interface InterfaceEventEmitter<EventsMap> {
   /** Emit an event with a type-safe payload. Payload is optional for `undefined`-typed events. */
   emit<K extends keyof EventsMap>(
     event: K,
@@ -59,36 +59,49 @@ interface InterfaceEventEmitter<EventsMap> extends Ably.EventEmitter<Callback<Ev
   off<K extends keyof EventsMap>(event: K, listener: CallbackSingle<EventsMap[K]>): void;
   /** Unsubscribe a callback from all events, or remove all listeners if no callback provided. */
   off(listener?: Callback<EventsMap>): void;
+
+  /** Subscribe to the next occurrence of a single event with a typed callback. */
+  once<K extends keyof EventsMap>(event: K, callback: CallbackSingle<EventsMap[K]>): void;
+  /** Subscribe to the next occurrence of any event. */
+  once(callback: Callback<EventsMap>): void;
+  /** Resolve on the next occurrence of a single event. */
+  once(event: keyof EventsMap): Promise<void>;
+  /** Resolve on the next occurrence of any event. */
+  once(): Promise<void>;
+
+  /** The listeners registered for an event, or for all events when none is given; `null` when there are none. */
+  listeners(eventName?: keyof EventsMap): Callback<EventsMap>[] | null;
 }
 
 /**
- * Bridge from our {@link Logger} to the Ably EventEmitter's internal logger
- * contract. Ably's EventEmitter calls `logger.logAction(level, action, message)`
- * when a listener throws — we route that to our Logger's `error` method.
+ * Bridge from our {@link Logger} to the Pub/Sub EventEmitter's options. The
+ * emitter catches a listener's exception so the other listeners still run,
+ * and hands it to `onListenerError`; we route that to our Logger's `error`
+ * method.
  * @param logger - The application logger to delegate to.
- * @returns An object satisfying the Ably EventEmitter's logger interface.
+ * @returns The options for the Pub/Sub EventEmitter.
  */
-const toAblyLogger = (logger: Logger): unknown => ({
-  logAction: (_level: number, action: string, message?: string) => {
-    logger.error(action, { detail: message });
+const toAblyLogger = (logger: Logger): Ably.EventEmitterOptions => ({
+  onListenerError: (error: unknown) => {
+    logger.error('EventEmitter.emit(); listener threw', { error });
   },
-  shouldLog: () => true,
 });
 
-// CAST: Access Ably's internal EventEmitter constructor. Not publicly exported
-// but available to other Ably SDKs. Ably always catches listener exceptions
-// internally; the logger parameter ensures those caught exceptions are logged
-// rather than silently swallowed.
-const InternalEventEmitter: new <EventsMap>(logger: unknown) => InterfaceEventEmitter<EventsMap> = (
-  Ably.Realtime as unknown as { EventEmitter: new <EventsMap>(logger: unknown) => InterfaceEventEmitter<EventsMap> }
-).EventEmitter;
+// CAST: the Pub/Sub EventEmitter types its events as plain strings and its
+// listeners as `Function`; narrow it to the EventsMap this wrapper exists for.
+// Its declared overloads differ in shape from that interface (`once` declares
+// no zero-argument form, though it accepts one), so the cast goes through
+// `unknown`.
+const InternalEventEmitter = Ably.EventEmitter as unknown as new <EventsMap>(
+  options?: Ably.EventEmitterOptions,
+) => InterfaceEventEmitter<EventsMap>;
 
 /**
- * Type-safe EventEmitter based on Ably's internal EventEmitter.
+ * Type-safe EventEmitter based on the Pub/Sub {@link Ably.EventEmitter}.
  *
- * Provides the same semantics as {@link Ably.EventEmitter} (error isolation
- * between listeners, synchronous dispatch) but with a single `EventsMap` type
- * parameter for ergonomic type safety.
+ * Provides the same semantics (error isolation between listeners, synchronous
+ * dispatch) but with a single `EventsMap` type parameter for ergonomic type
+ * safety.
  *
  * Requires a {@link Logger} so that listener exceptions are routed through
  * the application's logging infrastructure rather than silently swallowed.

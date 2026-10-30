@@ -3,7 +3,7 @@
  * to the `ai:*` channels the page uses, under a random client id.
  */
 
-import Ably from 'ably';
+import { createHttpClient } from '@ably/pubsub-server';
 import { NextResponse } from 'next/server';
 
 export async function GET() {
@@ -11,8 +11,8 @@ export async function GET() {
   if (apiKey === undefined) {
     return NextResponse.json({ error: 'ABLY_API_KEY is not set' }, { status: 500 });
   }
-  const rest = new Ably.Rest({ key: apiKey });
-  const tokenRequest = await rest.auth.createTokenRequest({
+  const pubsubHttpClient = createHttpClient({ key: apiKey });
+  const tokenRequest = await pubsubHttpClient.auth.createTokenRequest({
     clientId: `user-${crypto.randomUUID().slice(0, 8)}`,
     capability: { 'ai:*': ['publish', 'subscribe', 'history'] },
   });

@@ -145,7 +145,7 @@ export default [
     files: ['test/**/*.{ts,tsx}'],
 
     rules: {
-      // ably 2.22 added @deprecated v1-callback overloads to these channel
+      // Pub/Sub declares @deprecated v1-callback overloads on these channel
       // methods. The rule resolves real call sites to the v2 overload and
       // stays quiet, but bare references (mock assignment, expect() args)
       // fall back to the symbol and flag because *an* overload is deprecated.
@@ -153,7 +153,9 @@ export default [
       '@typescript-eslint/no-deprecated': [
         'error',
         {
-          allow: [{ from: 'package', package: 'ably', name: ['subscribe', 'unsubscribe', 'publish', 'history'] }],
+          allow: [
+            { from: 'package', package: '@ably/pubsub-core', name: ['subscribe', 'unsubscribe', 'publish', 'history'] },
+          ],
         },
       ],
     },
@@ -180,6 +182,14 @@ export default [
     rules: {
       '@typescript-eslint/no-unused-vars': ['error'],
       'import-x/no-unresolved': 'off',
+      // Pub/Sub declares Message as a class for its static helpers, but a
+      // message is plain data that the codec and transport copy by spreading.
+      '@typescript-eslint/no-misused-spread': [
+        'error',
+        {
+          allow: [{ from: 'package', package: '@ably/pubsub-core', name: ['Message'] }],
+        },
+      ],
       'no-undef': 'off',
       'no-dupe-class-members': 'off',
       'require-await': 'off',

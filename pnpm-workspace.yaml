@@ -10,4 +10,3 @@ allowBuilds:
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
   - '@ably/*'
-  - 'ably'

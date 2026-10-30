@@ -1,6 +1,6 @@
-/** A mock Ably Realtime client that hands the transport a mock channel. */
+/** A mock Ably Pub/Sub client that hands the transport a mock channel. */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { type Mock, vi } from 'vitest';
 
 /** The mock surface a test drives and asserts on, alongside the client cast. */
@@ -12,13 +12,13 @@ export interface MockClient {
 }
 
 /**
- * Create a minimal `Ably.Realtime` mock whose `channels.get` returns the
+ * Create a minimal `Ably.PubSubRealtimeClient` mock whose `channels.get` returns the
  * supplied channel whatever name it is asked for, recording the name and
  * options each call received.
  * @param channel - The channel to return from `channels.get`.
- * @returns The mock client, cast to `Ably.Realtime`.
+ * @returns The mock client, cast to `Ably.PubSubRealtimeClient`.
  */
-export const createMockClient = (channel: Ably.RealtimeChannel): MockClient & Ably.Realtime => {
+export const createMockClient = (channel: Ably.RealtimeChannel): MockClient & Ably.PubSubRealtimeClient => {
   const client: MockClient = {
     channels: { get: vi.fn(() => channel) },
     options: {},
@@ -26,5 +26,5 @@ export const createMockClient = (channel: Ably.RealtimeChannel): MockClient & Ab
   // CAST: a minimal stub — the transport only calls `channels.get` and
   // registers its agent under `options.agents`, and the surrounding test
   // drives the channel directly.
-  return client as MockClient & Ably.Realtime;
+  return client as MockClient & Ably.PubSubRealtimeClient;
 };

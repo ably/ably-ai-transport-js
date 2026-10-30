@@ -8,8 +8,8 @@
  * joined, which the reducer must still accept.
  */
 
+import type * as Ably from '@ably/pubsub-core';
 import { EventType } from '@ag-ui/core';
-import type * as Ably from 'ably';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { type AGUIEvent, type AGUIRunInput, createAGUICodec } from '../../../src/ag-ui/index.js';
@@ -26,12 +26,12 @@ import {
 } from '../../ag-ui/codec/fixtures.js';
 import { foldWithAGUIReducer } from '../../helper/ag-ui-fold.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
-import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
+import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
 const transportOn = (name: string): Transport<AGUIEvent> =>
-  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createAGUICodec() });
+  createTransport({ client: pubsubClient(), channelName: name, codec: createAGUICodec() });
 
 /**
  * A transport with the channel it reads, for a subscriber that waits for the channel to attach.
@@ -41,7 +41,7 @@ const transportOn = (name: string): Transport<AGUIEvent> =>
  * @returns The transport and its channel.
  */
 const readerOn = (name: string): { transport: Transport<AGUIEvent>; channel: Ably.RealtimeChannel } => {
-  const client = ablyRealtimeClient();
+  const client = pubsubClient();
   const transport = createTransport({ client, channelName: name, codec: createAGUICodec() });
   return { transport, channel: client.channels.get(name) };
 };

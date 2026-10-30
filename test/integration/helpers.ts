@@ -7,7 +7,7 @@
  * growing array. The only deadline is vitest's own test timeout.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import type { Delivery, HistoryPage, Transport } from '../../src/index.js';
 
@@ -121,7 +121,7 @@ const boundMember = (target: object, property: string | symbol, receiver: unknow
  * @param error - The rejection to inject.
  * @returns The wrapped client.
  */
-export const failingFirstAppend = (client: Ably.Realtime, error: Error): Ably.Realtime => {
+export const failingFirstAppend = (client: Ably.PubSubRealtimeClient, error: Error): Ably.PubSubRealtimeClient => {
   let injected = false;
   const wrapChannel = (channel: Ably.RealtimeChannel): Ably.RealtimeChannel =>
     new Proxy(channel, {

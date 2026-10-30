@@ -7,7 +7,7 @@
  * and avoid spurious reattaches.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { describe, expect, it } from 'vitest';
 
 import { OBJECT_MODES, resolveChannelModes } from '../../src/core/channel-options.js';

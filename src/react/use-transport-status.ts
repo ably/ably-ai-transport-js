@@ -2,7 +2,7 @@
  * useTransportStatus: the discontinuities and errors the transport reports.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { useEffect, useState } from 'react';
 
 import { useTransportSlot } from './use-transport.js';

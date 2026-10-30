@@ -2,7 +2,7 @@
 
 /**
  * The React surface: TransportProvider creates a Transport from the client of
- * the surrounding <AblyProvider> and a channel name, leaving the channel's
+ * the surrounding <PubSubClientProvider> and a channel name, leaving the channel's
  * resolution to the transport, survives a Strict-Mode remount, and closes it
  * on a true unmount;
  * useTransport reads it back; useDeliveries, useHistory and
@@ -12,8 +12,8 @@
 
 import '../helper/expectations.js';
 
+import * as Ably from '@ably/pubsub-core';
 import { act, render, renderHook } from '@testing-library/react';
-import * as Ably from 'ably';
 import { createElement, type ReactNode, StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -59,18 +59,18 @@ const channelProviderCapture = vi.hoisted(() => ({
   renders: 0,
 }));
 
-// Stand-in Realtime client returned by the mocked `useAbly()`; its channels.get
+// Stand-in Pub/Sub client returned by the mocked `usePubSubClient()`; its channels.get
 // records the resolution the provider performs.
 const channelsGetMock = vi.hoisted(() =>
   // The options parameter exists so mock.calls carries the resolved channel options.
   vi.fn((name: string, options?: Ably.ChannelOptions) => ({ name, options }) as unknown as Ably.RealtimeChannel),
 );
-const fakeAblyClient = { channels: { get: channelsGetMock } } as unknown as Ably.Realtime;
+const fakePubSubClient = { channels: { get: channelsGetMock } } as unknown as Ably.PubSubRealtimeClient;
 
-vi.mock('ably/react', async () => {
+vi.mock('@ably/pubsub-device/react', async () => {
   const { createElement: h, Fragment } = await import('react');
   return {
-    useAbly: () => fakeAblyClient,
+    usePubSubClient: () => fakePubSubClient,
     ChannelProvider: ({ children, options }: { children?: ReactNode; options?: Ably.ChannelOptions }) => {
       channelProviderCapture.options = options;
       channelProviderCapture.renders += 1;
@@ -202,8 +202,11 @@ describe('TransportProvider', () => {
 
     expect(createTransportMock).toHaveBeenCalledTimes(1);
     // CAST: the mock records the options bag the provider passed.
-    const options = createTransportMock.mock.calls[0]?.[0] as { client: Ably.Realtime; channelName: string };
-    expect(options.client).toBe(fakeAblyClient);
+    const options = createTransportMock.mock.calls[0]?.[0] as {
+      client: Ably.PubSubRealtimeClient;
+      channelName: string;
+    };
+    expect(options.client).toBe(fakePubSubClient);
     expect(options.channelName).toBe('ai:test');
     // The transport owns the channel and its options, so the provider never
     // resolves one of its own.

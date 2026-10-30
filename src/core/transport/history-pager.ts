@@ -8,7 +8,7 @@
  * walk's steps are serialised: two `next()` calls on one page read in order.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import type { Logger } from '../../logger.js';
 import type { Delivery } from '../codec/codec.js';

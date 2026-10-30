@@ -81,10 +81,11 @@ interface Puller<E> {
  * `return()` is called on release for best-effort upstream teardown. A
  * `return()` that throws or rejects is logged at warn, never surfaced.
  * @param source - The stream or async-iterable to consume.
+ * @param driver - The driver reading the source, named in the teardown warning.
  * @param logger - Logger for the teardown warning.
  * @returns A pull-reader that yields events and tears the source down on release.
  */
-const toPuller = <E>(source: PipeSource<E>, logger?: Logger): Puller<E> => {
+const toPuller = <E>(source: PipeSource<E>, driver: 'pipeStream' | 'pipeEach', logger?: Logger): Puller<E> => {
   if ('getReader' in source) {
     const reader = source.getReader();
     return {
@@ -98,7 +99,7 @@ const toPuller = <E>(source: PipeSource<E>, logger?: Logger): Puller<E> => {
   }
   const iterator = source[Symbol.asyncIterator]();
   const warnReturnFailed = (error: unknown): void => {
-    logger?.warn('pipeStream(); source return() failed', { error: errorMessage(error) });
+    logger?.warn(`${driver}(); source return() failed`, { error: errorMessage(error) });
   };
   return {
     read: async () => {
@@ -273,7 +274,7 @@ export const pipeStream = async <E>(
 ): Promise<PipeResult> => {
   const { signal, headers, logger } = options;
   logger?.trace('pipeStream();');
-  const puller = toPuller(source, logger);
+  const puller = toPuller(source, 'pipeStream', logger);
   const abort = abortSignalToPromise(signal);
   let serial: string | undefined;
   let failure: Ably.ErrorInfo | undefined;
@@ -374,7 +375,7 @@ export async function* pipeEach<E>(
 ): AsyncGenerator<Published<E>, void, undefined> {
   const { signal, headers, logger } = options;
   logger?.trace('pipeEach();');
-  const puller = toPuller(source, logger);
+  const puller = toPuller(source, 'pipeEach', logger);
   const abort = abortSignalToPromise(signal);
   let failure: Ably.ErrorInfo | undefined;
   try {

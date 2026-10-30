@@ -11,7 +11,7 @@
 import type * as Ably from 'ably';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createAgentAdaptor, createDecoder, type Delivery, type Published } from '../../../src/index.js';
+import { createAgentAdaptor, createDecoder, type Delivery, ErrorCode, type Published } from '../../../src/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createTestCodec, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
@@ -168,5 +168,66 @@ describe('agent adaptor and decoder over Ably', () => {
       { type: 'text-delta', id: 'm1', delta: 'The weather is mild.' },
       { type: 'text-end', id: 'm1' },
     ]);
+  });
+
+  it('stops a pipe on its signal and writes nothing more', async () => {
+    const name = uniqueChannelName();
+    const controller = new AbortController();
+    const source = new ReadableStream<TestEvent>({
+      start: (c) => {
+        c.enqueue({ type: 'text-start', id: 'm1' });
+        c.enqueue({ type: 'text-delta', id: 'm1', delta: 'partial' });
+        // Never closes: the pipe ends only by signal.
+      },
+    });
+    const piping = createAgentAdaptor(ablyRealtimeClient().channels.get(name), createTestCodec()).pipe(source, {
+      signal: controller.signal,
+    });
+
+    const channel = ablyRealtimeClient().channels.get(name);
+    const decoder = createDecoder(createTestCodec());
+    const recorder = createDeliveryRecorder<TestEvent>();
+    decoder.onEvent(recorder.record);
+    await channel.subscribe(decoder.receive);
+    // Wait for the delta, which is the last thing the pipe writes.
+    await recorder.waitFor((d) => d.some((x) => x.event?.type === 'text-delta'));
+    const outcome = expect(piping).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    controller.abort();
+    await outcome;
+
+    // The start, and the message the first delta opened, are all that reached
+    // the channel.
+    const reader = ablyRealtimeClient().channels.get(name);
+    await reader.attach();
+    const page = await reader.history({ untilAttach: true, limit: 10 });
+    const historyDecoder = createDecoder(createTestCodec());
+    const history = page.items.flatMap((m) => historyDecoder.decode(m)).toReversed();
+    expect(history.map((d) => d.event)).toEqual([
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'partial' },
+    ]);
+  });
+
+  it('delivers a delete with no event', async () => {
+    const name = uniqueChannelName();
+    const channel = ablyRealtimeClient().channels.get(name);
+    const decoder = createDecoder(createTestCodec());
+    const recorder = createDeliveryRecorder<TestEvent>();
+    decoder.onEvent(recorder.record);
+    await channel.subscribe(decoder.receive);
+
+    const { serial } = await createAgentAdaptor(ablyRealtimeClient().channels.get(name), createTestCodec()).send({
+      type: 'note',
+      text: 'to be removed',
+    });
+    await recorder.waitFor((d) => d.length === 1);
+    if (serial === undefined) throw new Error('send returned no serial');
+    await ablyRealtimeClient().channels.get(name).deleteMessage({ serial });
+    await recorder.waitFor((d) => d.length === 2);
+
+    const deletion = recorder.deliveries[1];
+    expect(deletion?.event).toBeUndefined();
+    expect(deletion?.message.action).toBe('message.delete');
+    expect(deletion?.message.serial).toBe(serial);
   });
 });

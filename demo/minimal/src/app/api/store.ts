@@ -2,9 +2,10 @@
  * The demo's stand-in for the application's database: one conversation per
  * channel, in the memory of the server process. The chat route records the
  * user's message and an empty placeholder for its reply when the request
- * arrives, and the reply itself once its pipe has resolved, with the serial
- * of the last message the pipe published. The page reads channel history
- * from that serial forward when it loads.
+ * arrives, with the serial the message's publish returned, and the reply
+ * itself once its pipe has resolved, with the serial of the last message the
+ * pipe published. The page rewinds the channel to the stored serial when it
+ * loads, so it receives everything the store does not hold yet.
  */
 
 import type { UIMessage } from 'ai';
@@ -12,7 +13,7 @@ import type { UIMessage } from 'ai';
 export interface StoredConversation {
   /** The conversation so far, in the order the messages were recorded. */
   messages: UIMessage[];
-  /** The serial the latest reply's `pipe` resolved with; absent until a reply has landed. */
+  /** The latest serial the store accounts for: the last prompt's publish, then its reply's last message once it lands. Absent until the first prompt. */
   serial?: string;
 }
 

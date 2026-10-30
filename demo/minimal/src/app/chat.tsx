@@ -22,6 +22,21 @@ const textOf = (message: UIMessage): string =>
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 /**
+ * Call `enqueue` or `close` on a reply's stream. The AI SDK's reducer cancels
+ * that stream when a chunk does not fit what it has seen, and the controller
+ * then throws on every call. The reply is over at that point, and the
+ * reducer's `onError` has logged why, so the call is dropped.
+ * @param call - The controller call.
+ */
+const callReply = (call: () => void): void => {
+  try {
+    call();
+  } catch {
+    // The reducer cancelled this reply's stream.
+  }
+};
+
+/**
  * The `requestId` header the publishing call attached, read off the raw Ably
  * message. The client stamps it on its prompt and the route on the reply and
  * any abort, so every message of a turn carries the prompt's id.
@@ -72,7 +87,13 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
 
   const merge = useCallback(
     async (stream: ReadableStream<UIMessageChunk>) => {
-      for await (const message of readUIMessageStream({ stream })) upsert(message);
+      const states = readUIMessageStream({
+        stream,
+        onError: (error) => {
+          console.error('reply rejected', error);
+        },
+      });
+      for await (const message of states) upsert(message);
     },
     [upsert],
   );
@@ -112,7 +133,7 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
         if (event.messageId !== undefined) upsert({ id: event.messageId, role: 'assistant', parts: [] });
         // A second `start` for the same request, from a replay, ends the stream
         // the first one opened, so its merge loop finishes.
-        replies.current.get(from)?.close();
+        if (reply !== undefined) callReply(() => reply.close());
         const stream = new ReadableStream<UIMessageChunk>({
           start: (controller) => {
             replies.current.set(from, controller);
@@ -120,7 +141,8 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
         });
         void merge(stream);
       }
-      replies.current.get(from)?.enqueue(event);
+      const reply = replies.current.get(from);
+      if (reply !== undefined) callReply(() => reply.enqueue(event));
       // `finish` ends a reply; `abort` is what the route publishes when its
       // pipe was cancelled and no `finish` will come.
       if (event.type === 'finish' || event.type === 'abort') {
@@ -142,7 +164,9 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
   // built per run: a run that is torn down and started again (a Strict Mode
   // remount, Fast Refresh) must not reuse one that has already seen the
   // messages. Rewind applies only when the channel attaches, so a re-run on a
-  // channel that is still attached replays nothing.
+  // channel that is still attached replays nothing and misses what arrived
+  // while it was unsubscribed. Teardown closes the reply streams still open
+  // and clears the wire tab, so a re-run starts from what it receives.
   useEffect(() => {
     const decoder = vercelDecoder();
     const listener = (message: Ably.InboundMessage) => {
@@ -153,8 +177,13 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
       // stays disabled.
       console.error('subscribe failed', error);
     });
+    const open = replies.current;
     return () => {
       channel.unsubscribe(listener);
+      for (const controller of open.values()) callReply(() => controller.close());
+      open.clear();
+      setStreaming(false);
+      setDeliveries([]);
     };
   }, [channel, apply]);
 

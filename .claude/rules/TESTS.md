@@ -8,8 +8,7 @@
 | **Integration** | `pnpm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably   |
 
 Config: `vitest.config.ts` (unit, excludes the integration tier by filename)
-and `vitest.config.integration.ts` (`*.integration.test.ts`). Both configs
-match a `.tsx` suffix as well, so a suite written with JSX runs in its tier.
+and `vitest.config.integration.ts` (`*.integration.test.ts`).
 
 ## Unit tests
 

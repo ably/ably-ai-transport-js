@@ -100,7 +100,7 @@ export interface Transport<E> {
    * @param event - The event to publish.
    * @param options - The call's headers.
    * @returns The ack serial of the last publish, or `undefined` when the codec published nothing.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, or when any of the event's messages appends or updates, since `send` has no key table (nothing is published either way); `InsufficientCapability` when the channel rejects a publish for a capability reason; `SessionSendFailed` for any other publish failure; `SessionClosed` after `close()`.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, or when any of the event's messages appends or updates, since `send` has no key table (nothing is published either way); `InsufficientCapability` when the channel rejects a publish for a capability reason; `SessionSendFailed` for any other publish failure; `InternalError` when a publish's ack carries no serial; `SessionClosed` after `close()`. An encoded message without the codec's `name` and `id` rejects with `InvalidArgument` and publishes nothing, and whatever the codec's `encode` throws is passed on unchanged.
    */
   send(event: E, options?: SendOptions): Promise<SendResult>;
   /**

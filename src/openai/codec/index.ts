@@ -55,8 +55,8 @@ import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { OpenAIEvent } from './events.js';
 
-/** The value the codec stamps as its `adapterTag`. */
-const ADAPTER_TAG = 'openai-responses';
+/** The codec's id. */
+const CODEC_ID = 'openai-responses';
 
 type Row<T extends OpenAIEvent['type']> = EventRow<OpenAIEvent, T>;
 
@@ -220,14 +220,12 @@ const isInputItems = (data: unknown): data is Responses.ResponseInputItem[] =>
   Array.isArray(data) && data.every((item: unknown) => isRecord(item));
 
 /**
- * Build the OpenAI Responses codec. Each call builds a fresh codec with its
- * own decoder table.
+ * Build the OpenAI Responses codec.
  * @returns The codec.
  */
 export const createOpenAICodec = (): Codec<OpenAIEvent> =>
   defineCodec({
-    name: 'ai',
-    adapterTag: ADAPTER_TAG,
+    id: CODEC_ID,
     typeOf: (e: OpenAIEvent) => e.type,
     events: {
       // The response lifecycle. The openers carry a response with no output
@@ -396,5 +394,5 @@ export const createOpenAICodec = (): Codec<OpenAIEvent> =>
     },
   });
 
-/** The OpenAI Responses codec, with one decoder table shared by every transport that uses it. */
+/** The OpenAI Responses codec. */
 export const openai: Codec<OpenAIEvent> = createOpenAICodec();

@@ -225,10 +225,10 @@ export const pipeStream = async <E>(
       try {
         // An event's messages are written as a unit; the signal is read again
         // before the next event, not between them.
-        for (const message of encoded) {
-          const stamped =
-            headers === undefined ? message : { ...message, message: withHeaders(message.message, headers) };
-          const acked = await writer.write(stamped);
+        for (const encodedMessage of encoded) {
+          const { message: encodedBody } = encodedMessage;
+          const message = headers === undefined ? encodedBody : withHeaders(encodedBody, headers);
+          const acked = await writer.write({ ...encodedMessage, message });
           if (acked !== undefined) serial = acked;
         }
       } catch (error) {

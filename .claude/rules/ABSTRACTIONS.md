@@ -34,13 +34,16 @@ layer is implemented once per provider, and each implementation is a _codec_
 preserve.
 
 - **Generic layer** (`src/core/`, `src/react/`) defines the codec contract
-  (`src/core/codec/codec.ts`), the `defineCodec` builder with its decoder core
-  (`src/core/codec/`), and the transport (`src/core/transport/`). It knows
+  (`src/core/codec/codec.ts`), the `defineCodec` builder (`src/core/codec/`),
+  the decoder with its core (`src/core/decoder/`), and the transport
+  (`src/core/transport/`). It knows
   nothing about any provider's wire types (Vercel's `UIMessageChunk`, OpenAI's
-  `ResponseStreamEvent`) and reads nothing a codec writes: the builder's own
-  `type` field is the one thing it looks at, and only to pick a row. The
-  transport writes two fields of its own under `extras.ai`, which the decoder
-  core reads and no codec does.
+  `ResponseStreamEvent`). Of what a codec writes it reads only three things:
+  the decoder filters on the message name and `extras.ai.codec`, which every
+  codec writes as its own `name` and `id`, and the builder reads its own
+  `type` to pick a row. The transport writes two fields of its own under
+  `extras.ai`, `stream` and `ends`, which the decoder core reads and no codec
+  does.
 
   The two halves differ in what else they may depend on. `src/core/` is
   framework-agnostic. `src/react/` is codec-agnostic and React-only: it may
@@ -128,7 +131,7 @@ channel listener. See the module doc comment on
 
 A delivery is `{ event, message }`, and every message is delivered. `event` is
 `undefined` when the codec has nothing for the message: a foreign publish on
-the shared channel, a replay the codec's version guard dropped, a
+the shared channel, a replay the decoder's version guard dropped, a
 `message.delete`, or a decode that threw. The application always sees the raw
 message and decides for itself. Publishing emits nothing locally: the sender's
 own message comes back as the ordinary channel delivery, so an application that
@@ -149,10 +152,10 @@ and injected, and each layer wires the layer below it.
 The split follows what a part's state is scoped to. State scoped to one pipe
 (the live keys, the pending appends) lives in that pipe's writer. State scoped
 to the transport (the subscriptions, the pipes in flight, whether the channel
-listener is registered) lives in the transport. State scoped to the codec (the
-decoder core's table of the streams in flight, opened by the writer's `stream`
-marker and freed by its `ends` marker) lives inside the built codec, which is
-why a codec instance is shared only when its transports may share a table.
+listener is registered, and the decoder core's table of the streams in flight,
+opened by the writer's `stream` marker and freed by its `ends` marker) lives in
+the transport. A codec holds no state, so one codec value serves every
+transport that uses it.
 
 ## Dependency injection
 
@@ -221,15 +224,20 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 5. **Composition, not inheritance.** Compose features; no class hierarchies.
 6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
-7. **The SDK owns two wire fields, and the builder two more, all under
-   `extras.ai`.** A row speaks in `data`, `fields` and `headers`: a plain
+7. **The transport owns two wire fields, and the codec three, all under
+   `extras.ai`, plus the message name.** A row speaks in `data`, `fields` and `headers`: a plain
    publish carries the event in `data`, and a message that is appended to
    carries the appended text in `data` and the event's other fields in
    `fields`, since an append grows `data` and carries nothing else. The
    builder writes `fields` under `extras.ai.fields`, nested objects and
    arrays as they are, beside its own `type` under `extras.ai`, the key the
    platform reserves for this SDK, and reads `extras.ai.type` back to pick
-   the row. The transport's pipe writer stamps `extras.ai.stream` on every
+   the row. A codec gives every message it encodes its own `name` (`ai` by
+   default) and writes its `id` as `extras.ai.codec`, appends included,
+   since Ably keeps the last write's name and extras; a decoder reads both
+   off the codec and skips any message that carries another. The builder
+   does this for every row, and a hand-written codec must do it itself. The
+   transport's pipe writer stamps `extras.ai.stream` on every
    write under a live key, so a stream's message carries it however it is
    read back, and `extras.ai.ends`, the serial it ends, on the message that
    ends one; the decoder core reads both to know which messages to remember
@@ -249,8 +257,7 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    `extras`. A message
    without `extras.ai.type` is **foreign**: the transport shares its channel
    with the application, so `decode` returns `undefined` and the transport
-   delivers it raw. Classify by that field, never by the wire `name`, which is
-   the codec author's to choose and a foreign publisher's to collide with.
+   delivers it raw.
 8. **Explicit exports.** Only what an `index.ts` re-exports is public API.
 9. **Self-contained features.** Each manages its own subscriptions, state, and
    cleanup.

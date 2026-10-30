@@ -5,13 +5,16 @@
  * Two layers write there and neither imports the other, so the names live
  * here. Under `ai`, the key Ably reserves for this SDK, the codec builder
  * writes `type`, which picks the row on decode, and `fields`, a row's event
- * fields that travel beside an appended body, nested values as they are. The
- * transport's pipe writer writes `stream`, `true` on every write under a live
- * key (the publish that opens the key, each append and each update), and
+ * fields that travel beside an appended body, nested values as they are,
+ * and `codec`, the codec's `id`; it also gives every message the codec's
+ * `name`, `ai` by default. A decoder skips any message with another name or
+ * another codec's id. The transport's pipe writer writes `stream`, `true` on every write under a
+ * live key (the publish that opens the key, each append and each update), and
  * `ends`, the serial of the message a key's closer ends. Ably stores the last
- * write's extras on an appended message, so `stream` is on a stream's message
- * however it is read back, and the decoder core reads both fields to know
- * which messages to remember and when to forget them.
+ * write's name and extras on an appended message, so the name, `codec` and
+ * `stream` are on a stream's message however it is read back, and the decoder
+ * core reads `stream` and `ends` to know which messages to remember and when
+ * to forget them.
  *
  * Under `headers`, the key Ably provides for a publisher's own fields and the
  * one its server-side filtering reads, the builder writes a row's `headers`
@@ -24,6 +27,12 @@ import type * as Ably from 'ably';
 
 /** The `extras` key Ably reserves for this SDK. */
 export const EXTRAS_KEY = 'ai';
+
+/** The message name a codec built by `defineCodec` uses when it names none. */
+export const MESSAGE_NAME = 'ai';
+
+/** Builder: the id of the codec that encoded the message, on every message. */
+export const CODEC_FIELD = 'codec';
 
 /** Builder: the event type that picks the row on decode. */
 export const TYPE_FIELD = 'type';

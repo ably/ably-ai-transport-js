@@ -56,8 +56,8 @@ import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { AGUIEvent, AGUIEventType, AGUIRunInput } from './events.js';
 
-/** The value the codec sets as its `adapterTag`. */
-const ADAPTER_TAG = 'ag-ui-events';
+/** The codec's id. */
+const CODEC_ID = 'ag-ui-events';
 
 type Row<T extends AGUIEventType> = EventRow<AGUIEvent, T>;
 
@@ -138,14 +138,12 @@ const isRunAgentInput = (data: unknown): data is AGUIRunInput['input'] =>
   Array.isArray(data.context);
 
 /**
- * Build the AG-UI codec. Each call builds a fresh codec with its own decoder
- * table.
+ * Build the AG-UI codec.
  * @returns The codec.
  */
 export const createAGUICodec = (): Codec<AGUIEvent> =>
   defineCodec({
-    name: 'ag-ui',
-    adapterTag: ADAPTER_TAG,
+    id: CODEC_ID,
     typeOf: (e: AGUIEvent): AGUIEventType => e.type,
     events: {
       // The run lifecycle. RUN_STARTED's input repeats the conversation, so
@@ -258,5 +256,5 @@ export const createAGUICodec = (): Codec<AGUIEvent> =>
     },
   });
 
-/** The AG-UI codec, with one decoder table shared by every transport that uses it. */
+/** The AG-UI codec. */
 export const agui: Codec<AGUIEvent> = createAGUICodec();

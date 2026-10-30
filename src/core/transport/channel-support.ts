@@ -62,22 +62,6 @@ export const subscribeAndAttach = async (
 };
 
 /**
- * Wrap a failure thrown while processing an inbound channel message as a
- * `SessionMessageProcessingFailed`, preserving the original as `cause`. Kept
- * distinct from `SessionSubscriptionFailed`: the subscription survives this,
- * so the transport stays usable and the fix is in the codec or the handler.
- * @param error - The thrown value.
- * @returns The wrapped error.
- */
-export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
-  new Ably.ErrorInfo(
-    `unable to process channel message; ${errorMessage(error)}`,
-    ErrorCode.SessionMessageProcessingFailed,
-    500,
-    errorCause(error),
-  );
-
-/**
  * Build the error every call on a closed transport throws.
  * @param method - The method name, named in the error message.
  * @returns The error.

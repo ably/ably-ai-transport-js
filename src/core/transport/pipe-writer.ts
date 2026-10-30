@@ -106,6 +106,8 @@ interface StreamState {
   serial: string;
   /** The text written to the message so far, for a repair. */
   accumulated: string;
+  /** The name the last write carried, re-stamped by a repair because Ably replaces the name on update. */
+  name: string | undefined;
   /** The extras the last write carried, re-stamped by a repair because Ably replaces extras on update. */
   extras: unknown;
 }
@@ -198,7 +200,12 @@ class DefaultPipeWriter implements PipeWriter {
       throw new Ably.ErrorInfo('unable to publish; no serial returned', ErrorCode.InternalError, 500);
     }
     if (key !== undefined) {
-      this._streams.set(key, { serial, accumulated: stringOf(message.data), extras: message.extras });
+      this._streams.set(key, {
+        serial,
+        accumulated: stringOf(message.data),
+        name: message.name,
+        extras: message.extras,
+      });
       this._logger?.debug('PipeWriter.write(); stream opened', { key, serial });
     }
     return serial;
@@ -206,6 +213,7 @@ class DefaultPipeWriter implements PipeWriter {
 
   private _append(key: string, stream: StreamState, message: Ably.Message): void {
     stream.accumulated += stringOf(message.data);
+    stream.name = message.name;
     stream.extras = message.extras;
     const promise = this._channel.appendMessage({ ...message, serial: stream.serial });
     // Not awaited here: the ack is collected by flush. The no-op catch keeps an
@@ -241,6 +249,7 @@ class DefaultPipeWriter implements PipeWriter {
     this._logger?.trace('PipeWriter.write(); update', { key, serial: stream.serial });
     await this._channel.updateMessage({ ...message, serial: stream.serial });
     stream.accumulated = stringOf(message.data);
+    stream.name = message.name;
     stream.extras = message.extras;
   }
 
@@ -259,7 +268,12 @@ class DefaultPipeWriter implements PipeWriter {
       const stream = this._streams.get(key);
       if (stream === undefined) continue;
       try {
-        await this._channel.updateMessage({ serial: stream.serial, data: stream.accumulated, extras: stream.extras });
+        await this._channel.updateMessage({
+          serial: stream.serial,
+          name: stream.name,
+          data: stream.accumulated,
+          extras: stream.extras,
+        });
       } catch (error) {
         this._logger?.error('PipeWriter.flush(); repair failed', { key, error: errorMessage(error) });
         failures.push(error);

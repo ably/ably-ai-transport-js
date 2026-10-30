@@ -99,22 +99,22 @@ export const TransportProvider = <E,>({
   const client = useAbly();
 
   // What the channel resolution is built from, as scalar effect keys rather
-  // than the props carrying them: the codec contributes only its `adapterTag`,
+  // than the props carrying them: the codec contributes only its `id`,
   // and the modes only their contents. A caller writing
   // `codec={createVercelCodec()}` or `channelModes={[...]}` inline passes a
   // fresh value every render, which would otherwise close and reopen the
   // channel on each one.
-  const adapterTag = transportOptions.codec.adapterTag;
+  const codecId = transportOptions.codec.id;
   const modesKey = channelModes === undefined ? '' : channelModes.join(',');
   const { echoMessages } = transportOptions;
 
   // The same options the transport resolves with, memoized so the
   // ChannelProvider's own `setOptions` effect does not re-run every render.
   const channelOptions = useMemo<Ably.ChannelOptions>(
-    () => transportChannelOptions({ codec: { adapterTag }, channelModes, echoMessages }),
+    () => transportChannelOptions({ codec: { id: codecId }, channelModes, echoMessages }),
     // `channelModes` is read through `modesKey`, which tracks its contents.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keying on the identity of `channelModes` would rebuild the transport on every render for a caller passing it inline, which closes and reopens the channel
-    [adapterTag, modesKey, echoMessages],
+    [codecId, modesKey, echoMessages],
   );
 
   const [slot, setSlot] = useState<TransportSlot>({ transport: undefined, error: undefined });
@@ -175,7 +175,7 @@ export const TransportProvider = <E,>({
     };
     // `codec` and `channelModes` reach the effect through the ref; the two
     // keys above track everything the resolution reads off them.
-  }, [client, channelName, adapterTag, modesKey]);
+  }, [client, channelName, codecId, modesKey]);
 
   const parentContext = useContext(TransportContext);
 

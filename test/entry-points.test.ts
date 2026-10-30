@@ -12,7 +12,7 @@
  * `pnpm test`.
  *
  * The codec assertion is an exact key set rather than a deny-list. A codec
- * exposes encode, decode and its adapter tag and nothing else; anything more
+ * exposes encode, decode, its id and its name and nothing else; anything more
  * means message assembly moved back inside the SDK, which is the boundary this
  * design exists to hold.
  *
@@ -25,13 +25,13 @@ import type * as Ably from 'ably';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
-import { agui, createAGUICodec } from '../src/ag-ui/index.js';
+import { agui, agUiDecoder, createAGUICodec } from '../src/ag-ui/index.js';
 import type {
   ChannelWriter,
   Codec,
   DecodedRow,
-  DecoderCore,
-  DecoderCoreOptions,
+  Decoder,
+  DecoderOptions,
   DefineCodecConfig,
   Delivery,
   EncodedMessage,
@@ -66,7 +66,7 @@ import type {
 } from '../src/index.js';
 import {
   consoleLogger,
-  createDecoderCore,
+  createDecoder,
   createTransport,
   defineCodec,
   ErrorCode,
@@ -80,7 +80,7 @@ import {
   untilEvent,
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
-import { createOpenAICodec, openai } from '../src/openai/index.js';
+import { createOpenAICodec, openai, openaiDecoder } from '../src/openai/index.js';
 import type {
   HistoryHandle,
   TransportHandle,
@@ -93,11 +93,11 @@ import type {
 } from '../src/react/index.js';
 import { TransportProvider, useDeliveries, useHistory, useTransport, useTransportStatus } from '../src/react/index.js';
 import type { VercelCrossMajorChunk, VercelEvent, VercelUserMessage } from '../src/vercel/index.js';
-import { createVercelCodec, vercel } from '../src/vercel/index.js';
+import { createVercelCodec, vercel, vercelDecoder } from '../src/vercel/index.js';
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
 /** The only keys a built codec may carry. */
-const CODEC_KEYS = ['adapterTag', 'decode', 'encode'];
+const CODEC_KEYS = ['decode', 'encode', 'id', 'name'];
 
 describe('@ably/ai-transport', () => {
   it('exports the transport factory and the channel modes a transport can request', () => {
@@ -107,12 +107,12 @@ describe('@ably/ai-transport', () => {
     expect(Array.isArray(OBJECT_MODES)).toBe(true);
   });
 
-  it('exports the codec builder and decoder core', () => {
+  it('exports the codec builder and the decoder', () => {
     expect(typeof defineCodec).toBe('function');
-    expect(typeof createDecoderCore).toBe('function');
+    expect(typeof createDecoder).toBe('function');
   });
 
-  it('builds a codec that carries encode, decode and its adapter tag and nothing else', () => {
+  it('builds a codec that carries encode, decode, its id and its name and nothing else', () => {
     const codec = createTestCodec();
     expect(Object.keys(codec).toSorted()).toEqual(CODEC_KEYS);
   });
@@ -154,8 +154,9 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<Codec<TestEvent>['decode']>().returns.toEqualTypeOf<TestEvent[]>();
     expectTypeOf<EncodedMessage>().toHaveProperty('message');
     expectTypeOf<Delivery<TestEvent>>().toHaveProperty('message');
-    expectTypeOf<DecoderCore>().toHaveProperty('prepare');
-    expectTypeOf<DecoderCoreOptions>().toHaveProperty('logger');
+    expectTypeOf<Decoder<TestEvent>>().toHaveProperty('receive');
+    expectTypeOf<Decoder<TestEvent>['decode']>().returns.toEqualTypeOf<Delivery<TestEvent>[]>();
+    expectTypeOf<DecoderOptions>().toHaveProperty('logger');
     expectTypeOf<DefineCodecConfig<TestEvent, TestEvent['type']>>().toHaveProperty('events');
     expectTypeOf<EventRows<TestEvent, TestEvent['type']>>().toHaveProperty('note');
     expectTypeOf<EventRow<TestEvent, 'note'>>().toHaveProperty('encode');
@@ -176,6 +177,11 @@ describe('@ably/ai-transport', () => {
 });
 
 describe('@ably/ai-transport/vercel', () => {
+  it('exports a decoder factory', () => {
+    expect(typeof vercelDecoder().receive).toBe('function');
+    expect(typeof vercelDecoder().decode).toBe('function');
+  });
+
   it('exports the codec, its factory and its event types', () => {
     expect(typeof createVercelCodec).toBe('function');
     expect(Object.keys(vercel).toSorted()).toEqual(CODEC_KEYS);
@@ -205,6 +211,11 @@ describe('@ably/ai-transport/react', () => {
 });
 
 describe('@ably/ai-transport/openai', () => {
+  it('exports a decoder factory', () => {
+    expect(typeof openaiDecoder().receive).toBe('function');
+    expect(typeof openaiDecoder().decode).toBe('function');
+  });
+
   it('exports the codec, its factory and its event types', () => {
     expect(typeof createOpenAICodec).toBe('function');
     expect(Object.keys(openai).toSorted()).toEqual(CODEC_KEYS);
@@ -215,6 +226,11 @@ describe('@ably/ai-transport/openai', () => {
 });
 
 describe('@ably/ai-transport/ag-ui', () => {
+  it('exports a decoder factory', () => {
+    expect(typeof agUiDecoder().receive).toBe('function');
+    expect(typeof agUiDecoder().decode).toBe('function');
+  });
+
   it('exports the codec, its factory and its event types', () => {
     expect(typeof createAGUICodec).toBe('function');
     expect(Object.keys(agui).toSorted()).toEqual(CODEC_KEYS);

@@ -13,19 +13,20 @@
  * and `headers`, the Ably headers a codec author sets on purpose. On every
  * message it encodes the builder writes `data` as the body, the row's `fields`
  * and its own `type` under `extras.ai`, and the row's `headers` under
- * `extras.headers`, reads them back on decode, applies a default message
- * `name` to a message that names none, and wraps `decode` with the decoder
- * core so a late joiner's full-content update reaches the row as the unseen
- * tail and replays are dropped.
+ * `extras.headers`, and reads them back on decode. The built codec holds no
+ * state: reducing a late joiner's full-content update to its unseen tail and
+ * dropping replays is the decoder core's job, before `decode` runs.
  *
  * Ably accepts only known keys at the top of `extras` and rejects a publish
  * carrying any other. `ai` is the key the platform reserves for this SDK, and
  * a value under it travels as it is, nested objects and arrays included. The
  * builder writes two fields there, the `type` that picks the row and the row's
- * `fields`; the transport writes two more on the messages that open and end a
- * key (see `src/core/wire.ts`); the builder reads its own two and ignores the
- * rest. `headers` is the key Ably provides for a publisher's own fields and
- * the one its server-side filtering reads. Ably admits only a flat map of
+ * `fields`, and on every message the codec's `id` as `codec` and the codec's
+ * `name` as the message name, which the decoder filters on; the transport
+ * writes two more fields on the messages that open and end a key (see
+ * `src/core/wire.ts`); the builder reads its own two and ignores the rest.
+ * `headers` is the key Ably provides for a publisher's own fields and the one
+ * its server-side filtering reads. Ably admits only a flat map of
  * string, number, boolean and null values under it (error 40032 otherwise),
  * so a row's `headers` are typed to that and written as given; the builder
  * translates nothing. An `undefined` value in either map is dropped. The
@@ -41,18 +42,18 @@
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
-import type { Logger } from '../../logger.js';
 import {
+  CODEC_FIELD,
   EXTRAS_KEY,
   FIELDS_FIELD,
   type HeaderPrimitive,
   HEADERS_KEY,
   isRecord,
+  MESSAGE_NAME,
   readOwnExtras,
   TYPE_FIELD,
 } from '../wire.js';
 import type { Codec, EncodedMessage } from './codec.js';
-import { createDecoderCore } from './decoder.js';
 
 /** The suffix that makes a row key match every type sharing its prefix (`data-*` matches `data-weather`). */
 const WILDCARD_SUFFIX = '-*';
@@ -84,13 +85,6 @@ export type RowEvent<E, T extends string> = [Extract<E, { type: RowEventType<T> 
  * as delivered.
  */
 export interface RowMessage {
-  /**
-   * The Ably message name. Stamped on every message, an append or update
-   * included, since Ably replaces the stored name with the one the append
-   * carries and the first append of a stream may be the publish that opens it.
-   * Defaults to the codec's `name`.
-   */
-  name?: string;
   /**
    * The message body, Ably's `data`. For a message that is appended to, the
    * text this delivery adds, and the one field appends concatenate; for a
@@ -206,10 +200,10 @@ export type EventRows<E, K extends string> = { [T in K]: EventRow<E, T> };
  * @template K - The union of types `typeOf` returns.
  */
 export interface DefineCodecConfig<E, K extends string> {
-  /** The Ably message name for a message whose row names none. Defaults to `ai`. */
+  /** The codec's identity. See {@link Codec.id}. */
+  id: string;
+  /** The name of every message the codec encodes. Defaults to `ai`. See {@link Codec.name}. */
   name?: string;
-  /** The codec's entry in the channel's `params.agent` attribution string. See {@link Codec.adapterTag}. */
-  adapterTag?: string;
   /**
    * Read an event's type. Its return type is the union of row keys, so the
    * table is checked against it. Annotate the parameter with the event union:
@@ -220,8 +214,6 @@ export interface DefineCodecConfig<E, K extends string> {
   typeOf: (event: E) => K;
   /** One `{ encode, decode }` pair per event type; a `-*` key covers a template member. See {@link EventRows}. */
   events: NoInfer<EventRows<E, K>>;
-  /** Logger for diagnostics. */
-  logger?: Logger;
 }
 
 /** The builder's own fields, read off an inbound message. */
@@ -291,7 +283,7 @@ const withoutUndefined = <V>(record: Record<string, V> | undefined): Record<stri
  * @throws {Ably.ErrorInfo} `InvalidArgument` when a row key carries the wildcard suffix with no prefix.
  */
 export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>): Codec<E> => {
-  const name = config.name ?? 'ai';
+  const name = config.name ?? MESSAGE_NAME;
   // CAST: the table is typed per key for the author; the dispatcher reads it
   // by string, and invokes each row only with the member its key selects.
   const rows = config.events as unknown as Record<string, EventRow<E, string>>;
@@ -316,9 +308,9 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
     return wildcard === undefined ? undefined : rows[wildcard.key];
   };
 
-  const core = createDecoderCore({ logger: config.logger });
-
-  const codec: Codec<E> = {
+  return {
+    id: config.id,
+    name,
     encode: (event) => {
       const type = config.typeOf(event);
       const row = findRow(type);
@@ -341,15 +333,16 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
 
       const fields = withoutUndefined(produced.fields);
       const headers = withoutUndefined(produced.headers);
-      const own: Record<string, unknown> = { [TYPE_FIELD]: type };
+      const own: Record<string, unknown> = { [CODEC_FIELD]: config.id, [TYPE_FIELD]: type };
       if (fields !== undefined) own[FIELDS_FIELD] = fields;
       const extras: Record<string, unknown> = { [EXTRAS_KEY]: own };
       if (headers !== undefined) extras[HEADERS_KEY] = headers;
       if (produced.ephemeral === true) extras.ephemeral = true;
       const data: unknown = produced.data ?? '';
-      // Every message carries a name: an append to a key not yet live is the
-      // publish that opens it, and Ably keeps the name of an append anyway.
-      const message: Ably.Message = { name: produced.name ?? name, data, extras };
+      // Every message carries the name and the id, appends included: Ably
+      // keeps the name and extras of an append, and the first append of a
+      // stream may be the publish that opens it.
+      const message: Ably.Message = { name, data, extras };
 
       const encoded: EncodedMessage = { message };
       if (produced.publish !== undefined) encoded.publish = produced.publish;
@@ -359,9 +352,7 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       return [encoded];
     },
     decode: (message) => {
-      const prepared = core.prepare(message);
-      if (prepared === undefined) return [];
-      const own = readOwn(prepared);
+      const own = readOwn(message);
       if (own === undefined) return [];
       const row = findRow(own.type);
       if (row === undefined) {
@@ -373,17 +364,12 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       }
       const body: DecodedRow = {
         type: own.type,
-        data: prepared.data as unknown,
+        data: message.data,
         fields: own.fields,
-        headers: readHeaders(prepared),
+        headers: readHeaders(message),
       };
-      if (prepared.name !== undefined) body.name = prepared.name;
       const decoded = row.decode(body);
       return decoded === undefined ? [] : [decoded];
     },
   };
-
-  // adapterTag is optional on Codec; set it only when supplied so a codec can
-  // opt out of channel attribution.
-  return config.adapterTag === undefined ? codec : { ...codec, adapterTag: config.adapterTag };
 };

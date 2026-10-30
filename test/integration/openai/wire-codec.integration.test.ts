@@ -81,11 +81,12 @@ describe('OpenAI codec over Ably', () => {
     // type on the deltas' message and nothing under extras.headers.
     const added = recorder.deliveries.find((d) => d.event?.type === 'response.output_item.added');
     expect(added?.message.data).toEqual(at(toolCallResponse, 1));
-    expect(added?.message.extras).toEqual({ ai: { type: 'response.output_item.added' } });
+    expect(added?.message.extras).toEqual({ ai: { codec: 'openai-responses', type: 'response.output_item.added' } });
     const delta = recorder.deliveries.find((d) => d.event?.type === 'response.output_text.delta');
     expect(delta?.message.data).toBe('It is 21°C');
     expect(delta?.message.extras).toEqual({
       ai: {
+        codec: 'openai-responses',
         type: 'response.output_text.delta',
         stream: true,
         fields: {

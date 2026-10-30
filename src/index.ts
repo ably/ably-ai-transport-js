@@ -29,8 +29,6 @@ export { OBJECT_MODES } from './core/channel-options.js';
 export type {
   Codec,
   DecodedRow,
-  DecoderCore,
-  DecoderCoreOptions,
   DefineCodecConfig,
   Delivery,
   EncodedMessage,
@@ -42,7 +40,11 @@ export type {
   RowEventType,
   RowMessage,
 } from './core/codec/index.js';
-export { createDecoderCore, defineCodec } from './core/codec/index.js';
+export { defineCodec } from './core/codec/index.js';
+
+// The decoder
+export type { Decoder, DecoderOptions } from './core/decoder/index.js';
+export { createDecoder } from './core/decoder/index.js';
 
 // Utilities
 export type { Stripped } from './utils.js';

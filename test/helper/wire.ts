@@ -1,12 +1,14 @@
 /**
  * A simulated Ably wire for codec round-trip tests: turn what a codec encodes
  * into the inbound messages a live subscriber would receive, with the serial
- * bookkeeping the pipe writer does on a real channel.
+ * bookkeeping the pipe writer does on a real channel, and decode them back
+ * through a decoder.
  */
 
 import type * as Ably from 'ably';
 
 import type { Codec, EncodedMessage } from '../../src/core/codec/index.js';
+import { createDecoder } from '../../src/core/decoder/index.js';
 import { ENDS_FIELD, STREAM_FIELD, withOwnField } from '../../src/core/wire.js';
 
 /**
@@ -91,10 +93,21 @@ export const historyOf = (encoded: EncodedMessage[]): Ably.InboundMessage[] => {
 };
 
 /**
+ * Decode inbound messages in order through one fresh decoder over the codec.
+ * @param codec - The codec.
+ * @param messages - The inbound messages, in order.
+ * @returns The decoded events, in order.
+ */
+export const decodeAll = <E>(codec: Codec<E>, messages: Ably.InboundMessage[]): E[] => {
+  const decoder = createDecoder(codec);
+  return messages.flatMap((m) => decoder.decode(m).flatMap(({ event }) => (event === undefined ? [] : [event])));
+};
+
+/**
  * Encode `events` and decode the resulting wire with the same codec.
  * @param codec - The codec.
  * @param events - The events, in order.
  * @returns The decoded events, in order.
  */
 export const roundTrip = <E>(codec: Codec<E>, events: E[]): E[] =>
-  deliveriesOf(encodeAll(codec, events)).flatMap((m) => codec.decode(m));
+  decodeAll(codec, deliveriesOf(encodeAll(codec, events)));

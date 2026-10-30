@@ -29,8 +29,8 @@ type TestEvent =
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 /**
- * The fixture's rows. A function, so a test that needs a fresh decoder core
- * gets a fresh codec.
+ * The fixture's rows. A function, so a test can spread them into a codec of
+ * its own and replace one row.
  * @returns The event table.
  */
 const testEvents = (): EventRows<TestEvent, TestEvent['type']> => ({
@@ -47,7 +47,7 @@ const testEvents = (): EventRows<TestEvent, TestEvent['type']> => ({
     decode: ({ fields }) => ({ type: 'text-end', id: asString(fields.id) }),
   },
   note: {
-    encode: (e) => ({ name: 'notes', data: e.text, fields: { important: e.important } }),
+    encode: (e) => ({ data: e.text, fields: { important: e.important } }),
     decode: ({ data, fields }) => ({ type: 'note', text: asString(data), important: fields.important === true }),
   },
   ping: {
@@ -63,8 +63,7 @@ const testEvents = (): EventRows<TestEvent, TestEvent['type']> => ({
 });
 
 const testCodec = defineCodec({
-  name: 'chat',
-  adapterTag: 'test-codec',
+  id: 'test-codec',
   typeOf: (e: TestEvent) => e.type,
   events: testEvents(),
 });
@@ -107,6 +106,7 @@ const inbound = (opts: InboundOptions): Ably.InboundMessage =>
  */
 const singleRow = (encode: () => ReturnType<EventRow<{ type: 'a' }, 'a'>['encode']>): Codec<{ type: 'a' }> =>
   defineCodec({
+    id: 'test',
     typeOf: (e: { type: 'a' }) => e.type,
     events: { a: { encode, decode: () => ({ type: 'a' }) } },
   });
@@ -117,16 +117,24 @@ const singleRow = (encode: () => ReturnType<EventRow<{ type: 'a' }, 'a'>['encode
 
 describe('defineCodec', () => {
   describe('encode', () => {
-    it('writes the type and the fields under extras.ai, and the default name', () => {
+    it("writes the codec's name, and its id, the type and the fields under extras.ai", () => {
       expect(testCodec.encode({ type: 'text-start', id: 'msg_1' })).toEqual([
-        { message: { name: 'chat', data: '', extras: { ai: { type: 'text-start', fields: { id: 'msg_1' } } } } },
+        {
+          message: {
+            name: 'ai',
+            data: '',
+            extras: { ai: { codec: 'test-codec', type: 'text-start', fields: { id: 'msg_1' } } },
+          },
+        },
       ]);
     });
 
     it('writes no fields key and no extras.headers when the row supplies neither', () => {
-      expect(singleRow(() => ({})).encode({ type: 'a' })[0]?.message.extras).toEqual({ ai: { type: 'a' } });
+      expect(singleRow(() => ({})).encode({ type: 'a' })[0]?.message.extras).toEqual({
+        ai: { codec: 'test', type: 'a' },
+      });
       expect(singleRow(() => ({ fields: {}, headers: {} })).encode({ type: 'a' })[0]?.message.extras).toEqual({
-        ai: { type: 'a' },
+        ai: { codec: 'test', type: 'a' },
       });
     });
 
@@ -137,7 +145,11 @@ describe('defineCodec', () => {
         fields: { n: 1, b: false, z: nothing, s: 'x', gone: undefined, obj: { city: 'London' }, arr: [1, 2] },
       }));
       expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({
-        ai: { type: 'a', fields: { n: 1, b: false, z: nothing, s: 'x', obj: { city: 'London' }, arr: [1, 2] } },
+        ai: {
+          codec: 'test',
+          type: 'a',
+          fields: { n: 1, b: false, z: nothing, s: 'x', obj: { city: 'London' }, arr: [1, 2] },
+        },
       });
     });
 
@@ -149,43 +161,56 @@ describe('defineCodec', () => {
         headers: { tenant: 'acme', priority: 2, urgent: true, region: nothing, gone: undefined },
       }));
       expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({
-        ai: { type: 'a', fields: { id: 'x' } },
+        ai: { codec: 'test', type: 'a', fields: { id: 'x' } },
         headers: { tenant: 'acme', priority: 2, urgent: true, region: nothing },
       });
     });
 
     it('writes no extras.headers when every header is undefined', () => {
       const codec = singleRow(() => ({ headers: { gone: undefined } }));
-      expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({ ai: { type: 'a' } });
+      expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({ ai: { codec: 'test', type: 'a' } });
     });
 
     it('carries a publish key through', () => {
       const codec = singleRow(() => ({ publish: 'k' }));
       expect(codec.encode({ type: 'a' })).toEqual([
-        { message: { name: 'ai', data: '', extras: { ai: { type: 'a' } } }, publish: 'k' },
+        { message: { name: 'ai', data: '', extras: { ai: { codec: 'test', type: 'a' } } }, publish: 'k' },
       ]);
     });
 
     it('marks a message ephemeral at the top level of extras when the row asks', () => {
       const codec = singleRow(() => ({ ephemeral: true }));
-      expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({ ai: { type: 'a' }, ephemeral: true });
+      expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({
+        ai: { codec: 'test', type: 'a' },
+        ephemeral: true,
+      });
     });
 
     it('writes no ephemeral flag when the row does not ask', () => {
       const codec = singleRow(() => ({ ephemeral: false }));
-      expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({ ai: { type: 'a' } });
+      expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({ ai: { codec: 'test', type: 'a' } });
     });
 
-    it('lets a row name its own message', () => {
+    it('writes a plain publish with its data and fields', () => {
       expect(testCodec.encode({ type: 'note', text: 'hi', important: true })).toEqual([
-        { message: { name: 'notes', data: 'hi', extras: { ai: { type: 'note', fields: { important: true } } } } },
+        {
+          message: {
+            name: 'ai',
+            data: 'hi',
+            extras: { ai: { codec: 'test-codec', type: 'note', fields: { important: true } } },
+          },
+        },
       ]);
     });
 
-    it('names an append as it names a publish, since the first append of a stream opens its message', () => {
+    it('carries an append key through', () => {
       expect(testCodec.encode({ type: 'text-delta', id: 'msg_1', delta: 'Hello' })).toEqual([
         {
-          message: { name: 'chat', data: 'Hello', extras: { ai: { type: 'text-delta', fields: { id: 'msg_1' } } } },
+          message: {
+            name: 'ai',
+            data: 'Hello',
+            extras: { ai: { codec: 'test-codec', type: 'text-delta', fields: { id: 'msg_1' } } },
+          },
           append: 'msg_1',
         },
       ]);
@@ -194,7 +219,11 @@ describe('defineCodec', () => {
     it('carries ends beside a plain publish', () => {
       expect(testCodec.encode({ type: 'text-end', id: 'msg_1' })).toEqual([
         {
-          message: { name: 'chat', data: '', extras: { ai: { type: 'text-end', fields: { id: 'msg_1' } } } },
+          message: {
+            name: 'ai',
+            data: '',
+            extras: { ai: { codec: 'test-codec', type: 'text-end', fields: { id: 'msg_1' } } },
+          },
           ends: 'msg_1',
         },
       ]);
@@ -210,20 +239,31 @@ describe('defineCodec', () => {
 
     it('routes a template type through its wildcard row and stamps the concrete type', () => {
       expect(testCodec.encode({ type: 'data-weather', payload: { temp: 21 } })).toEqual([
-        { message: { name: 'chat', data: { temp: 21 }, extras: { ai: { type: 'data-weather' } } } },
+        { message: { name: 'ai', data: { temp: 21 }, extras: { ai: { codec: 'test-codec', type: 'data-weather' } } } },
       ]);
     });
 
     it('sends a type field like any other, beside the type it writes under extras.ai', () => {
       const codec = singleRow(() => ({ fields: { type: 'forged', keep: 1 } }));
       expect(codec.encode({ type: 'a' })[0]?.message.extras).toEqual({
-        ai: { type: 'a', fields: { type: 'forged', keep: 1 } },
+        ai: { codec: 'test', type: 'a', fields: { type: 'forged', keep: 1 } },
       });
     });
 
-    it('defaults the message name to ai', () => {
-      const codec = singleRow(() => ({}));
-      expect(codec.encode({ type: 'a' })[0]?.message.name).toBe('ai');
+    it('names every message ai unless the codec is given a name', () => {
+      expect(singleRow(() => ({})).encode({ type: 'a' })[0]?.message.name).toBe('ai');
+      const named = defineCodec({
+        id: 'named',
+        name: 'chat',
+        typeOf: (e: { type: 'a' }) => e.type,
+        events: { a: { encode: () => ({ append: 'k' }), decode: () => ({ type: 'a' as const }) } },
+      });
+      // An append carries the name too, since it may be the publish that opens its key.
+      expect(named.name).toBe('chat');
+      expect(named.encode({ type: 'a' })[0]?.message).toMatchObject({
+        name: 'chat',
+        extras: { ai: { codec: 'named' } },
+      });
     });
 
     it('throws for an event type with no row', () => {
@@ -246,11 +286,9 @@ describe('defineCodec', () => {
   // ---------------------------------------------------------------------------
 
   describe('decode', () => {
-    // A fresh codec per test: the decoder core inside a built codec remembers
-    // every stream it has seen, and these tests reuse serials.
     let codec: Codec<TestEvent>;
     beforeEach(() => {
-      codec = defineCodec({ typeOf: (e: TestEvent) => e.type, events: testEvents() });
+      codec = defineCodec({ id: 'test', typeOf: (e: TestEvent) => e.type, events: testEvents() });
     });
 
     it('picks the row from the type header, and returns exactly one event for it', () => {
@@ -259,9 +297,10 @@ describe('defineCodec', () => {
       ]);
     });
 
-    it('hands the row the body: the name, the type it matched, the data, the fields, and the headers', () => {
+    it('hands the row the body: the type it matched, the data, the fields, and the headers', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: TestEvent) => e.type,
         events: {
           ...testEvents(),
@@ -274,42 +313,14 @@ describe('defineCodec', () => {
           },
         },
       });
-      // CAST: a minimal InboundMessage stub with a name, as a publish carries.
-      recording.decode({ ...inbound({ data: 1, fields: { type: 'data-weather', unit: 'C' } }), name: 'chat' });
-      expect(bodies).toEqual([{ name: 'chat', type: 'data-weather', data: 1, fields: { unit: 'C' }, headers: {} }]);
-    });
-
-    it('leaves the name off the body when the message carries none', () => {
-      const bodies: DecodedRow[] = [];
-      const recording = defineCodec({
-        typeOf: (e: TestEvent) => e.type,
-        events: {
-          ...testEvents(),
-          'text-delta': {
-            encode: (e) => ({ data: e.delta, append: e.id }),
-            decode: (body) => {
-              bodies.push(body);
-              return { type: 'text-delta', id: '', delta: '' };
-            },
-          },
-        },
-      });
-      recording.decode(inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } }));
-      recording.decode(
-        inbound({
-          serial: 's9',
-          action: 'message.append',
-          data: 'Hi',
-          fields: { type: 'text-delta' },
-          version: 's9:v2',
-        }),
-      );
-      expect(bodies).toEqual([{ type: 'text-delta', data: 'Hi', fields: {}, headers: {} }]);
+      recording.decode(inbound({ data: 1, fields: { type: 'data-weather', unit: 'C' } }));
+      expect(bodies).toEqual([{ type: 'data-weather', data: 1, fields: { unit: 'C' }, headers: {} }]);
     });
 
     it('hands the row the fields as the wire carries them, nested values as objects', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -322,7 +333,7 @@ describe('defineCodec', () => {
         },
       });
       const fields = { n: 1, s: '[1]', obj: { city: 'London' }, arr: [1, 2] };
-      recording.decode(inbound({ extras: { ai: { type: 'a', fields } } }));
+      recording.decode(inbound({ extras: { ai: { codec: 'test', type: 'a', fields } } }));
       expect(bodies).toEqual([{ type: 'a', data: '', fields, headers: {} }]);
     });
 
@@ -331,6 +342,7 @@ describe('defineCodec', () => {
       // headers alongside it, and the wire cannot tell the two apart.
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -355,13 +367,14 @@ describe('defineCodec', () => {
       if (delivery === undefined) throw new Error('fixture');
       recording.decode(delivery);
       expect(bodies).toEqual([
-        { name: 'ai', type: 'a', data: '', fields: { id: 'x' }, headers: { requestId: 'r1', tenant: 'acme' } },
+        { type: 'a', data: '', fields: { id: 'x' }, headers: { requestId: 'r1', tenant: 'acme' } },
       ]);
     });
 
     it('hands decode the type it matched, separate from the fields', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: TestEvent) => e.type,
         events: {
           ...testEvents(),
@@ -382,7 +395,6 @@ describe('defineCodec', () => {
       // The body's type is the builder's, from extras.ai; the fields still
       // carry the row's own copy.
       expect(bodies[0]).toEqual({
-        name: 'ai',
         type: 'data-weather',
         data: '',
         fields: { type: 'data-weather', payload: 21 },
@@ -392,14 +404,22 @@ describe('defineCodec', () => {
       // A type field that disagrees with extras.ai.type reaches the row as
       // is, and the body's type is still the builder's.
       recording.decode(
-        inbound({ serial: 's2', extras: { ai: { type: 'data-weather', fields: { type: 'forged', payload: 1 } } } }),
+        inbound({
+          serial: 's2',
+          extras: { ai: { codec: 'test-codec', type: 'data-weather', fields: { type: 'forged', payload: 1 } } },
+        }),
       );
       expect(bodies[1]?.type).toBe('data-weather');
       expect(bodies[1]?.fields).toEqual({ type: 'forged', payload: 1 });
 
       // No type field on the wire: the body's type is there all the same, and
       // nothing is added to the fields.
-      recording.decode(inbound({ serial: 's3', extras: { ai: { type: 'data-weather', fields: { payload: 2 } } } }));
+      recording.decode(
+        inbound({
+          serial: 's3',
+          extras: { ai: { codec: 'test-codec', type: 'data-weather', fields: { payload: 2 } } },
+        }),
+      );
       expect(bodies[2]?.type).toBe('data-weather');
       expect(bodies[2]?.fields).toEqual({ payload: 2 });
     });
@@ -407,6 +427,7 @@ describe('defineCodec', () => {
     it('round-trips a type field unmodified', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -419,16 +440,19 @@ describe('defineCodec', () => {
         },
       });
       const encoded = recording.encode({ type: 'a' });
-      expect(encoded[0]?.message.extras).toEqual({ ai: { type: 'a', fields: { type: 'forged', keep: 1 } } });
+      expect(encoded[0]?.message.extras).toEqual({
+        ai: { codec: 'test', type: 'a', fields: { type: 'forged', keep: 1 } },
+      });
       const [delivery] = deliveriesOf(encoded);
       if (delivery === undefined) throw new Error('fixture');
       recording.decode(delivery);
-      expect(bodies).toEqual([{ name: 'ai', type: 'a', data: '', fields: { type: 'forged', keep: 1 }, headers: {} }]);
+      expect(bodies).toEqual([{ type: 'a', data: '', fields: { type: 'forged', keep: 1 }, headers: {} }]);
     });
 
     it('hands the row empty fields and headers when either is missing or not an object', () => {
       const bodies: DecodedRow[] = [];
       const recording = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         events: {
           a: {
@@ -440,9 +464,11 @@ describe('defineCodec', () => {
           },
         },
       });
-      recording.decode(inbound({ extras: { ai: { type: 'a' } } }));
-      recording.decode(inbound({ serial: 's2', extras: { ai: { type: 'a', fields: 'nope' }, headers: 'nope' } }));
-      recording.decode(inbound({ serial: 's3', extras: { ai: { type: 'a', fields: 7 }, headers: 7 } }));
+      recording.decode(inbound({ extras: { ai: { codec: 'test', type: 'a' } } }));
+      recording.decode(
+        inbound({ serial: 's2', extras: { ai: { codec: 'test', type: 'a', fields: 'nope' }, headers: 'nope' } }),
+      );
+      recording.decode(inbound({ serial: 's3', extras: { ai: { codec: 'test', type: 'a', fields: 7 }, headers: 7 } }));
       expect(bodies).toEqual([
         { type: 'a', data: '', fields: {}, headers: {} },
         { type: 'a', data: '', fields: {}, headers: {} },
@@ -458,6 +484,7 @@ describe('defineCodec', () => {
 
     it('does not return an event when the row returns undefined', () => {
       const quiet = defineCodec({
+        id: 'test',
         typeOf: (e: { type: 'a' }) => e.type,
         // eslint-disable-next-line unicorn/no-useless-undefined -- a row that does not decode to an event returns undefined
         events: { a: { encode: () => ({}), decode: () => undefined } },
@@ -485,7 +512,7 @@ describe('defineCodec', () => {
     });
 
     it('hands the row an append with its fragment', () => {
-      const codec = defineCodec({ typeOf: (e: TestEvent) => e.type, events: testEvents() });
+      const codec = defineCodec({ id: 'test', typeOf: (e: TestEvent) => e.type, events: testEvents() });
       codec.decode(inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } }));
       expect(
         codec.decode(
@@ -500,45 +527,25 @@ describe('defineCodec', () => {
       ).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello' }]);
     });
 
-    it('hands the row a full-content update as its unseen tail', () => {
-      const codec = defineCodec({ typeOf: (e: TestEvent) => e.type, events: testEvents() });
-      codec.decode(inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } }));
-      codec.decode(
-        inbound({
-          serial: 's9',
-          action: 'message.append',
-          data: 'Hello',
-          fields: { type: 'text-delta', id: 'msg_1' },
-          version: 's9:v2',
-        }),
-      );
-      expect(
-        codec.decode(
-          inbound({
-            serial: 's9',
-            action: 'message.update',
-            data: 'Hello world',
-            fields: { type: 'text-delta', id: 'msg_1' },
-            version: 's9:v3',
-          }),
-        ),
-      ).toEqual([{ type: 'text-delta', id: 'msg_1', delta: ' world' }]);
+    it('hands the row a full-content update whole, since the codec holds no state', () => {
+      const update = inbound({
+        serial: 's9',
+        action: 'message.update',
+        data: 'Hello world',
+        fields: { type: 'text-delta', id: 'msg_1' },
+        version: 's9:v3',
+      });
+      expect(codec.decode(update)).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello world' }]);
     });
 
-    it('drops a replay of a stream message the decoder core has already seen', () => {
+    it('decodes the same stream message to the same event every time, since the codec holds no state', () => {
       const create = inbound({
         serial: 's9',
         data: 'Hello',
-        extras: { ai: { type: 'text-delta', stream: true, fields: { id: 'msg_1' } } },
+        extras: { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'msg_1' } } },
       });
       expect(codec.decode(create)).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello' }]);
-      expect(codec.decode(create)).toEqual([]);
-    });
-
-    it('decodes a replayed plain publish again, since only stream messages are remembered', () => {
-      const create = inbound({ serial: 's9', fields: { type: 'text-start', id: 'msg_1' } });
-      expect(codec.decode(create)).toEqual([{ type: 'text-start', id: 'msg_1' }]);
-      expect(codec.decode(create)).toEqual([{ type: 'text-start', id: 'msg_1' }]);
+      expect(codec.decode(create)).toEqual([{ type: 'text-delta', id: 'msg_1', delta: 'Hello' }]);
     });
 
     it('decodes a finished stream read back from history as the events the agent produced, with the deltas joined', () => {
@@ -548,18 +555,11 @@ describe('defineCodec', () => {
         { type: 'text-delta', id: 'm1', delta: ' world' },
         { type: 'text-end', id: 'm1' },
       ]);
-      // Decoded live first. The closer frees the deltas' message, so history
-      // then decodes as a fresh read of the same stream.
-      for (const delivery of deliveriesOf(encoded)) codec.decode(delivery);
       expect(historyOf(encoded).flatMap((m) => codec.decode(m))).toEqual([
         { type: 'text-start', id: 'm1' },
         { type: 'text-delta', id: 'm1', delta: 'Hello world' },
         { type: 'text-end', id: 'm1' },
       ]);
-    });
-
-    it('returns no event for a delete', () => {
-      expect(codec.decode(inbound({ action: 'message.delete', fields: { type: 'note' } }))).toEqual([]);
     });
   });
 
@@ -568,18 +568,16 @@ describe('defineCodec', () => {
   // ---------------------------------------------------------------------------
 
   describe('codec shape', () => {
-    it('exposes encode, decode and the adapter tag', () => {
-      expect(Object.keys(testCodec).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
-      expect(testCodec.adapterTag).toBe('test-codec');
-    });
-
-    it('omits adapterTag when none is given', () => {
-      expect(Object.keys(singleRow(() => ({}))).toSorted()).toEqual(['decode', 'encode']);
+    it('exposes encode, decode, the id and the name', () => {
+      expect(Object.keys(testCodec).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
+      expect(testCodec.id).toBe('test-codec');
+      expect(testCodec.name).toBe('ai');
     });
 
     it('rejects a wildcard key with no prefix', () => {
       expect(() =>
         defineCodec({
+          id: 'test',
           typeOf: (e: { type: string }) => e.type,
           events: { '-*': { encode: () => ({}), decode: () => ({ type: 'x' }) } },
         }),
@@ -609,6 +607,7 @@ describe('defineCodec', () => {
     it('requires a row for every type typeOf returns', () => {
       type Kinded = { kind: 'a'; a: number } | { kind: 'b'; b: string };
       const complete: Codec<Kinded> = defineCodec({
+        id: 'test',
         typeOf: (e: Kinded) => e.kind,
         events: {
           a: { encode: (e) => ({ data: e.kind === 'a' ? e.a : 0 }), decode: () => ({ kind: 'a', a: 1 }) },
@@ -618,6 +617,7 @@ describe('defineCodec', () => {
       expect(complete.encode({ kind: 'a', a: 2 })[0]?.message.data).toBe(2);
 
       defineCodec({
+        id: 'test',
         typeOf: (e: Kinded) => e.kind,
         // @ts-expect-error a row for `b` is missing
         events: { a: { encode: () => ({}), decode: () => ({ kind: 'a', a: 1 }) } },
@@ -626,6 +626,7 @@ describe('defineCodec', () => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the ping row
       const { ping, ...withoutPing } = testEvents();
       defineCodec({
+        id: 'test',
         typeOf: (e: TestEvent) => e.type,
         // @ts-expect-error a row for `ping` is missing
         events: withoutPing,

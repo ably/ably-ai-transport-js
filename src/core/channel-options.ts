@@ -105,14 +105,14 @@ export const resolveChannelModes = (extraModes?: readonly Ably.ChannelMode[]): A
  * appends its own `react-hooks` agent to the one it is given, which is why the
  * agent survives that round trip.
  * @param options - What the options are built from.
- * @param options.codec - The codec whose tag joins the attribution string.
- * @param options.codec.adapterTag - The codec's attribution tag; appended when present.
+ * @param options.codec - The codec whose id joins the attribution string.
+ * @param options.codec.id - The codec's id; appended when not empty.
  * @param options.channelModes - Modes to request on top of the server default set.
  * @param options.echoMessages - Whether the channel delivers this connection's own publishes back to it. Defaults to `true`, the platform default.
  * @returns The channel options.
  */
 export const transportChannelOptions = (options: {
-  codec: { readonly adapterTag?: string };
+  codec: { readonly id: string };
   channelModes?: readonly Ably.ChannelMode[];
   echoMessages?: boolean;
 }): Ably.ChannelOptions => {

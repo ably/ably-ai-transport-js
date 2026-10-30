@@ -24,6 +24,7 @@ import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
+import { assertCodecWrote } from './codec-fields.js';
 import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import {
   pipeEach as pipeEachDriver,
@@ -102,7 +103,7 @@ export interface AgentAdaptor<E> {
    * @param event - The event to publish.
    * @param options - The call's headers.
    * @returns The ack serial of the last publish, or `undefined` when the codec published nothing.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, or when any of the event's messages appends or updates, since `send` has no key table (nothing is published either way); `InsufficientCapability` when the channel rejects a publish for a capability reason; `SessionSendFailed` for any other publish failure.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, when a message the codec encoded lacks the codec's `name` or its `id` under `extras.ai.codec`, or when any of the event's messages appends or updates, since `send` has no key table (nothing is published either way); `InsufficientCapability` when the channel rejects a publish for a capability reason; `SessionSendFailed` for any other publish failure.
    */
   send(event: E, options?: SendOptions): Promise<SendResult>;
   /**
@@ -113,7 +114,7 @@ export interface AgentAdaptor<E> {
    * @param source - The events to write, a ReadableStream or an async iterable.
    * @param options - The pipe's abort signal and the call's headers.
    * @returns The serial of the last publish; see {@link PipeResult}.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, before the source is touched; `OperationCancelled` when the signal fires; `PipeFailed` when the source throws, the codec cannot encode an event, a publish or update fails, or a stream's repair fails, with the failure as `cause`.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, before the source is touched; `OperationCancelled` when the signal fires; `PipeFailed` when the source throws, the codec cannot encode an event or encodes a message without its `name` and `id`, a publish or update fails, or a stream's repair fails, with the failure as `cause`.
    */
   pipe(source: PipeSource<E>, options?: PipeOptions): Promise<PipeResult>;
   /**
@@ -142,7 +143,7 @@ export interface AgentAdaptor<E> {
    * @param source - The events to write, a ReadableStream or an async iterable.
    * @param options - The pipe's abort signal and the call's headers.
    * @returns The events, each with the serial of the message it landed on.
-   * @throws {Ably.ErrorInfo} `InvalidArgument`, thrown by this call itself and not from the loop, when a header value is not a string, number, boolean or null; from the loop, `OperationCancelled` when the signal fires and `PipeFailed` when the source throws, the codec cannot encode an event, a publish or update fails, or a repair fails, with the failure as `cause`.
+   * @throws {Ably.ErrorInfo} `InvalidArgument`, thrown by this call itself and not from the loop, when a header value is not a string, number, boolean or null; from the loop, `OperationCancelled` when the signal fires and `PipeFailed` when the source throws, the codec cannot encode an event or encodes a message without its `name` and `id`, a publish or update fails, or a repair fails, with the failure as `cause`.
    */
   pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<Published<E>>;
 }
@@ -187,7 +188,9 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
     const headers = mergeHeaders(this._headers, prepareHeaders(options?.headers, 'send'));
     const encoded = this._codec.encode(event);
     // Checked before the first publish, so an event that mixes a publish with
-    // an append writes nothing.
+    // an append, or carries a message the codec's decoder would skip, writes
+    // nothing.
+    for (const { message } of encoded) assertCodecWrote(message, this._codec, 'send');
     if (encoded.some((m) => m.append !== undefined || m.update !== undefined)) {
       throw new Ably.ErrorInfo(
         'unable to send; the event appends to or updates a stream, which needs a pipe',

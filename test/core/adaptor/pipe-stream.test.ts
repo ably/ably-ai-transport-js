@@ -338,6 +338,19 @@ describe('pipeStream', () => {
       expect(channel.publish).toHaveBeenCalledTimes(1);
     });
 
+    it("stops at an event whose message lacks the codec's name or id, writing nothing for it", async () => {
+      const misnamed: Codec<TestEvent> = {
+        id: 'misnamed',
+        name: 'ai',
+        encode: () => [{ message: { name: 'chat', data: 'x', extras: { ai: { codec: 'misnamed', type: 'note' } } } }],
+        decode: () => [],
+      };
+      const error = await rejectionOf(pipeStream(streamOf<TestEvent>({ type: 'note', text: 'x' }), misnamed, writer));
+      expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+      expect((error as Ably.ErrorInfo).message).toContain("encoded a message named 'chat'");
+      expect(channel.publishCalls).toHaveLength(0);
+    });
+
     it('stops when the codec cannot encode an event', async () => {
       // CAST: an event outside the union, to exercise the encode failure path.
       const rogue = { type: 'rogue' } as unknown as TestEvent;
@@ -667,6 +680,21 @@ describe('pipeEach', () => {
       pipeEach(erroringIterableOf<TestEvent>([], new Ably.ErrorInfo('upstream', 50000, 500)), codec, writer),
     );
     expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: 50000 } });
+  });
+
+  it("throws PipeFailed from the loop for a message without the codec's id", async () => {
+    const unstamped: Codec<TestEvent> = {
+      id: 'unstamped',
+      name: 'ai',
+      encode: () => [{ message: { name: 'ai', data: 'x', extras: { ai: { type: 'note' } } } }],
+      decode: () => [],
+    };
+    const { yielded, error } = await drain(
+      pipeEach(streamOf<TestEvent>({ type: 'note', text: 'x' }), unstamped, writer),
+    );
+    expect(error).toBeErrorInfo({ code: ErrorCode.PipeFailed, cause: { code: ErrorCode.InvalidArgument } });
+    expect(yielded).toHaveLength(0);
+    expect(channel.publishCalls).toHaveLength(0);
   });
 
   it('throws PipeFailed naming the event when the codec cannot encode it', async () => {

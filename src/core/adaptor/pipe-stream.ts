@@ -21,6 +21,7 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
+import { assertCodecWrote } from './codec-fields.js';
 import { type MessageHeaders, withHeaders } from './headers.js';
 import type { PipeWriter } from './pipe-writer.js';
 
@@ -236,6 +237,7 @@ const writeEvent = async <E>(
   let encoded;
   try {
     encoded = codec.encode(event);
+    for (const { message } of encoded) assertCodecWrote(message, codec, 'pipe');
   } catch (error) {
     throw pipeFailed('encode failed', error, event);
   }

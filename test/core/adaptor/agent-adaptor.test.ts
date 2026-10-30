@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { AgentAdaptor, MessageHeaders, Published } from '../../../src/core/adaptor/index.js';
 import { createAgentAdaptor } from '../../../src/core/adaptor/index.js';
-import { defineCodec } from '../../../src/core/codec/index.js';
+import { type Codec, defineCodec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createSplitCodec } from '../../helper/split-codec.js';
@@ -68,6 +68,22 @@ describe('createAgentAdaptor', () => {
 
     it('resolves with no serial when the codec publishes nothing', async () => {
       await expect(adaptor.send({ type: 'ping' })).resolves.toEqual({ serial: undefined });
+      expect(channel.publish).not.toHaveBeenCalled();
+    });
+
+    it("rejects a message without the codec's name or id, publishing nothing", async () => {
+      const unnamed: Codec<{ type: 'x' }> = {
+        id: 'unnamed',
+        name: 'ai',
+        // Written to the old contract: no name, and no codec id under extras.ai.
+        encode: () => [{ message: { data: 'x', extras: { ai: { type: 'x' } } } }],
+        decode: () => [],
+      };
+      await expect(createAgentAdaptor(channel, unnamed).send({ type: 'x' })).rejects.toBeErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message:
+          "unable to send; codec 'unnamed' encoded a message named 'undefined' with codec id 'undefined', and its decoder only reads messages named 'ai' with codec id 'unnamed'",
+      });
       expect(channel.publish).not.toHaveBeenCalled();
     });
 

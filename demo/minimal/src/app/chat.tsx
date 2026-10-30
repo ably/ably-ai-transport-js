@@ -2,7 +2,6 @@
 
 import type { Delivery } from '@ably/ai-transport';
 import { type VercelEvent, vercelAdaptor, vercelDecoder } from '@ably/ai-transport/vercel';
-import type * as Ably from 'ably';
 import { useAbly, useChannelStateListener } from 'ably/react';
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -139,17 +138,18 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
   // and clears the wire tab, so a re-run starts from what it receives.
   useEffect(() => {
     const decoder = vercelDecoder();
-    const listener = (message: Ably.InboundMessage) => {
-      for (const delivery of decoder.decode(message)) apply(delivery);
-    };
-    channel.subscribe(listener).catch((error: unknown) => {
+    decoder.onEvent(apply);
+    decoder.onError((error) => {
+      console.error('decode failed', error);
+    });
+    channel.subscribe(decoder.receive).catch((error: unknown) => {
       // The channel did not attach: the page stays on connecting… and Send
       // stays disabled.
       console.error('subscribe failed', error);
     });
     const open = replies.current;
     return () => {
-      channel.unsubscribe(listener);
+      channel.unsubscribe(decoder.receive);
       for (const controller of open.values()) controller.close();
       open.clear();
       setStreaming(false);

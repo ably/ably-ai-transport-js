@@ -20,7 +20,7 @@
  * boolean and null values there (error 40032 otherwise).
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 /** The `extras` key Ably reserves for this SDK. */
 export const EXTRAS_KEY = 'ai';

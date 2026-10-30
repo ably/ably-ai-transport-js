@@ -41,10 +41,10 @@ Every error should either be handled internally with a clear recovery strategy, 
 
 ## Error Type
 
-Use `Ably.ErrorInfo` from the `ably` JS SDK as the sole error type. Do not define a custom error class.
+Use `Ably.ErrorInfo` from `@ably/pubsub-core` as the sole error type. Do not define a custom error class.
 
 ```ts
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 ```
 
 Constructor signature:

@@ -4,7 +4,7 @@
  * bookkeeping the pipe writer does on a real channel.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import type { Codec, EncodedMessage } from '../../src/core/codec/index.js';
 import { ENDS_FIELD, STREAM_FIELD, withOwnField } from '../../src/core/wire.js';

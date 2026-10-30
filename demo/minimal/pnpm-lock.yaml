@@ -210,15 +210,18 @@ importers:
       '@ably/ai-transport':
         specifier: link:../..
         version: link:../..
+      '@ably/pubsub-device':
+        specifier: link:../../node_modules/@ably/pubsub-device
+        version: link:../../node_modules/@ably/pubsub-device
+      '@ably/pubsub-server':
+        specifier: link:../../node_modules/@ably/pubsub-server
+        version: link:../../node_modules/@ably/pubsub-server
       '@ai-sdk/anthropic':
         specifier: ^4.0.49
         version: 4.0.49(zod@4.5.4)
       '@ai-sdk/openai':
         specifier: ^4
         version: 4.0.56(zod@4.5.4)
-      ably:
-        specifier: link:../../node_modules/ably
-        version: link:../../node_modules/ably
       ai:
         specifier: ^7
         version: 7.0.90(zod@4.5.4)

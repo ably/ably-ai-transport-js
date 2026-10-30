@@ -9,7 +9,7 @@
 import { createTransport, ErrorCode } from '@ably/ai-transport';
 import { vercel } from '@ably/ai-transport/vercel';
 import { convertToModelMessages, streamText, toUIMessageStream, type UIMessage } from 'ai';
-import Ably from 'ably';
+import { createRealtimeClient, ErrorInfo } from '@ably/pubsub-server';
 
 import { loadConversation, recordMessages } from '../store';
 import { createModel } from './model';
@@ -44,8 +44,8 @@ export async function POST(req: Request) {
   // concurrent replies on the same channel from closing each other's client.
   // Ably rolls the appends a connection publishes within 40ms into one
   // delivery; a window of 0 delivers every chunk as its own message.
-  const ably = new Ably.Realtime({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
-  const transport = createTransport({ client: ably, channelName, codec: vercel });
+  const pubsubClient = createRealtimeClient({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
+  const transport = createTransport({ client: pubsubClient, channelName, codec: vercel });
 
   try {
     const result = streamText({
@@ -82,7 +82,7 @@ export async function POST(req: Request) {
     } catch (error) {
       // A cancelled or failed pipe leaves the placeholder empty: a browser
       // that comes back fills it from what did land on the channel.
-      if (error instanceof Ably.ErrorInfo && error.code === ErrorCode.OperationCancelled) {
+      if (error instanceof ErrorInfo && error.code === ErrorCode.OperationCancelled) {
         // The cancelled pipe published no `finish`, so tell every tab the
         // reply has ended. Best effort: a tab that misses it reads the
         // channel on its next load.
@@ -99,6 +99,6 @@ export async function POST(req: Request) {
     return new Response(null, { status: 204 });
   } finally {
     await transport.close();
-    ably.close();
+    pubsubClient.close();
   }
 }

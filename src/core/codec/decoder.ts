@@ -27,7 +27,7 @@
  * that set.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 
 import type { Logger } from '../../logger.js';
 import { ENDS_FIELD, readOwnExtras, STREAM_FIELD } from '../wire.js';

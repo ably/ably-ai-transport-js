@@ -7,7 +7,7 @@
  * `options.agents`, where every entry carries a version.
  */
 
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { describe, expect, it } from 'vitest';
 
 import pkg from '../../package.json' with { type: 'json' };
@@ -19,11 +19,11 @@ import { VERSION } from '../../src/version.js';
  * @param agents - The agents already registered.
  * @returns The client.
  */
-const clientWith = (agents?: Record<string, string>): Ably.Realtime =>
+const clientWith = (agents?: Record<string, string>): Ably.PubSubRealtimeClient =>
   // CAST: a minimal stub; registerAgent reads and writes only `options.agents`.
-  ({ options: agents === undefined ? {} : { agents } }) as unknown as Ably.Realtime;
+  ({ options: agents === undefined ? {} : { agents } }) as unknown as Ably.PubSubRealtimeClient;
 
-const agentsOf = (client: Ably.Realtime): unknown =>
+const agentsOf = (client: Ably.PubSubRealtimeClient): unknown =>
   (client as unknown as { options: { agents?: unknown } }).options.agents;
 
 describe('VERSION', () => {

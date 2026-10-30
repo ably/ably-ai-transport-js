@@ -15,16 +15,25 @@ types and functions it re-exports are public API. A new codec adds a new entry
 point rather than changing an existing one. An Anthropic codec is planned as
 a further entry point.
 
-| Entry point                 | Purpose                                                         | Peer deps             |
-| --------------------------- | --------------------------------------------------------------- | --------------------- |
-| `@ably/ai-transport`        | The transport, the codec contract and the `defineCodec` builder | `ably`                |
-| `@ably/ai-transport/react`  | A provider and hooks over the transport, for any codec          | `ably`, `react`       |
-| `@ably/ai-transport/vercel` | The Vercel AI SDK codec: one row per `UIMessageChunk` type      | `ably`, `ai`          |
-| `@ably/ai-transport/openai` | The OpenAI Responses codec: one row per stream event type       | `ably`, `openai`      |
-| `@ably/ai-transport/ag-ui`  | The AG-UI codec: one row per AG-UI event type                   | `ably`, `@ag-ui/core` |
+| Entry point                 | Purpose                                                         | Peer deps                       |
+| --------------------------- | --------------------------------------------------------------- | ------------------------------- |
+| `@ably/ai-transport`        | The transport, the codec contract and the `defineCodec` builder | a Pub/Sub client                |
+| `@ably/ai-transport/react`  | A provider and hooks over the transport, for any codec          | `@ably/pubsub-device`, `react`  |
+| `@ably/ai-transport/vercel` | The Vercel AI SDK codec: one row per `UIMessageChunk` type      | a Pub/Sub client, `ai`          |
+| `@ably/ai-transport/openai` | The OpenAI Responses codec: one row per stream event type       | a Pub/Sub client, `openai`      |
+| `@ably/ai-transport/ag-ui`  | The AG-UI codec: one row per AG-UI event type                   | a Pub/Sub client, `@ag-ui/core` |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.
+
+The SDK is a library and declares no side of the connection, so it depends on
+`@ably/pubsub-core`, the Pub/Sub API with no client in it, and takes a client
+the application built with `@ably/pubsub-server` or `@ably/pubsub-device`
+(_a Pub/Sub client_ in the table), both optional peers. The core is a regular
+dependency rather than a peer because Ably tells applications not to install
+it themselves: each per-side package depends on it, and the SDKs layered on
+Pub/Sub do the same. Only the React entry point names a side: the Pub/Sub
+React hooks ship in `@ably/pubsub-device`, since React runs on a device.
 
 ## Two-layer architecture
 
@@ -44,7 +53,7 @@ preserve.
 
   The two halves differ in what else they may depend on. `src/core/` is
   framework-agnostic. `src/react/` is codec-agnostic and React-only: it may
-  reach for `react`, `ably` and `ably/react`, and it stores the transport with
+  reach for `react`, `@ably/pubsub-core` and `@ably/pubsub-device/react`, and it stores the transport with
   its event type erased, re-applying the caller's type argument at the hook
   boundary, which is what keeps it free of any codec.
 

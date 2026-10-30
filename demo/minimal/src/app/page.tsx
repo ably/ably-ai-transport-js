@@ -2,8 +2,8 @@
 
 import { TransportProvider } from '@ably/ai-transport/react';
 import { vercel } from '@ably/ai-transport/vercel';
-import Ably from 'ably';
-import { AblyProvider } from 'ably/react';
+import { createClient, type PubSubClient } from '@ably/pubsub-device';
+import { PubSubClientProvider } from '@ably/pubsub-device/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
@@ -20,7 +20,7 @@ function ChatPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [channelName, setChannelName] = useState(searchParams.get('channel') ?? undefined);
-  const [client, setClient] = useState<Ably.Realtime>();
+  const [client, setClient] = useState<PubSubClient>();
 
   useEffect(() => {
     if (channelName !== undefined) return;
@@ -30,10 +30,10 @@ function ChatPage() {
   }, [channelName, router]);
 
   useEffect(() => {
-    const realtime = new Ably.Realtime({ authUrl: '/api/auth/ably-token' });
-    setClient(realtime);
+    const pubsubClient = createClient({ authUrl: '/api/auth/ably-token' });
+    setClient(pubsubClient);
     return () => {
-      realtime.close();
+      pubsubClient.close();
     };
   }, []);
 
@@ -48,14 +48,14 @@ function ChatPage() {
   }
 
   return (
-    <AblyProvider client={client}>
+    <PubSubClientProvider client={client}>
       <TransportProvider
         channelName={channelName}
         codec={vercel}
       >
         <Chat channelName={channelName} />
       </TransportProvider>
-    </AblyProvider>
+    </PubSubClientProvider>
   );
 }
 

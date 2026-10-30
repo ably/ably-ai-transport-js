@@ -19,11 +19,17 @@ export default defineConfig({
       formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably', 'ably/react', 'react', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
+      external: [
+        '@ably/pubsub-core',
+        '@ably/pubsub-device/react',
+        'react',
+        'react/jsx-runtime',
+        'react/jsx-dev-runtime',
+      ],
       output: {
         globals: {
-          ably: 'Ably',
-          'ably/react': 'AblyReact',
+          '@ably/pubsub-core': 'AblyPubSub',
+          '@ably/pubsub-device/react': 'AblyReact',
           react: 'React',
           'react/jsx-runtime': 'ReactJsxRuntime',
           'react/jsx-dev-runtime': 'ReactJsxDevRuntime',

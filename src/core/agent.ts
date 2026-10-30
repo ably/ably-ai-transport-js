@@ -19,15 +19,17 @@
  * for why.
  */
 
-import type * as Ably from 'ably';
+import type { PubSubRealtimeClient } from '@ably/pubsub-core';
 
 import { VERSION } from '../version.js';
 
 /**
- * `options.agents` is a private API on the Realtime client: no public typed
- * accessor exists in the `ably` package.
+ * `options.agents` is a private API on the Pub/Sub client: no public typed
+ * accessor exists in the Pub/Sub packages.
  */
-interface RealtimeWithOptions extends Ably.Realtime {
+// A named import: import-x/namespace cannot resolve a namespaced type in a
+// heritage clause through the nested `export *` chains of the Pub/Sub typings.
+interface PubSubClientWithOptions extends PubSubRealtimeClient {
   options: { agents?: Record<string, string | undefined> };
 }
 
@@ -108,13 +110,13 @@ export const channelAgent = (codec?: { readonly adapterTag?: string }): string =
  * Merges into the entries already there, so another library's registration
  * on the same client survives, and repeated calls with the same codec write
  * the same keys and values.
- * @param client - The Ably Realtime client to register on.
+ * @param client - The Pub/Sub client to register on.
  * @param codec - The codec whose optional tag adds an attribution entry.
  * @param codec.adapterTag - The codec's attribution tag; appended when present.
  */
-export const registerAgent = (client: Ably.Realtime, codec?: { readonly adapterTag?: string }): void => {
-  // CAST: Ably.Realtime's public type omits `options.agents`, but the SDK
+export const registerAgent = (client: PubSubRealtimeClient, codec?: { readonly adapterTag?: string }): void => {
+  // CAST: PubSubRealtimeClient's public type omits `options.agents`, but the SDK
   // carries it at runtime. ably-chat-js relies on the same shape.
-  const realtime = client as RealtimeWithOptions;
-  realtime.options.agents = { ...realtime.options.agents, ...toAgentMap(buildTokens(codec)) };
+  const pubsubClient = client as PubSubClientWithOptions;
+  pubsubClient.options.agents = { ...pubsubClient.options.agents, ...toAgentMap(buildTokens(codec)) };
 };

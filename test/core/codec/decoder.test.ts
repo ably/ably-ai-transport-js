@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import type * as Ably from '@ably/pubsub-core';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createDecoderCore } from '../../../src/core/codec/decoder.js';

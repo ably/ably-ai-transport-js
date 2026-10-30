@@ -1,5 +1,5 @@
 /**
- * The transport: one channel on an Ably Realtime client, and one codec.
+ * The transport: one channel on an Ably Pub/Sub client, and one codec.
  *
  * The transport resolves the channel by name off the client it is given,
  * stamping the SDK's attribution on it and the modes the caller asked for. It
@@ -36,7 +36,7 @@
  * `close` stops every pipe in flight, unsubscribes the listener and settles.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -69,8 +69,8 @@ import {
  * @template E - The codec's event union.
  */
 export interface TransportOptions<E> {
-  /** The Ably Realtime client to resolve the channel from. The caller owns its lifecycle: `close()` never closes it. */
-  client: Ably.Realtime;
+  /** The Ably Pub/Sub client to resolve the channel from. The caller owns its lifecycle: `close()` never closes it. */
+  client: Ably.PubSubRealtimeClient;
   /** The name of the channel to publish on and receive from. The transport resolves it and owns its options, so an application that wants the same channel elsewhere asks for it by name with no options. */
   channelName: string;
   /** The codec that turns events into Ably messages and back. */
@@ -672,7 +672,7 @@ class DefaultTransport<E> implements Transport<E> {
 }
 
 /**
- * Create a transport over a codec and one channel of an Ably Realtime client.
+ * Create a transport over a codec and one channel of an Ably Pub/Sub client.
  *
  * The channel is resolved at construction, so a name already resolved
  * elsewhere with modes that differ from these is rejected here rather than

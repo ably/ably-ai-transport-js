@@ -49,7 +49,7 @@
  * it in the `pipe` headers.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import type { Codec, DecodedRow, EventRow } from '../../core/codec/index.js';
 import { defineCodec } from '../../core/codec/index.js';

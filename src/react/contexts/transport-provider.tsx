@@ -2,7 +2,7 @@
  * TransportProvider: creates a {@link Transport} on the named channel and
  * makes it available to descendants through {@link TransportContext}.
  *
- * Reads the Ably Realtime client from the surrounding `<AblyProvider>` and
+ * Reads the Ably Pub/Sub client from the surrounding `<PubSubClientProvider>` and
  * creates the transport on it by channel name. The transport resolves the
  * channel. The provider also wraps its children in ably-js's own
  * `<ChannelProvider>` for the same channel, which is what lets descendants use
@@ -36,8 +36,8 @@
  * can report it as `error` without crashing the component tree.
  */
 
-import * as Ably from 'ably';
-import { ChannelProvider, useAbly } from 'ably/react';
+import * as Ably from '@ably/pubsub-core';
+import { ChannelProvider, usePubSubClient } from '@ably/pubsub-device/react';
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { transportChannelOptions } from '../../core/channel-options.js';
@@ -51,7 +51,7 @@ import { TransportContext } from './transport-context.js';
 /**
  * Props for {@link TransportProvider}: every {@link TransportOptions} field
  * except `client`, which the provider reads from the surrounding
- * `<AblyProvider>`.
+ * `<PubSubClientProvider>`.
  * @template E - The codec's event union.
  */
 export interface TransportProviderProps<E> extends Omit<TransportOptions<E>, 'client'>, PropsWithChildren {
@@ -71,11 +71,11 @@ export interface TransportProviderProps<E> extends Omit<TransportOptions<E>, 'cl
  * Provide a {@link Transport} to descendant components.
  *
  * ```tsx
- * <AblyProvider client={ably}>
+ * <PubSubClientProvider client={pubsubClient}>
  *   <TransportProvider channelName="ai:demo" codec={vercel}>
  *     <Chat />
  *   </TransportProvider>
- * </AblyProvider>
+ * </PubSubClientProvider>
  *
  * // Inside Chat:
  * const { transport, error } = useTransport<VercelEvent>();
@@ -96,7 +96,7 @@ export const TransportProvider = <E,>({
   channelModes,
   ...transportOptions
 }: TransportProviderProps<E>): ReactNode => {
-  const client = useAbly();
+  const client = usePubSubClient();
 
   // What the channel resolution is built from, as scalar effect keys rather
   // than the props carrying them: the codec contributes only its `adapterTag`,

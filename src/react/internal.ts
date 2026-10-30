@@ -1,6 +1,6 @@
 /** Helpers shared by the hooks. */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../errors.js';
 import { errorCause, errorMessage } from '../utils.js';

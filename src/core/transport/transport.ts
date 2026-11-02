@@ -29,7 +29,9 @@
  * subscribing again with `fromSerial` at the last position it applied.
  *
  * `history` reads backwards from the attach point through the same decoder,
- * so a message that history and live delivery both carry decodes once. It
+ * so a message of a stream still open that history and live delivery both
+ * carry decodes once. A stream whose closer was delivered live is forgotten,
+ * and history decodes its stored copy again. It
  * returns the page a replay function receives.
  *
  * `close` stops every pipe in flight, unsubscribes the listener and settles.
@@ -179,9 +181,10 @@ export interface Transport<E> {
    * Read channel history backwards from the attach point, decoded through the
    * codec. Each call pages again from the channel's current attach point
    * and resolves with its newest page; the older pages follow through the
-   * page's `next()`. The channel is attached if nothing has yet. A message
-   * both history and live delivery carry decodes once, so a message a
-   * subscriber already received comes back with no event.
+   * page's `next()`. The channel is attached if nothing has yet. A message of
+   * a stream still open that history and live delivery both carry decodes
+   * once, so it comes back with no event. A stream whose closer a subscriber
+   * already received is no longer held, and its stored copy decodes again.
    * @param options - The page size.
    * @returns The newest page, oldest first within it, leading to the older pages.
    * @throws {Ably.ErrorInfo} `SessionHistoryFetchFailed` when the page cannot be fetched after retries; `SessionClosed` after `close()`.
@@ -354,7 +357,7 @@ const wrapPublishError = (error: unknown): Ably.ErrorInfo => {
 class DefaultTransport<E> implements Transport<E> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<E>;
-  /** One decoder for live and history alike, so a message both carry decodes once. */
+  /** One decoder for live and history alike, so a message of an open stream that both carry decodes once. */
   private readonly _decoder: Decoder<E>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<TransportEvents>;

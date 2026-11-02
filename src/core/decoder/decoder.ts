@@ -18,9 +18,11 @@
  * The decoder holds the per-serial state the platform's append model forces on
  * a streaming reader (see the decoder core): the text handed on so far and the
  * highest version incorporated per stream, freed when the stream's closer
- * arrives. That state is why live and history go through one decoder. A
- * message that both carry then decodes once, because the version guard drops
- * the second copy; two decoders fed the two halves would each decode it.
+ * arrives. That state is why live and history go through one decoder. While
+ * a stream is open, a message that both carry decodes once, because the
+ * version guard drops the second copy; two decoders fed the two halves would
+ * each decode it. Once the stream's closer has passed, the decoder no longer
+ * holds the stream, so a later copy decodes again (see the limits below).
  *
  * History pages arrive newest first. The decoder handles a closer that
  * arrives before its stream, but it does not reorder what it returns:
@@ -28,13 +30,17 @@
  * application that renders across pages orders them itself, by serial or by
  * collecting the pages first.
  *
- * Two limits come from the platform. When an append fails after later appends
+ * Three limits follow. When an append fails after later appends
  * were delivered, the agent repairs the stream with a full-content update
  * that does not extend what the decoder handed on, and the decoder delivers
  * the whole content again as a replacement. And when an application decodes
  * live messages as they arrive but applies history first, a stream in flight
  * can come out of order: if history holds the stream at a later version than
  * the first live update, history's tail is applied before that update's head.
+ * And a stream decoded live through its closer is forgotten, so history read
+ * afterwards hands its stored copy on whole again. Read history before
+ * decoding live messages, or rewind the channel to a serial so one
+ * subscription delivers both in order, or drop repeats by serial.
  */
 
 import * as Ably from 'ably';

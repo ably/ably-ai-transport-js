@@ -10,8 +10,10 @@
  *
  * To do that it keeps, per serial, the text it has handed on and the highest
  * `version.serial` it has incorporated. The version guard drops a delivery the
- * decoder has already seen, which is what lets history overlap live delivery
- * without duplicates. The table holds only the messages that are streams: a
+ * core has already incorporated for a serial it still holds, which is what
+ * lets history overlap live delivery without duplicates while a stream is
+ * open. A serial the core has forgotten, after its closer or a delete, is
+ * met again as new. The table holds only the messages that are streams: a
  * create the pipe writer marked with `extras.ai.stream`, which is on every
  * write under a live key and so on the message however it is read back, and
  * any serial first met through an append or an update. The message that ends

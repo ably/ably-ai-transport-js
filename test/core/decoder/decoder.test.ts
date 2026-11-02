@@ -95,6 +95,16 @@ describe('createDecoder', () => {
       expect(eventsOf(decoder.decode(stored))).toEqual([undefined]);
     });
 
+    it('decodes history again for a stream whose closer it already decoded live', () => {
+      const { live, history } = wire(textEvents('m1', 'Hi', ' there'));
+      for (const message of live) decoder.decode(message);
+      const [, stored] = history;
+      if (stored === undefined) throw new Error('fixture has no stored stream');
+      // The closer freed the stream, so the stored copy is met as new and
+      // handed on whole: the guarantee holds only while a stream is open.
+      expect(eventsOf(decoder.decode(stored))).toEqual([{ type: 'text-delta', id: 'm1', delta: 'Hi there' }]);
+    });
+
     it('reduces a full-content update to the text it has not handed on', () => {
       const { live } = wire([{ type: 'text-delta', id: 'm1', delta: 'Hello' }]);
       const [opener] = live;

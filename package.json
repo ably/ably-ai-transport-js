@@ -50,6 +50,7 @@
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
     "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "build:ag-ui": "vite build --config ./src/ag-ui/vite.config.ts --emptyOutDir",
+    "build:cdn": "vite build --config ./src/vite.cdn.config.ts",
     "prepare": "pnpm run build",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .; (pnpm run format > /dev/null)",

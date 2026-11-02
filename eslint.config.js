@@ -38,6 +38,7 @@ export default [
       '**/vitest.config.ts',
       '**/vitest.config.integration.ts',
       '**/vite.config.ts',
+      '**/vite.cdn.config.ts',
       '**/__mocks__',
       '**/coverage/',
       // Generated API-docs output (gitignored); never source to lint.

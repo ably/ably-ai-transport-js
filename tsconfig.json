@@ -1,6 +1,6 @@
 {
   "include": ["./src/**/*.ts", "./src/**/*.tsx", "./test/**/*.ts", "./test/**/*.tsx", "./test/**/*.d.ts"],
-  "exclude": ["**/vite.config.ts"],
+  "exclude": ["**/vite.config.ts", "**/vite.cdn.config.ts"],
   "compilerOptions": {
     "rootDir": ".",
     "target": "es6",

@@ -41,8 +41,9 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:cdn
       - uses: ably/cdn-deploy-action@dc178d76905313bf41c220d8e324791ad822a3f6 # v1.0.2
         with:
-          source-dir: dist
+          source-dir: dist/cdn
           file-regex: '^ably-ai-transport\.umd\.cjs$'
           tag: ${{ github.event.release.tag_name || inputs.tag }}

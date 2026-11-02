@@ -146,7 +146,7 @@ Like `pipe`, `pipeEach` flushes the stream's appends and repairs any that failed
 
 ### Client
 
-The client subscribes to the channel through ably-js and passes every message to a decoder. The decoder gives each message back as deliveries holding the decoded event, and the application merges the events into whatever it renders from.
+The client subscribes to the channel through the Ably Pub/Sub SDK and passes every message to a decoder. The decoder gives each message back as deliveries holding the decoded event, and the application merges the events into whatever it renders from.
 
 ```typescript
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
@@ -204,7 +204,10 @@ await fetch('/api/chat', {
 A client can join what its database holds with the channel by rewinding the channel to the last serial it stored, the one a publish ack returned. Pass the serial as the channel's `rewind` param when you get the channel. When the channel attaches, the platform delivers every message after that serial through your subscription, then live messages, in channel order. The serial's own message is not replayed. A message that was appended to arrives first as one update with its full content, which the decoder hands on as one delta with all the text so far, and the appends after it as deltas.
 
 ```typescript
-const channel = pubsubClient.channels.get(channelName, { params: { rewind: stored.serial } });
+const channel = pubsubClient.channels.get(
+  channelName,
+  stored.serial === undefined ? undefined : { params: { rewind: stored.serial } },
+);
 const decoder = vercelDecoder();
 decoder.onEvent(({ event }) => {
   /* as in the client example */
@@ -212,7 +215,7 @@ decoder.onEvent(({ event }) => {
 await channel.subscribe(decoder.receive);
 ```
 
-Rewind applies only when the channel attaches, so set it before the first subscribe. It delivers at most 1,000 messages after the serial; appends to one message count as that message. One decoder sees every message in order, so nothing is decoded twice and nothing needs merging. `demo/minimal` stores the serial of each prompt and of each finished reply, and rewinds to the latest when the page loads.
+Rewind applies only when the channel attaches, so set it on the first `channels.get` for the channel, before the first subscribe. For a channel that is already attached, `channels.get` with a different `rewind` throws, and `channel.setOptions` is the call that changes it. It delivers at most 1,000 messages after the serial; appends to one message count as that message. One decoder sees every message in order, so nothing is decoded twice and nothing needs merging. `demo/minimal` stores the serial of each prompt and of each finished reply, and rewinds to the latest when the page loads.
 
 ### Tagging a turn
 

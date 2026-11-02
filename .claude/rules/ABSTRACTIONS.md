@@ -143,7 +143,8 @@ returns a decoder. `receive` is a bound arrow property for
 handlers. `decode` returns a message's deliveries without emitting, for a
 history loop. `onError` reports a codec that threw. Use one decoder per
 codec per channel, for live and history together, so its version guard drops a message
-both carry. History pages arrive newest first and the decoder takes them in
+of an open stream that both carry. A stream whose closer was decoded is forgotten,
+so a later copy of it decodes again. History pages arrive newest first and the decoder takes them in
 that order; the application orders what it renders.
 
 A delivery is `{ event, message }`, and every message the decoder is given

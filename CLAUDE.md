@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`@ably/ai-transport` is the agent adaptors, the decoder and the wire codecs for building AI applications on Ably. The application holds its channel through ably-js. On the agent, an adaptor publishes a provider's events onto it through that provider's codec; in the application, a decoder turns each message the channel delivers, live or from history, back into the provider's events. A codec turns each provider event into one Ably message operation and back, and holds no state. Nothing holds conversation state: the application merges the event stream into its own messages. Ships as a single npm package with four entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
+`@ably/ai-transport` is the agent adaptors, the decoder and the wire codecs for building AI applications on Ably. The application holds its channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes a provider's events onto it through that provider's codec; in the application, a decoder turns each message the channel delivers, live or from history, back into the provider's events. A codec turns each provider event into one Ably message operation and back, and holds no state. Nothing holds conversation state: the application merges the event stream into its own messages. Ships as a single npm package with four entry points; see the table in `.claude/rules/ABSTRACTIONS.md` and the `exports` map in `package.json`.
 
 ## Commands
 

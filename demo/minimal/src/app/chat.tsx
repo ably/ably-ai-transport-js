@@ -172,7 +172,7 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
     decoder.onError((error) => {
       console.error('decode failed', error);
     });
-    // ChannelProvider turns off ably-js's attach on subscribe, so the effect
+    // ChannelProvider turns off the Pub/Sub SDK's attach on subscribe, so the effect
     // attaches the channel itself. The listener goes on first, so the
     // messages the rewind delivers on attach reach it.
     const start = async (): Promise<void> => {

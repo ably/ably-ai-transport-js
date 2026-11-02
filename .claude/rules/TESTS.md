@@ -58,7 +58,7 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 ### Conventions
 
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
-- A test gets each channel from `ablyRealtimeClient().channels.get(name)`, as an application does, and subscribes a decoder with `channel.subscribe(decoder.receive)`; awaiting that subscribe is the attach barrier.
+- A test gets each channel from `pubsubClient().channels.get(name)`, as an application does, and subscribes a decoder with `channel.subscribe(decoder.receive)`; awaiting that subscribe is the attach barrier.
 - Clean up clients in `afterEach` via `closeAllClients()`
 - Shared unit-tier helpers live in `test/helper/`; the integration tier's own recorder and history drain live in `test/integration/helpers.ts`
 - **Await events, never clocks.** `createDeliveryRecorder()` buffers every delivery as it arrives and re-checks pending predicates on each one, so a test awaits the delivery it needs instead of polling a growing array. Recorders take no timeout: vitest's own test timeout is the only deadline, and a test that hangs is a test that found something.

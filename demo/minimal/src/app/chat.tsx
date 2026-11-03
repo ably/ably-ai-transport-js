@@ -49,7 +49,16 @@ const requestIdOf = (message: Delivery<VercelEvent>['message']): string | undefi
   return typeof requestId === 'string' ? requestId : undefined;
 };
 
-export function Chat({ channelName, stored }: { channelName: string; stored: UIMessage[] }) {
+/** What the page passes to {@link Chat}. */
+interface ChatProps {
+  channelName: string;
+  /** The conversation the server stored, rendered before anything the channel delivers. */
+  stored: UIMessage[];
+  /** Called once when the channel loses continuity, so the page can re-read the store and mount a fresh Chat. */
+  onDiscontinuity: () => void;
+}
+
+export function Chat({ channelName, stored, onDiscontinuity }: ChatProps) {
   const [messages, setMessages] = useState<UIMessage[]>(stored);
   const [deliveries, setDeliveries] = useState<Delivery<VercelEvent>[]>([]);
   const [tab, setTab] = useState<'chat' | 'wire'>('chat');
@@ -107,8 +116,26 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
   // The page publishes the user's message through an adaptor on the channel.
   const adaptor = useMemo(() => vercelAdaptor(channel), [channel]);
   const [attached, setAttached] = useState(channel.state === 'attached');
+  // Whether this mount has seen the channel attached. The first ATTACHED it
+  // sees is the attach its own effect started, so it does not count as a
+  // loss, and a mount that never attaches does not ask for a re-init: a
+  // channel that cannot attach would otherwise re-init forever.
+  const hasAttached = useRef(channel.state === 'attached');
   useChannelStateListener(channelName, (change) => {
     setAttached(change.current === 'attached');
+    if (change.current === 'attached' && !hasAttached.current) {
+      hasAttached.current = true;
+      return;
+    }
+    if (!hasAttached.current) return;
+    // DETACHED and FAILED clear the channel's serial, so its next attach
+    // cannot resume and would rewind from the page-load serial again. An
+    // attach or update that did not resume has skipped messages. Either way
+    // the page re-reads the store and rewinds from the serial it returns.
+    // SUSPENDED keeps the serial, so the reattach after it normally resumes.
+    const lost =
+      change.current === 'detached' || change.current === 'failed' || (change.current === 'attached' && !change.resumed);
+    if (lost) onDiscontinuity();
   });
 
 
@@ -130,9 +157,6 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
         // first state asynchronously, and a replayed batch would otherwise
         // put the next user message ahead of the reply it follows.
         if (event.messageId !== undefined) upsert({ id: event.messageId, role: 'assistant', parts: [] });
-        // A second `start` for the same request, from a replay, ends the stream
-        // the first one opened, so its merge loop finishes.
-        if (reply !== undefined) callReply(() => reply.close());
         const stream = new ReadableStream<UIMessageChunk>({
           start: (controller) => {
             replies.current.set(from, controller);
@@ -145,7 +169,7 @@ export function Chat({ channelName, stored }: { channelName: string; stored: UIM
       // `finish` ends a reply; `abort` is what the route publishes when its
       // pipe was cancelled and no `finish` will come.
       if (event.type === 'finish' || event.type === 'abort') {
-        replies.current.get(from)?.close();
+        if (reply !== undefined) callReply(() => reply.close());
         replies.current.delete(from);
         setStreaming(replies.current.size > 0);
       } else if (replies.current.has(from)) {

@@ -25,5 +25,5 @@ Open http://localhost:3000, send a message, and watch the reply stream. Open the
 - `src/app/api/store.ts` is the in-memory store, one conversation per channel.
 - `src/app/api/messages/route.ts` returns a channel's stored conversation and serial.
 - `src/app/api/auth/ably-token/route.ts` issues Ably token requests for the browser.
-- `src/app/page.tsx` reads the stored conversation, then mounts `PubSubClientProvider` and a `ChannelProvider` that rewinds the channel to the stored serial.
+- `src/app/page.tsx` reads the stored conversation, then mounts `PubSubClientProvider` and a `ChannelProvider` that rewinds the channel to the stored serial. When the channel loses continuity, it detaches the channel, reads the store again and remounts the chat on the newer serial.
 - `src/app/chat.tsx` subscribes a `vercelDecoder` to the rewound channel, sends the user message through `vercelAdaptor` and its serial to the route, merges the agent's chunks with `readUIMessageStream`, and shows the channel state.

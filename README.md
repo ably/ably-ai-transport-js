@@ -217,6 +217,8 @@ await channel.subscribe(decoder.receive);
 
 Rewind applies only when the channel attaches, so set it on the first `channels.get` for the channel, before the first subscribe. For a channel that is already attached, `channels.get` with a different `rewind` throws, and `channel.setOptions` is the call that changes it. It delivers at most 1,000 messages after the serial; appends to one message count as that message. One decoder sees every message in order, so nothing is decoded twice and nothing needs merging. `demo/minimal` stores the serial of each prompt and of each finished reply, and rewinds to the latest when the page loads.
 
+The channel keeps its `rewind` param. After the channel goes DETACHED or FAILED it cannot resume, so its next attach would rewind from the old serial again and replay messages your application has already applied. An attach or update with `resumed: false` means the channel skipped messages. In either case, read your store again and rewind from the serial it returns: detach the channel, set the newer serial with `channel.setOptions({ params: { rewind } })`, and subscribe a new decoder. `demo/minimal` does this from its channel state listener, and mounts a fresh chat on the newer serial.
+
 ### Tagging a turn
 
 `send`, `pipe` and `pipeEach` take `headers`, a flat map of string, number, boolean or null values that the adaptor includes in `extras.headers` on every message the call publishes. An adaptor can carry default headers as well, `vercelAdaptor(channel, { headers })`. A call's headers win over the defaults, and any headers the codec writes win over both.

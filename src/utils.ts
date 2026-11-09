@@ -1,9 +1,9 @@
 /**
- * Shared utilities used by the codec and transport layers. They live at the
+ * Shared utilities used by the codec, adaptor and decoder layers. They live at the
  * top level so neither layer depends on the other for them.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 
 /**
  * Extract a human-readable message from an unknown thrown value.

@@ -12,7 +12,6 @@ import { fileURLToPath } from 'node:url';
 import js from '@eslint/js';
 import { FlatCompat } from '@eslint/eslintrc';
 import preferArrowFunctions from 'eslint-plugin-prefer-arrow-functions';
-import reactHooks from 'eslint-plugin-react-hooks';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +37,7 @@ export default [
       '**/vitest.config.ts',
       '**/vitest.config.integration.ts',
       '**/vite.config.ts',
+      '**/vite.cdn.config.ts',
       '**/__mocks__',
       '**/coverage/',
       // Generated API-docs output (gitignored); never source to lint.
@@ -46,7 +46,6 @@ export default [
       'demo/**',
       '.github',
       '.claude/worktrees/**',
-      'react/**',
       'vercel/**',
       'openai/**',
       'ag-ui/**',
@@ -143,44 +142,19 @@ export default [
     },
   },
   {
-    files: ['test/**/*.{ts,tsx}'],
-
-    rules: {
-      // ably 2.22 added @deprecated v1-callback overloads to these channel
-      // methods. The rule resolves real call sites to the v2 overload and
-      // stays quiet, but bare references (mock assignment, expect() args)
-      // fall back to the symbol and flag because *an* overload is deprecated.
-      // We only ever use the v2 signatures, so allow these symbols in tests.
-      '@typescript-eslint/no-deprecated': [
-        'error',
-        {
-          allow: [{ from: 'package', package: 'ably', name: ['subscribe', 'unsubscribe', 'publish', 'history'] }],
-        },
-      ],
-    },
-  },
-  {
-    // The hook contract, over the SDK's React source and its suite. The two
-    // rules here are the contract itself; the compiler rules the plugin's
-    // recommended preset adds flag the render-phase ref writes and the
-    // effect-driven setState this design uses on purpose.
-    files: ['src/react/**/*.{ts,tsx}', 'test/react/**/*.{ts,tsx}'],
-
-    plugins: {
-      'react-hooks': reactHooks,
-    },
-
-    rules: {
-      'react-hooks/rules-of-hooks': 'error',
-      'react-hooks/exhaustive-deps': 'error',
-    },
-  },
-  {
     files: ['**/*.{ts,tsx}'],
 
     rules: {
       '@typescript-eslint/no-unused-vars': ['error'],
       'import-x/no-unresolved': 'off',
+      // Pub/Sub declares Message as a class for its static helpers, but a
+      // message is plain data that the codec and transport copy by spreading.
+      '@typescript-eslint/no-misused-spread': [
+        'error',
+        {
+          allow: [{ from: 'package', package: '@ably/pubsub-core', name: ['Message'] }],
+        },
+      ],
       'no-undef': 'off',
       'no-dupe-class-members': 'off',
       'require-await': 'off',

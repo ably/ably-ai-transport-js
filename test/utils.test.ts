@@ -1,4 +1,4 @@
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 import { describe, expect, it } from 'vitest';
 
 import { errorCause, errorMessage, stripUndefined } from '../src/utils.js';

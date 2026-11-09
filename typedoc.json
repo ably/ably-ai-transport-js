@@ -2,7 +2,6 @@
   "$schema": "https://typedoc.org/schema.json",
   "entryPoints": [
     "./src/index.ts",
-    "./src/react/index.ts",
     "./src/vercel/index.ts",
     "./src/openai/index.ts",
     "./src/ag-ui/index.ts",
@@ -17,7 +16,7 @@
     "external": true
   },
   "externalSymbolLinkMappings": {
-    "ably": {
+    "@ably/pubsub-core": {
       "*": "https://sdk.ably.com/builds/ably/ably-js/main/typedoc/"
     }
   },

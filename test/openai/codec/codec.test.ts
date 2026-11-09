@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { createOpenAICodec, openai, type OpenAIEvent } from '../../../src/openai/index.js';
+import { createOpenAICodec, openai } from '../../../src/openai/codec/index.js';
+import type { OpenAIEvent } from '../../../src/openai/index.js';
 import { deliveriesOf, encodeAll, historyOf, roundTrip } from '../../helper/wire.js';
 import { at, decodedOf, functionCall, message, textResponse, toolCallResponse } from './fixtures.js';
 
@@ -36,7 +37,7 @@ describe('the OpenAI codec', () => {
       expect(done?.message).toEqual({
         name: 'ai',
         data: { ...at(textResponse, 5), text: '' },
-        extras: { ai: { type: 'response.output_text.done' } },
+        extras: { ai: { codec: 'openai-responses', type: 'response.output_text.done' } },
       });
       const [args] = codec.encode(at(toolCallResponse, 4));
       expect(args?.message.data).toMatchObject({ arguments: '', name: 'weather' });
@@ -190,6 +191,7 @@ describe('the OpenAI codec', () => {
         data: 'It is 21°C',
         extras: {
           ai: {
+            codec: 'openai-responses',
             type: 'response.output_text.delta',
             fields: {
               type: 'response.output_text.delta',
@@ -216,13 +218,15 @@ describe('the OpenAI codec', () => {
       const [encoded] = codec.encode(at(textResponse, 1));
       expect(encoded?.publish).toBeUndefined();
       expect(encoded?.message.data).toEqual(at(textResponse, 1));
-      expect(encoded?.message.extras).toEqual({ ai: { type: 'response.output_item.added' } });
+      expect(encoded?.message.extras).toEqual({
+        ai: { codec: 'openai-responses', type: 'response.output_item.added' },
+      });
     });
 
     it('publishes input items as the message data', () => {
       const items: Responses.ResponseInputItem[] = [{ role: 'user', content: 'What is the weather?' }];
       expect(codec.encode({ type: 'input', items })).toEqual([
-        { message: { name: 'ai', data: items, extras: { ai: { type: 'input' } } } },
+        { message: { name: 'ai', data: items, extras: { ai: { codec: 'openai-responses', type: 'input' } } } },
       ]);
     });
 
@@ -317,7 +321,9 @@ describe('the OpenAI codec', () => {
         { data: events[1] },
         { data: events[2] },
       ]);
-      expect(encoded[2]?.message.extras).toEqual({ ai: { type: 'response.image_generation_call.partial_image' } });
+      expect(encoded[2]?.message.extras).toEqual({
+        ai: { codec: 'openai-responses', type: 'response.image_generation_call.partial_image' },
+      });
       expect(roundTrip(createOpenAICodec(), events)).toStrictEqual(decodedOf(events));
     });
 
@@ -351,7 +357,7 @@ describe('the OpenAI codec', () => {
       expect(done?.message).toEqual({
         name: 'ai',
         data: { ...at(textResponse, 6), part: { type: 'output_text', text: '', annotations: [] } },
-        extras: { ai: { type: 'response.content_part.done' } },
+        extras: { ai: { codec: 'openai-responses', type: 'response.content_part.done' } },
       });
     });
 
@@ -385,7 +391,13 @@ describe('the OpenAI codec', () => {
 
     it('throws for a plain publish whose body is not an object', () => {
       const [delivery] = deliveriesOf([
-        { message: { name: 'ai', data: 'nope', extras: { ai: { type: 'response.output_item.added' } } } },
+        {
+          message: {
+            name: 'ai',
+            data: 'nope',
+            extras: { ai: { codec: 'openai-responses', type: 'response.output_item.added' } },
+          },
+        },
       ]);
       if (delivery === undefined) throw new Error('fixture');
       expect(() => codec.decode(delivery)).toThrowErrorInfo({
@@ -423,7 +435,9 @@ describe('the OpenAI codec', () => {
     });
 
     it('throws for input whose data is not a list of items', () => {
-      const [delivery] = deliveriesOf([{ message: { name: 'ai', data: 'nope', extras: { ai: { type: 'input' } } } }]);
+      const [delivery] = deliveriesOf([
+        { message: { name: 'ai', data: 'nope', extras: { ai: { codec: 'openai-responses', type: 'input' } } } },
+      ]);
       if (delivery === undefined) throw new Error('fixture');
       expect(() => codec.decode(delivery)).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
@@ -435,8 +449,8 @@ describe('the OpenAI codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying the adapter tag', () => {
-    expect(openai.adapterTag).toBe('openai-responses');
-    expect(Object.keys(openai).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
+  it('builds a codec carrying its id and name and nothing else beside encode and decode', () => {
+    expect(openai.id).toBe('openai-responses');
+    expect(Object.keys(openai).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });
 });

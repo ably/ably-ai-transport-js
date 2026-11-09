@@ -142,20 +142,6 @@ grep -E "^src/" "$WORK/added" \
     done \
   | emit log-level
 
-# ------------------------------------------------------------ React hooks
-
-## CLAUDE.md fixes the names: a hook's parameter object is `{HookName}Options`
-## and a structured return is `{HookNameWithoutUse}Handle`, both exported from
-## the entry-point index.ts. Whether a return counts as structured is the
-## model's call, so every added hook declaration is a candidate.
-grep -E "^src/" "$WORK/added" \
-  | grep -E "export (const|function) use[A-Z]" \
-  | while IFS=$'\t' read -r path line content; do
-      signature=$(git show "$HEAD:$path" 2>/dev/null | sed -n "${line},$((line + 12))p" | tr '\n' ' ' | tr -s ' ')
-      printf '%s\t%s\t%s\n' "$path" "$line" "${signature:0:400}"
-    done \
-  | emit hook-naming
-
 # ------------------------------------------------------------ error codes
 
 ## ERRORS.md: keep the set small, group errors that share a recovery action,

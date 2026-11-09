@@ -1,8 +1,8 @@
 /**
- * A small codec for transport tests: one streamed type, a discrete type, a
+ * A small codec for adaptor and decoder tests: one streamed type, a discrete type, a
  * type that does not publish and does not decode to an event, and one that
  * replaces a stream's content. It belongs to no provider, so what a test
- * asserts is the transport's behaviour and nothing else.
+ * asserts is the adaptor's behaviour and nothing else.
  */
 
 import type { Codec } from '../../src/core/codec/index.js';
@@ -22,14 +22,13 @@ const asString = (value: unknown): string => (typeof value === 'string' ? value 
 const idOf = (fields: Record<string, unknown> = {}): string => asString(fields.id);
 
 /**
- * Build a fresh test codec. Fresh, because a built codec's decoder core
- * remembers every serial it has seen.
+ * Build the test codec.
+ * @param id - The codec's id, for a test that needs a second codec on one channel.
  * @returns The codec.
  */
-export const createTestCodec = (): Codec<TestEvent> =>
+export const createTestCodec = (id = 'test-codec'): Codec<TestEvent> =>
   defineCodec({
-    name: 'test',
-    adapterTag: 'test-codec',
+    id,
     typeOf: (e: TestEvent) => e.type,
     events: {
       'text-start': {

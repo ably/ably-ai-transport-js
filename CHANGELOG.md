@@ -2,6 +2,22 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.11.0](https://github.com/ably/ably-ai-transport-js/tree/0.11.0) (2026-11-02)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.10.0...0.11.0)
+
+This release moves the SDK onto version 3 of the Ably Pub/Sub SDK, and adds a decoder for applications that read the channel through their Pub/Sub client themselves. Every application has to change how it installs and creates its Pub/Sub client. The [breaking changes](#breaking-changes) below list what changed, and the [migration guide](https://github.com/ably/ably-ai-transport-js/blob/main/docs/migrations/0.10.0-to-0.11.0.md) shows how to move your code to 0.11.0.
+
+### Breaking Changes
+
+- **Pub/Sub v3 replaces the `ably` package.** Create your agent's client with `createRealtimeClient` from `@ably/pubsub-server` and your users' clients with `createClient` from `@ably/pubsub-device`. `createTransport` takes a `PubSubRealtimeClient`, and `TransportProvider` reads the client from `PubSubClientProvider` in `@ably/pubsub-device/react` in place of `AblyProvider`. [#369](https://github.com/ably/ably-ai-transport-js/pull/369)
+- **0.11.0 doesn't decode messages that 0.10.0 published.** Every message now carries its codec's `name` as the message name and its `id` under `extras.ai.codec`, and a 0.11.0 subscriber delivers a message without them, live or from history, with `event: undefined`. A 0.10.0 subscriber still decodes what 0.11.0 publishes. AG-UI messages are now named `ai` rather than `ag-ui`. [#364](https://github.com/ably/ably-ai-transport-js/pull/364)
+- **A codec needs an `id` and a `name`.** `Codec.adapterTag` is now the required `Codec.id`, and `Codec.name` is new. `defineCodec` takes a required `id` and an optional `name` (`ai` by default) and no longer takes `logger`; a hand-written codec must write both into every message it encodes. `createDecoderCore`, `DecoderCore` and `DecoderCoreOptions` are removed: use `createDecoder`. [#364](https://github.com/ably/ably-ai-transport-js/pull/364)
+
+### New Features
+
+- **Decode a channel you read yourself.** `createDecoder(codec)`, or `vercelDecoder()`, `openaiDecoder()` and `agUiDecoder()` from their entry points, turns the messages you receive with `channel.subscribe(decoder.receive)` or from history with `decoder.decode(message)` into the same deliveries the transport gives. [#364](https://github.com/ably/ably-ai-transport-js/pull/364)
+
 ## [0.10.0](https://github.com/ably/ably-ai-transport-js/tree/0.10.0) (2026-10-09)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.9.0...0.10.0)

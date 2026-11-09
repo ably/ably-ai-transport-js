@@ -38,14 +38,14 @@ pnpm run test:integration
 ```shell
 pnpm run build          # Build all entry points
 pnpm run build:core     # Build core entry point only
-pnpm run build:react    # Build react entry point only
 pnpm run build:vercel   # Build vercel entry point only
 pnpm run build:openai   # Build openai entry point only
 pnpm run build:ag-ui    # Build ag-ui entry point only
 pnpm run build:anthropic # Build anthropic entry point only
+pnpm run build:cdn      # Build the CDN bundle
 ```
 
-The build uses Vite library mode producing ESM + UMD/CJS bundles with `.d.ts` declarations and sourcemaps in `dist/`.
+The build uses Vite library mode producing ESM + UMD/CJS bundles with `.d.ts` declarations and sourcemaps in `dist/`. `build:cdn` is separate from `build`, so the npm package doesn't ship the CDN bundle: it writes a UMD bundle of the core entry point to `dist/cdn/`, which `publish.cdn.yml` deploys.
 
 ## Formatting and linting
 

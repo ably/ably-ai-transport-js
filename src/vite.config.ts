@@ -8,7 +8,7 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
-      exclude: ['react/**', 'vercel/**', 'openai/**', 'ag-ui/**', 'anthropic/**'],
+      exclude: ['vercel/**', 'openai/**', 'ag-ui/**', 'anthropic/**', 'vite.cdn.config.ts'],
     }),
   ],
   build: {
@@ -19,10 +19,10 @@ export default defineConfig({
       fileName: 'ably-ai-transport',
     },
     rollupOptions: {
-      external: ['ably'],
+      external: ['@ably/pubsub-core'],
       output: {
         globals: {
-          ably: 'Ably',
+          '@ably/pubsub-core': 'AblyPubSub',
         },
       },
     },

@@ -1,36 +1,22 @@
-// The transport
+// The agent adaptor
 export type {
+  AgentAdaptor,
+  AgentAdaptorOptions,
   ChannelWriter,
-  FromSerialOptions,
-  HistoryOptions,
-  HistoryPage,
   MessageHeaders,
   PipeOptions,
   PipeResult,
   PipeSource,
-  Replay,
-  ReplayFn,
-  ReplayResult,
+  Published,
   SendOptions,
   SendResult,
-  SubscribeHistory,
-  SubscribeOptions,
-  Subscription,
-  Transport,
-  TransportOptions,
-  UntilEventOptions,
-} from './core/transport/index.js';
-export { createTransport, fromSerial, untilEvent } from './core/transport/index.js';
-
-// The extra channel modes a transport can request, as its `channelModes`.
-export { OBJECT_MODES } from './core/channel-options.js';
+} from './core/adaptor/index.js';
+export { createAgentAdaptor } from './core/adaptor/index.js';
 
 // Codec contract and builder
 export type {
   Codec,
   DecodedRow,
-  DecoderCore,
-  DecoderCoreOptions,
   DefineCodecConfig,
   Delivery,
   EncodedMessage,
@@ -42,7 +28,11 @@ export type {
   RowEventType,
   RowMessage,
 } from './core/codec/index.js';
-export { createDecoderCore, defineCodec } from './core/codec/index.js';
+export { defineCodec } from './core/codec/index.js';
+
+// The decoder
+export type { Decoder, DecoderOptions } from './core/decoder/index.js';
+export { createDecoder } from './core/decoder/index.js';
 
 // Utilities
 export type { Stripped } from './utils.js';

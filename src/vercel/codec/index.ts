@@ -25,7 +25,7 @@
  * No row writes Ably `headers`: every field a chunk carries is a chunk field.
  */
 
-import * as Ably from 'ably';
+import * as Ably from '@ably/pubsub-core';
 import type * as AI from 'ai';
 
 import type { Codec, DecodedRow, EventRow } from '../../core/codec/index.js';
@@ -33,8 +33,8 @@ import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelEvent } from './events.js';
 
-/** The value every codec built here stamps as its `adapterTag`. */
-const ADAPTER_TAG = 'vercel-ai-sdk-ui-message';
+/** The codec's id. */
+const CODEC_ID = 'vercel-ai-sdk-ui-message';
 
 type Row<T extends VercelEvent['type']> = EventRow<VercelEvent, T>;
 
@@ -81,7 +81,7 @@ const isUIMessage = (data: unknown): data is AI.UIMessage =>
 
 /**
  * Build the Vercel codec, typed for a consumer's `UIMessage` generic
- * parameters. Each call builds a fresh codec with its own decoder table.
+ * parameters.
  * @template TMetadata - Per-message metadata type.
  * @template TDataParts - Custom data-part types.
  * @template TTools - Tool set typing the user message's tool parts.
@@ -93,8 +93,7 @@ export const createVercelCodec = <
   TTools extends AI.UITools = AI.UITools,
 >(): Codec<VercelEvent<TMetadata, TDataParts, TTools>> => {
   const codec = defineCodec({
-    name: 'ai',
-    adapterTag: ADAPTER_TAG,
+    id: CODEC_ID,
     typeOf: (e: VercelEvent) => e.type,
     events: {
       // Streams: the start is a plain publish, each delta appends its text as
@@ -185,6 +184,3 @@ export const createVercelCodec = <
   // tool parts at the type level only, so one codec value serves them all.
   return codec as Codec<VercelEvent<TMetadata, TDataParts, TTools>>;
 };
-
-/** The Vercel codec at the SDK's default `UIMessage` types, with one decoder table shared by every transport that uses it. */
-export const vercel: Codec<VercelEvent> = createVercelCodec();

@@ -12,16 +12,16 @@
  * so the codec sends its `content` as `[]`, as the API did.
  */
 
+import * as Ably from '@ably/pubsub-core';
 import type * as Anthropic from '@anthropic-ai/sdk/resources/messages';
-import * as Ably from 'ably';
 
 import type { Codec, DecodedRow, EncodedRow, EventRow } from '../../core/codec/index.js';
 import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { AnthropicEvent } from './events.js';
 
-/** The value the codec stamps as its `adapterTag`. */
-const ADAPTER_TAG = 'anthropic-messages';
+/** The codec's id. */
+const CODEC_ID = 'anthropic-messages';
 
 type Row<T extends AnthropicEvent['type']> = EventRow<AnthropicEvent, T>;
 
@@ -144,14 +144,12 @@ const isMessageParams = (data: unknown): data is Anthropic.MessageParam[] =>
   Array.isArray(data) && data.every((message: unknown) => isRecord(message));
 
 /**
- * Build the Anthropic Messages codec. Each call builds a fresh codec with its
- * own decoder table.
+ * Build the Anthropic Messages codec.
  * @returns The codec.
  */
 export const createAnthropicCodec = (): Codec<AnthropicEvent> =>
   defineCodec({
-    name: 'ai',
-    adapterTag: ADAPTER_TAG,
+    id: CODEC_ID,
     typeOf: (e: AnthropicEvent) => e.type,
     events: {
       message_start: {
@@ -191,5 +189,5 @@ export const createAnthropicCodec = (): Codec<AnthropicEvent> =>
     },
   });
 
-/** The Anthropic Messages codec, with one decoder table shared by every transport that uses it. */
+/** The Anthropic Messages codec. */
 export const anthropic: Codec<AnthropicEvent> = createAnthropicCodec();

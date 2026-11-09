@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { createVercelCodec, vercel, type VercelEvent } from '../../../src/vercel/index.js';
+import { createVercelCodec } from '../../../src/vercel/codec/index.js';
+import type { VercelEvent } from '../../../src/vercel/index.js';
 import { deliveriesOf, encodeAll, historyOf, roundTrip } from '../../helper/wire.js';
 
 /** The stream `toUIMessageStream` gives for a turn that calls a tool, then answers. */
@@ -72,12 +73,12 @@ describe('the Vercel codec', () => {
       expect(codec.encode({ type: 'finish', finishReason: 'stop' })[0]?.message).toEqual({
         name: 'ai',
         data: { type: 'finish', finishReason: 'stop' },
-        extras: { ai: { type: 'finish' } },
+        extras: { ai: { codec: 'vercel-ai-sdk-ui-message', type: 'finish' } },
       });
       expect(codec.encode({ type: 'start-step' })[0]?.message).toEqual({
         name: 'ai',
         data: { type: 'start-step' },
-        extras: { ai: { type: 'start-step' } },
+        extras: { ai: { codec: 'vercel-ai-sdk-ui-message', type: 'start-step' } },
       });
     });
 
@@ -85,7 +86,9 @@ describe('the Vercel codec', () => {
       expect(codec.encode({ type: 'text-delta', id: 'txt_1', delta: 'hi' })[0]?.message).toEqual({
         name: 'ai',
         data: 'hi',
-        extras: { ai: { type: 'text-delta', fields: { type: 'text-delta', id: 'txt_1' } } },
+        extras: {
+          ai: { codec: 'vercel-ai-sdk-ui-message', type: 'text-delta', fields: { type: 'text-delta', id: 'txt_1' } },
+        },
       });
     });
 
@@ -98,6 +101,7 @@ describe('the Vercel codec', () => {
       });
       expect(encoded?.message.extras).toEqual({
         ai: {
+          codec: 'vercel-ai-sdk-ui-message',
           type: 'text-delta',
           fields: { type: 'text-delta', id: 'txt_1', providerMetadata: { openai: { itemId: 'msg_1' } } },
         },
@@ -115,7 +119,7 @@ describe('the Vercel codec', () => {
       expect(encoded?.message).toEqual({
         name: 'ai',
         data: chunk,
-        extras: { ai: { type: 'tool-input-available' } },
+        extras: { ai: { codec: 'vercel-ai-sdk-ui-message', type: 'tool-input-available' } },
       });
     });
 
@@ -131,12 +135,12 @@ describe('the Vercel codec', () => {
           message: {
             name: 'ai',
             data: { type: 'data-weather', id: 'w1', data: { temp: 21 } },
-            extras: { ai: { type: 'data-weather' } },
+            extras: { ai: { codec: 'vercel-ai-sdk-ui-message', type: 'data-weather' } },
           },
         },
       ]);
       expect(codec.encode({ type: 'data-progress', data: 0.5, transient: true })[0]?.message.extras).toEqual({
-        ai: { type: 'data-progress' },
+        ai: { codec: 'vercel-ai-sdk-ui-message', type: 'data-progress' },
         ephemeral: true,
       });
     });
@@ -144,7 +148,13 @@ describe('the Vercel codec', () => {
     it('publishes a user message as the message data', () => {
       const message: AI.UIMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
       expect(codec.encode({ type: 'user-message', message })).toEqual([
-        { message: { name: 'ai', data: message, extras: { ai: { type: 'user-message' } } } },
+        {
+          message: {
+            name: 'ai',
+            data: message,
+            extras: { ai: { codec: 'vercel-ai-sdk-ui-message', type: 'user-message' } },
+          },
+        },
       ]);
     });
 
@@ -202,7 +212,11 @@ describe('the Vercel codec', () => {
     });
 
     it('throws for a plain publish whose body is not an object', () => {
-      const [delivery] = deliveriesOf([{ message: { name: 'ai', data: 'nope', extras: { ai: { type: 'finish' } } } }]);
+      const [delivery] = deliveriesOf([
+        {
+          message: { name: 'ai', data: 'nope', extras: { ai: { codec: 'vercel-ai-sdk-ui-message', type: 'finish' } } },
+        },
+      ]);
       if (delivery === undefined) throw new Error('fixture');
       expect(() => codec.decode(delivery)).toThrowErrorInfo({
         code: ErrorCode.InvalidArgument,
@@ -231,7 +245,13 @@ describe('the Vercel codec', () => {
 
     it('throws for a user message whose data is not a UIMessage', () => {
       const [delivery] = deliveriesOf([
-        { message: { name: 'ai', data: 'nope', extras: { ai: { type: 'user-message' } } } },
+        {
+          message: {
+            name: 'ai',
+            data: 'nope',
+            extras: { ai: { codec: 'vercel-ai-sdk-ui-message', type: 'user-message' } },
+          },
+        },
       ]);
       if (delivery === undefined) throw new Error('fixture');
       expect(() => codec.decode(delivery)).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
@@ -244,8 +264,8 @@ describe('the Vercel codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying the adapter tag', () => {
-    expect(vercel.adapterTag).toBe('vercel-ai-sdk-ui-message');
-    expect(Object.keys(vercel).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
+  it('builds a codec carrying its id and name and nothing else beside encode and decode', () => {
+    expect(codec.id).toBe('vercel-ai-sdk-ui-message');
+    expect(Object.keys(codec).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });
 });

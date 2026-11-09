@@ -1,6 +1,6 @@
 ---
 name: code-review-ci
-description: Gate a change on the rules in .claude/rules/ and CLAUDE.md that have one right answer — the mechanical ones a regex settles, plus a short list that need reading but not opinion (log levels, hook naming, comments that only restate their code). Skips anything lint or typecheck already covers, and anything two reviewers would score differently. Cheap and repeatable enough to run on every PR in CI. Read-only; never edits code.
+description: Gate a change on the rules in .claude/rules/ and CLAUDE.md that have one right answer — the mechanical ones a regex settles, plus a short list that need reading but not opinion (log levels, comments that only restate their code). Skips anything lint or typecheck already covers, and anything two reviewers would score differently. Cheap and repeatable enough to run on every PR in CI. Read-only; never edits code.
 license: proprietary
 metadata:
   team: engineering
@@ -116,17 +116,6 @@ these are **correct**: `error` where a provided callback threw; `warn` for a
 full buffer, lost continuity, or a missing wire field; `info` for session or
 run open and close; `debug` for a publish that completed or a branch taken.
 
-### `hook-naming` → MAJOR
-
-Per CLAUDE.md: a hook's parameter object must be a named `{HookName}Options`
-interface, and a hook returning a **structured object** must have a
-`{HookNameWithoutUse}Handle` type. A hook returning `void`, a primitive, an
-array, a Map, or a library type needs no Handle. Both named types must be
-exported from the entry point's `index.ts`.
-
-Grep the relevant `index.ts` to confirm the exports. VIOLATION only when a
-name departs from the convention, or a required type is not exported.
-
 ### `new-error-code` → MINOR
 
 Read the whole `ErrorCode` enum in `src/errors.ts` once, then judge every
@@ -200,7 +189,7 @@ Two categories are absent, and adding them back would defeat the point:
 
 The line falls between those, not at the edge of what a regex can do. Some
 rules need reading and still have one right answer — a log level against
-LOGGING.md's table, a hook name against CLAUDE.md's convention, whether a
+LOGGING.md's table, whether a
 comment says anything its own line does not. Those are in Step 3, priced per
 candidate rather than per diff, so a clean change pays nothing for them.
 

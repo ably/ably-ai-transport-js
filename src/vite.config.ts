@@ -8,7 +8,7 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
-      exclude: ['vercel/**', 'openai/**', 'ag-ui/**', 'vite.cdn.config.ts'],
+      exclude: ['vercel/**', 'openai/**', 'ag-ui/**', 'anthropic/**', 'vite.cdn.config.ts'],
     }),
   ],
   build: {

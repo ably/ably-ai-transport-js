@@ -96,13 +96,12 @@ export interface SendOptions {
    * key Ably provides for a publisher's own fields. Where the codec's row sets
    * the same key, the row's value is preferred, so a row keeps a header it
    * writes. The merged map reaches the row's `decode` in its `headers`, since
-   * the wire cannot tell a caller's headers from a row's; the shipped Vercel
-   * and OpenAI codecs write no headers and rebuild their events from the
-   * message body and `extras.ai.fields`, so a decoded provider event carries
-   * none of these. An `undefined` value is dropped; any other value
-   * outside string, number, boolean and null rejects the call with
-   * `InvalidArgument` before anything is published. A subscriber reads them
-   * off `delivery.message.extras.headers`.
+   * the wire cannot tell a caller's headers from a row's; the shipped codecs
+   * write no headers and rebuild their events from the message body and
+   * `extras.ai.fields`, so a decoded provider event carries none of these. An
+   * `undefined` value is dropped; any other value outside string, number,
+   * boolean and null rejects the call with `InvalidArgument` before anything
+   * is published. A subscriber reads them off `delivery.message.extras.headers`.
    */
   headers?: MessageHeaders;
 }

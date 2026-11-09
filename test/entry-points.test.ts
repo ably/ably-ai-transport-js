@@ -26,6 +26,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
 import { agui, createAGUICodec } from '../src/ag-ui/index.js';
+import type { AnthropicEvent, AnthropicInput, AnthropicStreamEvent } from '../src/anthropic/index.js';
+import { anthropic, createAnthropicCodec } from '../src/anthropic/index.js';
 import type {
   ChannelWriter,
   Codec,
@@ -220,5 +222,15 @@ describe('@ably/ai-transport/ag-ui', () => {
     expect(Object.keys(agui).toSorted()).toEqual(CODEC_KEYS);
     expectTypeOf<AGUIEvent>().toHaveProperty('type');
     expectTypeOf<AGUIRunInput>().toHaveProperty('input');
+  });
+});
+
+describe('@ably/ai-transport/anthropic', () => {
+  it('exports the codec, its factory and its event types', () => {
+    expect(typeof createAnthropicCodec).toBe('function');
+    expect(Object.keys(anthropic).toSorted()).toEqual(CODEC_KEYS);
+    expectTypeOf<AnthropicEvent>().toHaveProperty('type');
+    expectTypeOf<AnthropicInput>().toHaveProperty('messages');
+    expectTypeOf<AnthropicStreamEvent>().toHaveProperty('type');
   });
 });

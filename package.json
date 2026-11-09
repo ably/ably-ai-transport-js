@@ -40,16 +40,23 @@
       "import": "./dist/ag-ui/ably-ai-transport-ag-ui.js",
       "require": "./dist/ag-ui/ably-ai-transport-ag-ui.umd.cjs"
     },
+    "./anthropic": {
+      "types": "./dist/anthropic/index.d.ts",
+      "react-native": "./dist/anthropic/ably-ai-transport-anthropic.umd.cjs",
+      "import": "./dist/anthropic/ably-ai-transport-anthropic.js",
+      "require": "./dist/anthropic/ably-ai-transport-anthropic.umd.cjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:openai && pnpm run build:ag-ui",
+    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:react && pnpm run build:vercel && pnpm run build:openai && pnpm run build:ag-ui && pnpm run build:anthropic",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
     "build:react": "vite build --config ./src/react/vite.config.ts --emptyOutDir",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
     "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "build:ag-ui": "vite build --config ./src/ag-ui/vite.config.ts --emptyOutDir",
+    "build:anthropic": "vite build --config ./src/anthropic/vite.config.ts --emptyOutDir",
     "prepare": "pnpm run build",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .; (pnpm run format > /dev/null)",

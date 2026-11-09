@@ -8,8 +8,13 @@
  * sets a signature and collects citations rather than joining text, and puts
  * both on their block whatever order they arrive in.
  *
- * The SDK yields `message_start` with the message it keeps adding blocks to,
- * so the codec sends its `content` as `[]`, as the API did.
+ * The SDK yields `message_start` with the message it keeps building, so by
+ * the time the codec encodes it, that message can hold blocks the codec sends
+ * as events of their own and the values a later `message_delta` wrote. The
+ * codec sends `content` as `[]`, as the API did. It sends the other fields as
+ * they are, so `stop_reason` and `usage` can already hold their final values;
+ * the `message_delta` that follows sets them again, so a reducer builds the
+ * same message either way.
  */
 
 import * as Ably from '@ably/pubsub-core';

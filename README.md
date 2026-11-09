@@ -6,7 +6,7 @@
 
 Ably AI Transport carries an AI agent's output over an Ably channel. Your agent pipes LLM output to clients over Ably messages, and every client on the channel receives each event as it is produced, in realtime. A client that reconnects picks up where it left off, and a conversation is available on all the user's devices.
 
-Your application holds the channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes an LLM's events onto that channel. In the client, a decoder turns each message the channel delivers, live or from history, back into the same events. Your application merges the event stream into its own messages. The SDK includes an adaptor and a decoder for the Vercel AI SDK, the OpenAI Responses API and AG-UI, and you can define your own format with the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
+Your application holds the channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes an LLM's events onto that channel. In the client, a decoder turns each message the channel delivers, live or from history, back into the same events. Your application merges the event stream into its own messages. The SDK includes an adaptor and a decoder for the Vercel AI SDK, the OpenAI Responses API and AG-UI, and a codec for the Anthropic Messages API, and you can define your own format with the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
 > From 1.0.0, the SDK follows semantic versioning, so a breaking change comes in a new major version. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 1.0.0](./docs/migrations/0.11.0-to-1.0.0.md) for the move from the transport to adaptors and decoders.
@@ -41,8 +41,9 @@ This SDK supports the following platforms:
 | Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                    |
 | OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                   |
 | AG-UI         | Version 1 events, through `@ably/ai-transport/ag-ui`.                                     |
+| Anthropic     | The Messages API, `@anthropic-ai/sdk` version 1, through `@ably/ai-transport/anthropic`.  |
 
-The Ably Pub/Sub SDK version 3 is required in every case: `@ably/pubsub-server` or `@ably/pubsub-device` to build the client. `ai`, `openai` and `@ag-ui/core` are optional peer dependencies, each needed only by the entry point that uses it.
+The Ably Pub/Sub SDK version 3 is required in every case: `@ably/pubsub-server` or `@ably/pubsub-device` to build the client. `ai`, `openai`, `@anthropic-ai/sdk` and `@ag-ui/core` are optional peer dependencies, each needed only by the entry point that uses it.
 
 ---
 

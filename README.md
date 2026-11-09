@@ -6,7 +6,7 @@
 
 Ably AI Transport carries an AI agent's output over an Ably channel. Your agent pipes LLM output to clients over Ably messages, and every client on the channel receives each event as it is produced, in realtime. A client that reconnects picks up where it left off, and a conversation is available on all the user's devices.
 
-The SDK is a transport and a set of codecs. A codec converts each event from the LLM output into one Ably message operation and back; the transport publishes, subscribes and pages history. Your application merges the event stream into its own messages. The SDK includes codecs for the Vercel AI SDK, the OpenAI Responses API and AG-UI. Or you can easily define your own codec using the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
+The SDK is a transport and a set of codecs. A codec converts each event from the LLM output into one Ably message operation and back; the transport publishes, subscribes and pages history. Your application merges the event stream into its own messages. The SDK includes codecs for the Vercel AI SDK, the OpenAI Responses API, the Anthropic Messages API and AG-UI. Or you can easily define your own codec using the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
 > This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the [0.9.0 to 0.10.0 migration guide](./docs/migrations/0.9.0-to-0.10.0.md) walks through the move to 0.10.0.
@@ -42,8 +42,9 @@ This SDK supports the following platforms:
 | Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                    |
 | OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                   |
 | AG-UI         | Version 1 events, through `@ably/ai-transport/ag-ui`.                                     |
+| Anthropic     | The Messages API, `@anthropic-ai/sdk` version 1, through `@ably/ai-transport/anthropic`.  |
 
-The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, `@ag-ui/core`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
+The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `openai`, `@anthropic-ai/sdk`, `@ag-ui/core`, and `react` are optional peer dependencies, each needed only by the entry point that uses it.
 
 ---
 

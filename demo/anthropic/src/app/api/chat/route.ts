@@ -73,12 +73,12 @@ export async function POST(req: Request) {
     input = { role: 'user', content: results };
   }
 
-  recordEntries(channelName, [{ id: `${requestId}:0`, param: input }]);
-
   const apiKey = process.env.ABLY_API_KEY;
   if (apiKey === undefined) {
     return new Response('ABLY_API_KEY is not set', { status: 500 });
   }
+
+  recordEntries(channelName, [{ id: `${requestId}:0`, param: input }]);
 
   // Both clients are made per request, inside the handler: the agent is
   // short-lived, and `next build` loads this module without either key.

@@ -21,6 +21,12 @@ export interface Entry {
   content: string | Block[];
 }
 
+/** What `/api/messages` returns: the stored conversation, and the serial the channel rewinds to. */
+export interface StoredConversation {
+  entries: { id: string; param: MessageParam }[];
+  serial?: string;
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 /**

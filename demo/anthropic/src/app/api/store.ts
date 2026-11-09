@@ -4,9 +4,11 @@
  * the Messages API's own param type, so the route hands the list to the model
  * as it is, under the id the page gives the same message when it reads it off
  * the channel: an input under the request id it was published with, and a
- * reply under the id of the Message the model streamed. The page reads
- * channel history from the stored serial forward when it loads, and merges
- * what it reads by those ids.
+ * reply under the id of the Message the model streamed. Each input is
+ * recorded with the serial its publish returned, and each reply with the
+ * serial of the last message its pipe published. The page rewinds the channel
+ * to the stored serial when it loads, so it receives everything the store
+ * does not hold yet, and merges it by those ids.
  */
 
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
@@ -21,7 +23,7 @@ export interface StoredEntry {
 export interface StoredConversation {
   /** The conversation so far, in the order the entries were recorded. */
   entries: StoredEntry[];
-  /** The serial the latest reply's `pipe` resolved with; absent until a reply has landed. */
+  /** The latest serial the store accounts for: the last input's publish, then its reply's last message once it lands. Absent until the first input. */
   serial?: string;
 }
 

@@ -12,8 +12,9 @@
   },
   "dependencies": {
     "@ably/ai-transport": "link:../..",
+    "@ably/pubsub-device": "link:../../node_modules/@ably/pubsub-device",
+    "@ably/pubsub-server": "link:../../node_modules/@ably/pubsub-server",
     "@anthropic-ai/sdk": "^1.3.0",
-    "ably": "link:../../node_modules/ably",
     "next": "^16",
     "react": "^19",
     "react-dom": "^19"

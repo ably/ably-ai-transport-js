@@ -7,16 +7,17 @@
  * the conversation the store holds for the channel, and streams Claude's
  * reply back over the same channel, one Message at a time: a reply that
  * pauses mid-turn (`pause_turn`, a server tool's loop reaching its limit) is
- * continued with another request. Each Message is recorded with the pipe's
- * last serial once it has landed. A reply that calls one of the app's tools
- * ends the turn and waits for the user (see `./tools.ts`).
+ * continued with another request. The input is recorded with the serial of
+ * its publish, and each Message with the pipe's last serial once it has
+ * landed. A reply that calls one of the app's tools ends the turn and waits
+ * for the user (see `./tools.ts`).
  */
 
-import { createTransport, ErrorCode } from '@ably/ai-transport';
-import { anthropic } from '@ably/ai-transport/anthropic';
+import { ErrorCode } from '@ably/ai-transport';
+import { anthropicAdaptor } from '@ably/ai-transport/anthropic';
+import { createRealtimeClient, ErrorInfo } from '@ably/pubsub-server';
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
-import Ably from 'ably';
 
 import { loadConversation, recordEntries } from '../store';
 import { answerCalls, pendingCalls, tools } from './tools';
@@ -33,12 +34,14 @@ interface ChatRequest {
   requestId?: unknown;
   /** The user's message, already published on the channel. */
   text?: unknown;
+  /** The serial the user's message's publish returned, where a page that loads mid-reply rewinds to. */
+  serial?: unknown;
   /** The user's answer to each pending tool call, by tool use id: `true` runs it, `false` refuses it. */
   approvals?: unknown;
 }
 
 export async function POST(req: Request) {
-  const { channelName, requestId, text, approvals } = (await req.json()) as ChatRequest;
+  const { channelName, requestId, text, serial: inputSerial, approvals } = (await req.json()) as ChatRequest;
   if (typeof channelName !== 'string' || !channelName.startsWith('ai:') || typeof requestId !== 'string') {
     return new Response('channelName must name an ai: channel, and requestId is required', { status: 400 });
   }
@@ -78,22 +81,29 @@ export async function POST(req: Request) {
     return new Response('ABLY_API_KEY is not set', { status: 500 });
   }
 
-  recordEntries(channelName, [{ id: `${requestId}:0`, param: input }]);
+  // The input is recorded with its serial, so a page that loads while the
+  // reply streams rewinds to just after it and receives the whole reply. Tool
+  // results are published below, so their serial is recorded once it is known.
+  const entry = { id: `${requestId}:0`, param: input };
+  recordEntries(channelName, [entry], typeof inputSerial === 'string' ? inputSerial : undefined);
 
   // Both clients are made per request, inside the handler: the agent is
   // short-lived, and `next build` loads this module without either key.
   // Ably rolls the appends a connection publishes within 40ms into one
   // delivery; a window of 0 delivers every delta as its own message.
   const claude = new Anthropic();
-  const ably = new Ably.Realtime({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
-  const transport = createTransport({ client: ably, channelName, codec: anthropic });
+  const pubsubClient = createRealtimeClient({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
+  const adaptor = anthropicAdaptor(pubsubClient.channels.get(channelName));
   // The input's own id tags every message of the turn, so the page can tell
   // one turn's Messages from another's.
   const headers = { requestId };
 
   try {
     // The browser published its own message; tool results exist only here.
-    if (approvals !== undefined) await transport.send({ type: 'input', messages: [input] }, { headers });
+    if (approvals !== undefined) {
+      const { serial } = await adaptor.send({ type: 'input', messages: [input] }, { headers });
+      recordEntries(channelName, [entry], serial);
+    }
 
     for (;;) {
       const messages = (loadConversation(channelName)?.entries ?? []).map((entry) => entry.param);
@@ -112,7 +122,7 @@ export async function POST(req: Request) {
         },
         { signal: req.signal },
       );
-      const { serial } = await transport.pipe(stream, { signal: req.signal, headers });
+      const { serial } = await adaptor.pipe(stream, { signal: req.signal, headers });
       // A stream that fails part-way can end its iteration without an error,
       // so the pipe resolves; `finalMessage` is what rejects.
       const reply = await stream.finalMessage();
@@ -133,19 +143,18 @@ export async function POST(req: Request) {
     // it. The reply itself is not recorded: what landed of it stays on the
     // channel.
     try {
-      await transport.send({ type: 'message_stop' }, { headers });
+      await adaptor.send({ type: 'message_stop' }, { headers });
     } catch (sendError) {
       console.error('unable to end the reply', sendError);
     }
 
-    if (error instanceof Ably.ErrorInfo && error.code === ErrorCode.OperationCancelled) {
+    if (error instanceof ErrorInfo && error.code === ErrorCode.OperationCancelled) {
       return new Response(null, { status: 204 });
     }
 
     console.error('turn failed', error);
     return new Response(error instanceof Error ? error.message : 'turn failed', { status: 500 });
   } finally {
-    await transport.close();
-    ably.close();
+    pubsubClient.close();
   }
 }

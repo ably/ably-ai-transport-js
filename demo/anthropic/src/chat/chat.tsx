@@ -3,11 +3,15 @@
 import { type SubmitEvent, useState } from 'react';
 
 import { BlockView } from './blocks';
-import { useConversation } from './use-conversation';
+import { useConversation, type UseConversationOptions } from './use-conversation';
 import { useToolApproval } from './use-tool-approval';
 
-export function Chat({ channelName }: { channelName: string }) {
-  const { entries, deliveries, attached, status, streaming, busy, submit, approve } = useConversation(channelName);
+export function Chat({ channelName, stored, onDiscontinuity }: UseConversationOptions) {
+  const { entries, deliveries, attached, streaming, busy, submit, approve } = useConversation({
+    channelName,
+    stored,
+    onDiscontinuity,
+  });
 
   // Only the last entry can hold tool calls still waiting for an answer. The
   // Messages API needs every `tool_use` answered by a `tool_result` in the
@@ -48,9 +52,7 @@ export function Chat({ channelName }: { channelName: string }) {
             Ably messages ({deliveries.length})
           </button>
         </nav>
-        <span>
-          {status !== undefined ? `${status}…` : streaming ? 'streaming…' : attached ? 'live' : 'connecting…'}
-        </span>
+        <span>{streaming ? 'streaming…' : attached ? 'live' : 'connecting…'}</span>
       </header>
       {tab === 'chat' ? (
         <>

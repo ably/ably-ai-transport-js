@@ -210,12 +210,15 @@ importers:
       '@ably/ai-transport':
         specifier: link:../..
         version: link:../..
+      '@ably/pubsub-device':
+        specifier: link:../../node_modules/@ably/pubsub-device
+        version: link:../../node_modules/@ably/pubsub-device
+      '@ably/pubsub-server':
+        specifier: link:../../node_modules/@ably/pubsub-server
+        version: link:../../node_modules/@ably/pubsub-server
       '@anthropic-ai/sdk':
         specifier: ^1.3.0
         version: 1.3.0(zod@4.6.7)
-      ably:
-        specifier: link:../../node_modules/ably
-        version: link:../../node_modules/ably
       next:
         specifier: ^16
         version: 16.4.3(@babel/core@7.29.7)(@opentelemetry/api@1.10.0)(@types/node@25.9.9)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)

@@ -101,6 +101,7 @@
   },
   "peerDependencies": {
     "@ag-ui/core": "^1",
+    "@anthropic-ai/sdk": "^1",
     "ably": "^2.23.0",
     "ai": "^6 || ^7",
     "openai": "^6",
@@ -108,6 +109,9 @@
   },
   "peerDependenciesMeta": {
     "@ag-ui/core": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
       "optional": true
     },
     "ai": {
@@ -123,6 +127,7 @@
   "devDependencies": {
     "@ag-ui/client": "1.0.0",
     "@ag-ui/core": "1.0.0",
+    "@anthropic-ai/sdk": "1.3.0",
     "@eslint/compat": "^2.0.5",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^10.0.1",

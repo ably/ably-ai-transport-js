@@ -279,7 +279,7 @@ messages.push({ role: 'assistant', content: reply.content });
 The codec carries text, extended thinking, tool use, server tools and citations. Some events change on the wire:
 
 - A text, thinking or tool input delta appends to one message per content block, keyed by the block's index. History and a client that joins late read one delta event per block, with the text joined.
-- A `signature_delta` and a `citations_delta` are each their own message, so a thinking block's signature reaches the client byte for byte. A citation does not keep its place among the text deltas around it, and the SDK's reducer adds it to its block either way.
+- A `signature_delta` and a `citations_delta` are each their own message, since the SDK's reducer sets a signature and collects citations rather than joining text. A citation does not keep its place among the text deltas around it, and the SDK's reducer adds it to its block either way.
 - `message_start` travels with `message.content` empty. The SDK's stream adds the blocks it receives to that message, so by the time the codec encodes it, the message can hold content that the codec sends as its own events.
 - A block that does not stream, such as `redacted_thinking` or a server tool's result, travels whole in its `content_block_start`. The codec does not check sizes, so a block larger than the Ably message size limit fails its publish, and `pipe` rejects.
 

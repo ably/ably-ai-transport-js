@@ -4,9 +4,9 @@
  *
  * Text, thinking and tool input deltas append to one message per content
  * block, keyed by the block's index, and `content_block_stop` ends the key.
- * Signature and citation deltas are messages of their own: a signature must
- * reach the client byte for byte, and the SDK's reducer puts both on their
- * block whatever order they arrive in.
+ * Signature and citation deltas are messages of their own: the SDK's reducer
+ * sets a signature and collects citations rather than joining text, and puts
+ * both on their block whatever order they arrive in.
  *
  * The SDK yields `message_start` with the message it keeps adding blocks to,
  * so the codec sends its `content` as `[]`, as the API did.
@@ -125,7 +125,7 @@ const encodeDelta = (e: Anthropic.RawContentBlockDeltaEvent): EncodedRow => {
     }
     default: {
       // A delta type the SDK added after the codec was written.
-      const unknown: { type?: unknown } = delta;
+      const unknown: { type?: unknown } = delta satisfies never;
       throw new Ably.ErrorInfo(
         `unable to encode content_block_delta; no row for delta type '${String(unknown.type)}'`,
         ErrorCode.InvalidArgument,

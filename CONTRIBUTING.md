@@ -41,6 +41,7 @@ pnpm run build:core     # Build core entry point only
 pnpm run build:vercel   # Build vercel entry point only
 pnpm run build:openai   # Build openai entry point only
 pnpm run build:ag-ui    # Build ag-ui entry point only
+pnpm run build:anthropic # Build anthropic entry point only
 pnpm run build:cdn      # Build the CDN bundle
 ```
 

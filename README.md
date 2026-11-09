@@ -257,6 +257,36 @@ The codec does not support `MESSAGES_SNAPSHOT`, and some events change on the wi
 
 AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its state deltas patch the state the client already holds. So a client must join at a run boundary, with its messages and state loaded from your store. Your agent should pipe one run at a time to a channel.
 
+### Anthropic
+
+The Anthropic codec carries the stream events of the [Messages API](https://platform.claude.com/docs/en/build-with-claude/streaming), as `@anthropic-ai/sdk` yields them. An agent pipes `client.messages.stream()`, and every client decodes the same events and can merge them with the SDK's own reducer, `MessageStream.fromReadableStream`. A client starts a turn, or answers a tool call with `tool_result` blocks, by sending the codec's own `input` event, which carries `MessageParam`s.
+
+```typescript
+import { createAnthropicCodec } from '@ably/ai-transport/anthropic';
+
+const transport = createTransport({ client: ably, channelName, codec: createAnthropicCodec() });
+
+// Client: the user's message, or the results of the tools the last turn called.
+await transport.send({ type: 'input', messages: [{ role: 'user', content: 'What is the weather in London?' }] });
+
+// Agent: pipe the stream as the SDK returns it, then keep the reply for the next turn.
+const stream = claude.messages.stream({ model, max_tokens, messages }); // claude = new Anthropic()
+await transport.pipe(stream);
+const reply = await stream.finalMessage();
+messages.push({ role: 'assistant', content: reply.content });
+```
+
+The codec carries text, extended thinking, tool use, server tools and citations. Some events change on the wire:
+
+- A text, thinking or tool input delta appends to one message per content block, keyed by the block's index. History and a client that joins late read one delta event per block, with the text joined.
+- A `signature_delta` and a `citations_delta` are each their own message, so a thinking block's signature reaches the client byte for byte. A citation does not keep its place among the text deltas around it, and the SDK's reducer adds it to its block either way.
+- `message_start` travels with `message.content` empty. The SDK's stream adds the blocks it receives to that message, so by the time the codec encodes it, the message can hold content that the codec sends as its own events.
+- A block that does not stream, such as `redacted_thinking` or a server tool's result, travels whole in its `content_block_start`. The codec does not check sizes, so a block larger than the Ably message size limit fails its publish, and `pipe` rejects.
+
+Pass the stream to `pipe` without awaiting anything in between: `MessageStream` starts its request when it is created and only queues events for a reader once one is attached. A stream that fails part-way can end the iteration without an error, so check the turn with `finalMessage()`, which rejects. The SDK's reducer folds one message at a time, so a client starts a new `MessageStream.fromReadableStream` at each `message_start`.
+
+The codec does not support the beta stream (`client.beta.messages.stream()`) or the Claude Agent SDK.
+
 ### React client
 
 `@ably/ai-transport/react` is the same transport behind a provider and four hooks. The provider resolves the channel from the surrounding `<AblyProvider>`, so the channel wiring the example above does by hand is handled for you.

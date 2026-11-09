@@ -102,6 +102,7 @@ export function useConversation(channelName: string): ConversationHandle {
   });
 
   const subscription = useRef<Subscription | undefined>(undefined);
+  const replaying = useRef(false);
   const [status, setStatus] = useState<'loading' | undefined>('loading');
 
   const apply = useCallback(
@@ -128,7 +129,6 @@ export function useConversation(channelName: string): ConversationHandle {
         upsert({ id: event.message.id, role: 'assistant', content: [] });
         replies.current.get(from)?.close();
         openReply(from);
-        setStreaming(true);
       }
 
       replies.current.get(from)?.enqueue(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
@@ -137,6 +137,10 @@ export function useConversation(channelName: string): ConversationHandle {
         replies.current.get(from)?.close();
         replies.current.delete(from);
         setStreaming(replies.current.size > 0);
+      } else if (!replaying.current && replies.current.has(from)) {
+        // Only a live delivery marks a reply as streaming, so a reply cut off
+        // in the past, which never got its `message_stop`, never locks the page.
+        setStreaming(true);
       }
     },
     [openReply, upsert],
@@ -153,6 +157,7 @@ export function useConversation(channelName: string): ConversationHandle {
       if (transport === undefined) return;
 
       subscription.current?.();
+      replaying.current = true;
       setStatus('loading');
 
       const replay = after === undefined ? untilEvent<AnthropicEvent>(() => false) : fromSerial<AnthropicEvent>(after);
@@ -171,6 +176,7 @@ export function useConversation(channelName: string): ConversationHandle {
 
         if (subscription.current !== sub) return;
 
+        replaying.current = false;
         setStatus(undefined);
         if (failure !== undefined) console.error('loading failed', failure);
       })();

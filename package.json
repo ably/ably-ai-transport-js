@@ -69,7 +69,8 @@
     "src/**",
     "vercel/**",
     "openai/**",
-    "ag-ui/**"
+    "ag-ui/**",
+    "anthropic/**"
   ],
   "repository": {
     "type": "git",

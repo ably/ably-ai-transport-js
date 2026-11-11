@@ -9,7 +9,7 @@ Ably AI Transport carries an AI agent's output over an Ably channel. Your agent 
 Your application holds the channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes an LLM's events onto that channel. In the client, a decoder turns each message the channel delivers, live or from history, back into the same events. Your application merges the event stream into its own messages. The SDK includes an adaptor and a decoder for the Vercel AI SDK, the OpenAI Responses API and AG-UI, and you can define your own format with the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
-> This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 0.12.0](./docs/migrations/0.11.0-to-0.12.0.md) for the move from the transport to adaptors and decoders.
+> From 1.0.0, the SDK follows semantic versioning, so a breaking change comes in a new major version. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 1.0.0](./docs/migrations/0.11.0-to-1.0.0.md) for the move from the transport to adaptors and decoders.
 
 Find out more:
 

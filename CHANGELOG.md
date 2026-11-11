@@ -2,6 +2,36 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [1.0.0](https://github.com/ably/ably-ai-transport-js/tree/1.0.0) (2026-11-12)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.11.0...1.0.0)
+
+In 1.0.0, your application interacts with the Ably channel through the Pub/Sub SDK, and the AI Transport SDK provides the adaptors and decoders that connect AI providers to that channel.
+
+With 1.0.0, you can:
+
+- **Read agent output on the subscription you already have.** A client can read an agent's response with `channel.subscribe`, beside your users' messages and the other messages your application publishes. An agent can join a conversation between people.
+- **Use the rest of Pub/Sub on the same channel.** Your application sets the channel's options, and can use any Pub/Sub feature on it, such as presence or LiveObjects.
+- **Keep the conversation in your database.** A client can catch up by rewinding the channel to the last serial your database stored.
+- **Act on each event as the agent publishes it.** `pipeEach` yields each event with the serial of the message that holds it, so the agent can store the serial of a finished response.
+- **Use `useChat` with an Ably channel.** With `resume: true`, a tab that reloads, or opens while a response is streaming, picks up the response from the channel.
+
+The wire format is the same as in 0.11.0, so a 0.11.0 agent and a 1.0.0 client can share a channel. An application that uses `createTransport` or the React entry point has to change its code to upgrade. The [migration guide](https://github.com/ably/ably-ai-transport-js/blob/main/docs/migrations/0.11.0-to-1.0.0.md) maps each transport API to its replacement.
+
+### Breaking Changes
+
+- **The transport is removed.** `createTransport`, `fromSerial`, `untilEvent` and `OBJECT_MODES` are gone. Get the channel with `channels.get` on your Pub/Sub client, publish with an agent adaptor and read with a decoder. To catch up from a stored serial, pass it as the channel's `rewind` param. [#366](https://github.com/ably/ably-ai-transport-js/pull/366)
+- **The React entry point is removed.** `@ably/ai-transport/react` is gone, with `TransportProvider`, `useTransport`, `useDeliveries`, `useHistory` and `useTransportStatus`, and `react` is no longer a peer dependency. Use `<PubSubClientProvider>` and `<ChannelProvider>` from `@ably/pubsub-device/react`, with a decoder subscribed in an effect. [#366](https://github.com/ably/ably-ai-transport-js/pull/366)
+- **The provider codecs are no longer exported.** Use `vercelAdaptor()` and `vercelDecoder()` in place of `vercel` and `createVercelCodec()`, `openaiAdaptor()` and `openaiDecoder()` in place of `openai` and `createOpenAICodec()`, and `agUiAdaptor()` and `agUiDecoder()` in place of `agui` and `createAGUICodec()`. [#366](https://github.com/ably/ably-ai-transport-js/pull/366)
+- **`ErrorCode` drops `SessionSubscriptionFailed`, `SessionClosed` and `SessionHistoryFetchFailed`.** A codec that throws while decoding is reported on `decoder.onError` with `SessionMessageProcessingFailed`. [#366](https://github.com/ably/ably-ai-transport-js/pull/366)
+- **An adaptor refuses a message without its codec's `name` and `id`.** `send` rejects with `InvalidArgument`, and `pipe` rejects with `PipeFailed`. Only a hand-written codec can leave them out, since `defineCodec` writes both. [#365](https://github.com/ably/ably-ai-transport-js/pull/365)
+
+### New Features
+
+- **Publish with an agent adaptor.** `createAgentAdaptor(channel, codec)`, or `vercelAdaptor(channel)`, `openaiAdaptor(channel)` and `agUiAdaptor(channel)` from their entry points, publishes on a channel you got from your Pub/Sub client. `send` publishes one event, and `pipe` writes a stream and resolves with the serial of its last publish. An adaptor can take default `headers`, and a call's headers override them. [#365](https://github.com/ably/ably-ai-transport-js/pull/365)
+- **Act on each event as it is published.** `adaptor.pipeEach(source)` yields each event with the serial of the message that holds it, and reads the next event only after the loop body finishes. [#365](https://github.com/ably/ably-ai-transport-js/pull/365)
+- **Use an Ably channel as the `useChat` transport.** `createChatTransport({ channel })` from `@ably/ai-transport/vercel` posts each turn to your backend and reads the response from the channel, so a tab that reloads or opens partway through a response picks the response back up with `resume: true`. Some of its behaviour needs a recent `ai` release, and the `createChatTransport` documentation lists which. [#368](https://github.com/ably/ably-ai-transport-js/pull/368)
+
 ## [0.11.0](https://github.com/ably/ably-ai-transport-js/tree/0.11.0) (2026-11-02)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.10.0...0.11.0)

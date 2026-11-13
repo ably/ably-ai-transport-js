@@ -34,15 +34,22 @@
       "import": "./dist/ag-ui/ably-ai-transport-ag-ui.js",
       "require": "./dist/ag-ui/ably-ai-transport-ag-ui.umd.cjs"
     },
+    "./anthropic": {
+      "types": "./dist/anthropic/index.d.ts",
+      "react-native": "./dist/anthropic/ably-ai-transport-anthropic.umd.cjs",
+      "import": "./dist/anthropic/ably-ai-transport-anthropic.js",
+      "require": "./dist/anthropic/ably-ai-transport-anthropic.umd.cjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:vercel && pnpm run build:openai && pnpm run build:ag-ui",
+    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:vercel && pnpm run build:openai && pnpm run build:ag-ui && pnpm run build:anthropic",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
     "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "build:ag-ui": "vite build --config ./src/ag-ui/vite.config.ts --emptyOutDir",
+    "build:anthropic": "vite build --config ./src/anthropic/vite.config.ts --emptyOutDir",
     "build:cdn": "vite build --config ./src/vite.cdn.config.ts",
     "prepare": "pnpm run build",
     "lint": "eslint .",
@@ -62,7 +69,8 @@
     "src/**",
     "vercel/**",
     "openai/**",
-    "ag-ui/**"
+    "ag-ui/**",
+    "anthropic/**"
   ],
   "repository": {
     "type": "git",
@@ -99,6 +107,7 @@
     "@ably/pubsub-device": "^3.0.0",
     "@ably/pubsub-server": "^3.0.0",
     "@ag-ui/core": "^1",
+    "@anthropic-ai/sdk": "^1",
     "ai": "^6 || ^7",
     "openai": "^6"
   },
@@ -110,6 +119,9 @@
       "optional": true
     },
     "@ag-ui/core": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
       "optional": true
     },
     "ai": {
@@ -124,6 +136,7 @@
     "@ably/pubsub-server": "^3.0.0",
     "@ag-ui/client": "1.0.0",
     "@ag-ui/core": "1.0.0",
+    "@anthropic-ai/sdk": "1.6.0",
     "@eslint/compat": "^2.0.5",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^10.0.1",

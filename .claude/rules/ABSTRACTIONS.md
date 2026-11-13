@@ -13,18 +13,18 @@ SDK's own identity, the errors,
 the logger and the event emitter sit at the top of `src/` and `src/core/`.
 Tests mirror `src/` under `test/`.
 
-The package ships four entry points, each with its own `index.ts` (see the
+The package ships five entry points, each with its own `index.ts` (see the
 table). That `index.ts` is the authoritative list of what is public: only
 types and functions it re-exports are public API. A new codec adds a new entry
-point rather than changing an existing one. An Anthropic codec is planned as
-a further entry point.
+point rather than changing an existing one.
 
-| Entry point                 | Purpose                                                                                                         | Peer deps                       |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `@ably/ai-transport`        | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder                                | a Pub/Sub client                |
-| `@ably/ai-transport/vercel` | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s, and a `useChat` transport over the decoder | a Pub/Sub client, `ai`          |
-| `@ably/ai-transport/openai` | An adaptor and a decoder over OpenAI Responses stream events                                                    | a Pub/Sub client, `openai`      |
-| `@ably/ai-transport/ag-ui`  | An adaptor and a decoder over AG-UI events                                                                      | a Pub/Sub client, `@ag-ui/core` |
+| Entry point                    | Purpose                                                                                                         | Peer deps                             |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `@ably/ai-transport`           | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder                                | a Pub/Sub client                      |
+| `@ably/ai-transport/vercel`    | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s, and a `useChat` transport over the decoder | a Pub/Sub client, `ai`                |
+| `@ably/ai-transport/openai`    | An adaptor and a decoder over OpenAI Responses stream events                                                    | a Pub/Sub client, `openai`            |
+| `@ably/ai-transport/ag-ui`     | An adaptor and a decoder over AG-UI events                                                                      | a Pub/Sub client, `@ag-ui/core`       |
+| `@ably/ai-transport/anthropic` | An adaptor and a decoder over Anthropic Messages stream events                                                  | a Pub/Sub client, `@anthropic-ai/sdk` |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.

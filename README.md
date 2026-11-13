@@ -9,7 +9,7 @@ Ably AI Transport carries an AI agent's output over an Ably channel. Your agent 
 Your application holds the channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes an LLM's events onto that channel. In the client, a decoder turns each message the channel delivers, live or from history, back into the same events. Your application merges the event stream into its own messages. The SDK includes an adaptor and a decoder for the Vercel AI SDK, the OpenAI Responses API, the Anthropic Messages API and AG-UI, and you can define your own format with the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
-> This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 0.12.0](./docs/migrations/0.11.0-to-0.12.0.md) for the move from the transport to adaptors and decoders.
+> From 1.0.0, the SDK follows semantic versioning, so a breaking change comes in a new major version. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 1.0.0](./docs/migrations/0.11.0-to-1.0.0.md) for the move from the transport to adaptors and decoders.
 
 Find out more:
 
@@ -314,6 +314,49 @@ Every message a codec encodes carries the codec's `name`, `ai` unless you pass `
 ### React
 
 The SDK has no React entry point. Mount `<PubSubClientProvider>` and `<ChannelProvider>` from `@ably/pubsub-device/react`, passing the `rewind` param in the provider's `options` when you catch up from a stored serial, then get the channel from the client, subscribe a decoder in an effect and attach the channel, as `demo/minimal/src/app/page.tsx` and `chat.tsx` do. `<ChannelProvider>` turns off ably-pubsub-js's attach on subscribe, so the application attaches the channel itself with `channel.attach()`. Subscribe first, so the messages a rewind delivers on attach reach the decoder. Create the decoder inside the effect, one per run: an effect can run again, under Fast Refresh for example, and a decoder kept across runs drops text it has already seen.
+
+### useChat
+
+`@ably/ai-transport/vercel` also ships a `ChatTransport` for the AI SDK's `useChat`. It posts each turn to your backend as `useChat` describes it, and reads the reply off the conversation's channel rather than the response body. A reply therefore outlives the request: a tab that reloads, or opens mid-reply, rejoins it. The [Vercel AI SDK UI guide](https://ably.com/docs/ai-transport/frameworks/vercel-ai-sdk-ui) covers it in full.
+
+```tsx
+import { useChat } from '@ai-sdk/react';
+import { usePubSubClient } from '@ably/pubsub-device/react';
+import { createChatTransport } from '@ably/ai-transport/vercel';
+import { useEffect, useMemo } from 'react';
+
+// Inside a <PubSubClientProvider> from @ably/pubsub-device/react.
+function Chat({ channelName }: { channelName: string }) {
+  const channel = usePubSubClient().channels.get(channelName);
+  // One transport per conversation, kept across renders.
+  const transport = useMemo(() => createChatTransport({ channel }), [channel]);
+  // useChat never closes a transport, so close it with the conversation.
+  useEffect(() => () => transport.close(), [transport]);
+
+  const { messages, status, stop } = useChat({ id: channelName, transport, resume: true });
+  // stop() ends the reply in this tab. Tell the agent from the Stop button,
+  // however yours listens: here, a cancel it is subscribed to on the channel.
+  const onStopClick = () => {
+    void channel.publish({ name: 'cancel', data: {} });
+    void stop();
+  };
+  // Render the messages as with any useChat transport.
+  return (
+    <>
+      <p>{messages.length} messages</p>
+      {(status === 'submitted' || status === 'streaming') && <button onClick={onStopClick}>Stop</button>}
+    </>
+  );
+}
+```
+
+The transport subscribes to the channel on its first call and attaches it if nothing has, then reads history back to the running turn from where the channel attached. So leave the first attach to the transport, and give it a channel with no `rewind` param, since the messages a rewind replays are in that history too. `close()` detaches the channel only when the transport's read attached it.
+
+`POST /api/chat` receives `{ chatId, trigger, messageId, messages }`, plus any `body` in the request options of the call that sends the turn: `sendMessage`, `regenerate`, or `addToolOutput` and `addToolApprovalResponse` when `sendAutomaticallyWhen` sends it. The AI SDK's own transport sends `id` where this one sends `chatId`. The transport reads only the response's status, and on a failure the start of its body, for the error. The reply goes over the channel, so the backend can answer at once and run the agent past the response, for example in Next.js `after()`. A reply then goes on when the tab that asked for it reloads or closes, and stops only when the agent is told to: `useChat` aborts its reply on unmount too, so send the cancel from the Stop button, not from cleanup code. Turns on a channel run one at a time: the transport cannot tell one turn's chunks from another's, so the backend starts a turn only once the previous one has published its end.
+
+The agent pipes `toUIMessageStream` onto the chat's channel with `vercelAdaptor`, as in the agent example above. That opens each turn with a `start` chunk and ends it with `finish`, or with `abort` when the model call is aborted, as when the agent hears the cancel the Stop button publishes. When the model fails it writes `error`, sometimes followed by `finish`, and the reply ends at the `error`. On any other exit the agent publishes `abort` or `error` itself, and an agent that fails before it streams anything publishes `error`. If the agent dies before it can, whatever runs it, such as a workflow, publishes `error` for it, which ends the reply even if the agent died before its `start`. Without a terminal chunk the turn looks like it is still running, and every tab showing it stays `streaming` until Stop. A turn has one `start` and one end: when merging several UI message streams into one turn, pass `sendStart: false` to every stream but the first and `sendFinish: false` to every stream but the last. A reply carries only what is written from `start` to the end, so write any data part that updates after the model finishes before the turn's `finish`: merge the model's stream with `sendFinish: false` and write `finish` last. Pass `logger` to see what the transport logs, such as a turn whose request failed.
+
+Some of what the transport relies on arrived in patch releases of `ai` and `@ai-sdk/react`; `createChatTransport`'s documentation lists them.
 
 ---
 

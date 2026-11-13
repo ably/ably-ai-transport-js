@@ -6,7 +6,10 @@ The generic layer lives in `src/core/`. Each provider lives in its own
 directory (`src/vercel/`, `src/openai/`, …): its row table under a `codec/`
 subdirectory, and beside it the adaptor and decoder factories that wrap that
 codec. A provider directory may depend on the generic layer and on its own
-provider SDK, never on another provider. The SDK's own identity, the errors,
+provider SDK, never on another provider. It may also hold an adapter to its
+provider's own client framework, in a subdirectory of its own
+(`src/vercel/chat-transport/`, the `useChat` transport, is the instance). The
+SDK's own identity, the errors,
 the logger and the event emitter sit at the top of `src/` and `src/core/`.
 Tests mirror `src/` under `test/`.
 
@@ -15,13 +18,13 @@ table). That `index.ts` is the authoritative list of what is public: only
 types and functions it re-exports are public API. A new codec adds a new entry
 point rather than changing an existing one.
 
-| Entry point                    | Purpose                                                                          | Peer deps                             |
-| ------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------- |
-| `@ably/ai-transport`           | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder | a Pub/Sub client                      |
-| `@ably/ai-transport/vercel`    | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s              | a Pub/Sub client, `ai`                |
-| `@ably/ai-transport/openai`    | An adaptor and a decoder over OpenAI Responses stream events                     | a Pub/Sub client, `openai`            |
-| `@ably/ai-transport/ag-ui`     | An adaptor and a decoder over AG-UI events                                       | a Pub/Sub client, `@ag-ui/core`       |
-| `@ably/ai-transport/anthropic` | An adaptor and a decoder over Anthropic Messages stream events                   | a Pub/Sub client, `@anthropic-ai/sdk` |
+| Entry point                    | Purpose                                                                                                         | Peer deps                             |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `@ably/ai-transport`           | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder                                | a Pub/Sub client                      |
+| `@ably/ai-transport/vercel`    | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s, and a `useChat` transport over the decoder | a Pub/Sub client, `ai`                |
+| `@ably/ai-transport/openai`    | An adaptor and a decoder over OpenAI Responses stream events                                                    | a Pub/Sub client, `openai`            |
+| `@ably/ai-transport/ag-ui`     | An adaptor and a decoder over AG-UI events                                                                      | a Pub/Sub client, `@ag-ui/core`       |
+| `@ably/ai-transport/anthropic` | An adaptor and a decoder over Anthropic Messages stream events                                                  | a Pub/Sub client, `@anthropic-ai/sdk` |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.
@@ -55,13 +58,20 @@ preserve.
 
 - **Codec layer** (`src/vercel/`, `src/openai/`, …) is one codec per provider,
   a row table built with `defineCodec` against that provider's own types, and
-  the adaptor and decoder factories over it.
+  the adaptor and decoder factories over it, and, where the provider's client
+  framework needs one, an adapter to that framework (see Layout).
 
 The application owns the channel. It gets an `Ably.RealtimeChannel` from
 its Pub/Sub client, hands it to an adaptor on the agent side, and on the client side
 subscribes to it with `channel.subscribe(decoder.receive)` and pages its
-history through `decoder.decode`. No part of the SDK resolves, attaches or
-detaches a channel, and none holds a client.
+history through `decoder.decode`. No part of the SDK resolves a channel or
+holds a client. The one part that attaches and detaches a channel is the
+`useChat` transport, which the application hands its channel: `ChatTransport`
+asks it at any moment which turn is running, so it reads history back to the
+latest turn from where the channel attached, and keeps reading live. It
+attaches the channel when nothing has, and `close()` detaches only a channel
+its own read attached, so the next reader attaches it again and reads history
+from there. A channel the application attached stays attached.
 
 Codec, adaptor and decoder are distinct. The **codec** owns the wire format:
 which Ably message an event becomes, whether that message is a publish, an
@@ -174,7 +184,14 @@ that uses it.
 ## Dependency injection
 
 All dependencies are passed through constructors or option objects. There are
-no singletons or service locators.
+no singletons or service locators. The one module-level registry is the
+`useChat` transport's table of reader closes in flight, keyed by channel
+(`src/vercel/chat-transport/turn-reader.ts`): a reader must not subscribe
+until the previous reader on its channel has detached it, even one another
+chat transport opened, and nothing else connects the two.
+Platform globals the runtime provides, such as `fetch` and timers, are called
+directly rather than injected, and a test replaces them with `vi.stubGlobal`
+or fake timers.
 
 ## Class pattern
 
@@ -236,7 +253,8 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    one, or to nothing; the codec contract speaks arrays so a hand-written
    codec can split or fold. The decoder core absorbs the platform's two
    departures from one-to-one.
-4. **Constructor/option injection.** No singletons, no globals.
+4. **Constructor/option injection.** No singletons or service locators; the
+   one module-level registry, and why it exists, is under Dependency injection.
 5. **Composition, not inheritance.** Compose features; no class hierarchies.
 6. **Interface-first.** Public contracts are interfaces; implementations are
    internal `Default*` classes, exposed via factory functions.
@@ -276,15 +294,22 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 8. **Explicit exports.** Only what an `index.ts` re-exports is public API.
 9. **Self-contained features.** Each manages its own subscriptions, state, and
    cleanup.
-10. **The application owns the channel.** The SDK never resolves, attaches,
-    detaches or configures a channel and never holds a client. An adaptor
-    takes a channel to write to and a decoder takes messages, so the
-    application chooses the channel's options and lifecycle with its Pub/Sub client and
-    can use the same channel for its own messages. Nothing writes Ably-Agent
-    attribution, since that needs the client.
+10. **The application owns the channel.** The SDK never resolves or
+    configures a channel and never holds a client. An adaptor takes a channel
+    to write to and a decoder takes messages, so the application chooses the
+    channel's options and lifecycle with its Pub/Sub client and can use the
+    same channel for its own messages. The `useChat` transport is the one part
+    that attaches and detaches the channel it is handed, and why is under
+    Two-layer architecture. Nothing writes Ably-Agent attribution, since that
+    needs the client.
 11. **No message assembly anywhere in the package.** No reducer, no merge
-    driver, no projection type, and no grouping: a delivery carries one
-    event, and the application groups deliveries by `message.serial`, by
-    the ids the provider's own events carry, or by a header the publishing
-    call attached, then folds them with the provider's reducer.
-    `demo/minimal/src/app/chat.tsx` is the worked example.
+    driver and no projection type. A delivery carries one event, and the
+    application groups deliveries by `message.serial`, by the ids the
+    provider's own events carry, or by a header the publishing call
+    attached, then folds them with the provider's reducer.
+    `demo/minimal/src/app/chat.tsx` is the worked example. The one place the
+    package groups deliveries is the `useChat` transport, because
+    `ChatTransport` hands `useChat` one stream per turn: it cuts the
+    deliveries at each turn's `start` and terminal chunk, and keeps the
+    latest turn's chunks so a later `reconnectToStream` can replay them. It
+    still builds no messages; `useChat`'s own reducer does.

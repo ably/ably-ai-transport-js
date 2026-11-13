@@ -9,7 +9,7 @@ Ably AI Transport carries an AI agent's output over an Ably channel. Your agent 
 Your application holds the channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes an LLM's events onto that channel. In the client, a decoder turns each message the channel delivers, live or from history, back into the same events. Your application merges the event stream into its own messages. The SDK includes an adaptor and a decoder for the Vercel AI SDK, the OpenAI Responses API, the Anthropic Messages API and AG-UI, and you can define your own format with the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
-> This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 0.12.0](./docs/migrations/0.11.0-to-0.12.0.md) for the move from the transport to adaptors and decoders.
+> From 1.0.0, the SDK follows semantic versioning, so a breaking change comes in a new major version. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 1.0.0](./docs/migrations/0.11.0-to-1.0.0.md) for the move from the transport to adaptors and decoders.
 
 Find out more:
 
@@ -262,7 +262,7 @@ AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its
 `anthropicAdaptor` and `anthropicDecoder` carry the stream events of the [Messages API](https://platform.claude.com/docs/en/build-with-claude/streaming), as `@anthropic-ai/sdk` yields them. An agent pipes `client.messages.stream()`, and every client decodes the same events and can merge them with the SDK's own reducer, `MessageStream.fromReadableStream`. A client starts a turn, or answers a tool call with `tool_result` blocks, by sending the codec's own `input` event, which carries `MessageParam`s.
 
 ```typescript
-import { anthropicAdaptor, anthropicDecoder } from '@ably/ai-transport/anthropic';
+import { anthropicAdaptor } from '@ably/ai-transport/anthropic';
 
 const adaptor = anthropicAdaptor(channel);
 
@@ -271,12 +271,55 @@ await adaptor.send({ type: 'input', messages: [{ role: 'user', content: 'What is
 
 // Agent: pipe the stream as the SDK returns it, then keep the reply for the next turn.
 const stream = claude.messages.stream({ model, max_tokens, messages }); // claude = new Anthropic()
-await adaptor.pipe(stream);
-const reply = await stream.finalMessage();
-messages.push({ role: 'assistant', content: reply.content });
+try {
+  await adaptor.pipe(stream);
+  const reply = await stream.finalMessage();
+  messages.push({ role: 'assistant', content: reply.content });
+} catch (error) {
+  // The reply failed, and nothing the pipe wrote says so. Publish an error so
+  // that every client ends the reply. The publish may fail for the same reason
+  // the pipe did, so it is best effort.
+  try {
+    await adaptor.send({
+      type: 'error',
+      error: { type: 'api_error', message: error instanceof Error ? error.message : String(error) },
+      request_id: null,
+    });
+  } catch (sendError) {
+    console.error('error publish failed', sendError);
+  }
+}
+```
 
-// Client: decode what the channel delivers.
+A client decodes what the channel delivers and merges each reply with the SDK's own reducer, which folds one message at a time: `message_start` opens a `MessageStream.fromReadableStream`, and every event until `message_stop` goes into it, as the newline-delimited JSON the SDK's `toReadableStream()` writes. `MessageStream` ignores an error event that is written into its stream, so the reply would never fail. Instead, when an `error` arrives, the client calls `error()` on the stream's controller, and this makes the `MessageStream` fail.
+
+```typescript
+import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
+import { anthropicDecoder } from '@ably/ai-transport/anthropic';
+
 const decoder = anthropicDecoder();
+const encoder = new TextEncoder();
+let reply: ReadableStreamDefaultController<Uint8Array> | undefined;
+decoder.onEvent(({ event }) => {
+  if (event === undefined || event.type === 'input') return;
+  if (event.type === 'error') {
+    reply?.error(new Error(event.error.message));
+    reply = undefined;
+    return;
+  }
+  if (event.type === 'message_start') {
+    const stream = new ReadableStream<Uint8Array>({ start: (c) => (reply = c) });
+    MessageStream.fromReadableStream(stream)
+      .on('streamEvent', (_event, message) => render(message))
+      .on('error', (error) => console.error(error));
+  }
+  reply?.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+  if (event.type === 'message_stop') {
+    reply?.close();
+    reply = undefined;
+  }
+});
+decoder.onError((error) => console.error(error));
 await channel.subscribe(decoder.receive);
 ```
 
@@ -286,8 +329,9 @@ The codec carries text, extended thinking, tool use, server tools and citations.
 - A `signature_delta` and a `citations_delta` are each their own message, since the SDK's reducer sets a signature and collects citations rather than joining text. A citation does not keep its place among the text deltas around it, and the SDK's reducer adds it to its block either way.
 - `message_start` travels with `message.content` empty. The SDK's stream keeps building that message, so by the time the codec encodes it, the message can hold content that the codec sends as its own events. Its other fields travel as they are, so `stop_reason` and `usage` can already hold their final values. The `message_delta` that follows sets them again, so the SDK's reducer builds the same message.
 - A block that does not stream, such as `redacted_thinking` or a server tool's result, travels whole in its `content_block_start`. The codec does not check sizes, so a block larger than the Ably message size limit fails its publish, and `pipe` rejects.
+- `error` is the Messages API's own error event, `ErrorResponse` in the SDK's types, and travels whole. The SDK does not yield this event: it throws an `APIError` instead. So the agent builds the `error` event itself and publishes it with `send`.
 
-Pass the stream to `pipe` without awaiting anything in between: `MessageStream` starts its request when it is created and only queues events for a reader once one is attached. A stream that fails part-way can end the iteration without an error, so check the turn with `finalMessage()`, which rejects. The SDK's reducer folds one message at a time, so a client starts a new `MessageStream.fromReadableStream` at each `message_start`.
+Pass the stream to `pipe` without awaiting anything in between: `MessageStream` starts its request when it is created and only queues events for a reader once one is attached. A stream that fails part-way, for example with an `overloaded_error` or a dropped connection, can make `pipe` reject, or can make it resolve as if the reply had finished. In both cases `finalMessage()` rejects, so the agent catches the failure and publishes `error`. Without this `error`, the reply's `MessageStream` never ends or fails on any client, including a client that reads the reply from history.
 
 The codec does not support the beta stream (`client.beta.messages.stream()`) or the Claude Agent SDK.
 
@@ -314,6 +358,49 @@ Every message a codec encodes carries the codec's `name`, `ai` unless you pass `
 ### React
 
 The SDK has no React entry point. Mount `<PubSubClientProvider>` and `<ChannelProvider>` from `@ably/pubsub-device/react`, passing the `rewind` param in the provider's `options` when you catch up from a stored serial, then get the channel from the client, subscribe a decoder in an effect and attach the channel, as `demo/minimal/src/app/page.tsx` and `chat.tsx` do. `<ChannelProvider>` turns off ably-pubsub-js's attach on subscribe, so the application attaches the channel itself with `channel.attach()`. Subscribe first, so the messages a rewind delivers on attach reach the decoder. Create the decoder inside the effect, one per run: an effect can run again, under Fast Refresh for example, and a decoder kept across runs drops text it has already seen.
+
+### useChat
+
+`@ably/ai-transport/vercel` also ships a `ChatTransport` for the AI SDK's `useChat`. It posts each turn to your backend as `useChat` describes it, and reads the reply off the conversation's channel rather than the response body. A reply therefore outlives the request: a tab that reloads, or opens mid-reply, rejoins it. The [Vercel AI SDK UI guide](https://ably.com/docs/ai-transport/frameworks/vercel-ai-sdk-ui) covers it in full.
+
+```tsx
+import { useChat } from '@ai-sdk/react';
+import { usePubSubClient } from '@ably/pubsub-device/react';
+import { createChatTransport } from '@ably/ai-transport/vercel';
+import { useEffect, useMemo } from 'react';
+
+// Inside a <PubSubClientProvider> from @ably/pubsub-device/react.
+function Chat({ channelName }: { channelName: string }) {
+  const channel = usePubSubClient().channels.get(channelName);
+  // One transport per conversation, kept across renders.
+  const transport = useMemo(() => createChatTransport({ channel }), [channel]);
+  // useChat never closes a transport, so close it with the conversation.
+  useEffect(() => () => transport.close(), [transport]);
+
+  const { messages, status, stop } = useChat({ id: channelName, transport, resume: true });
+  // stop() ends the reply in this tab. Tell the agent from the Stop button,
+  // however yours listens: here, a cancel it is subscribed to on the channel.
+  const onStopClick = () => {
+    void channel.publish({ name: 'cancel', data: {} });
+    void stop();
+  };
+  // Render the messages as with any useChat transport.
+  return (
+    <>
+      <p>{messages.length} messages</p>
+      {(status === 'submitted' || status === 'streaming') && <button onClick={onStopClick}>Stop</button>}
+    </>
+  );
+}
+```
+
+The transport subscribes to the channel on its first call and attaches it if nothing has, then reads history back to the running turn from where the channel attached. So leave the first attach to the transport, and give it a channel with no `rewind` param, since the messages a rewind replays are in that history too. `close()` detaches the channel only when the transport's read attached it.
+
+`POST /api/chat` receives `{ chatId, trigger, messageId, messages }`, plus any `body` in the request options of the call that sends the turn: `sendMessage`, `regenerate`, or `addToolOutput` and `addToolApprovalResponse` when `sendAutomaticallyWhen` sends it. The AI SDK's own transport sends `id` where this one sends `chatId`. The transport reads only the response's status, and on a failure the start of its body, for the error. The reply goes over the channel, so the backend can answer at once and run the agent past the response, for example in Next.js `after()`. A reply then goes on when the tab that asked for it reloads or closes, and stops only when the agent is told to: `useChat` aborts its reply on unmount too, so send the cancel from the Stop button, not from cleanup code. Turns on a channel run one at a time: the transport cannot tell one turn's chunks from another's, so the backend starts a turn only once the previous one has published its end.
+
+The agent pipes `toUIMessageStream` onto the chat's channel with `vercelAdaptor`, as in the agent example above. That opens each turn with a `start` chunk and ends it with `finish`, or with `abort` when the model call is aborted, as when the agent hears the cancel the Stop button publishes. When the model fails it writes `error`, sometimes followed by `finish`, and the reply ends at the `error`. On any other exit the agent publishes `abort` or `error` itself, and an agent that fails before it streams anything publishes `error`. If the agent dies before it can, whatever runs it, such as a workflow, publishes `error` for it, which ends the reply even if the agent died before its `start`. Without a terminal chunk the turn looks like it is still running, and every tab showing it stays `streaming` until Stop. A turn has one `start` and one end: when merging several UI message streams into one turn, pass `sendStart: false` to every stream but the first and `sendFinish: false` to every stream but the last. A reply carries only what is written from `start` to the end, so write any data part that updates after the model finishes before the turn's `finish`: merge the model's stream with `sendFinish: false` and write `finish` last. Pass `logger` to see what the transport logs, such as a turn whose request failed.
+
+Some of what the transport relies on arrived in patch releases of `ai` and `@ai-sdk/react`; `createChatTransport`'s documentation lists them.
 
 ---
 

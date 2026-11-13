@@ -73,8 +73,14 @@ import {
 } from '../src/index.js';
 import type { OpenAIEvent, OpenAIInput, OpenAIStreamEvent } from '../src/openai/index.js';
 import { openaiAdaptor, openaiDecoder } from '../src/openai/index.js';
-import type { VercelCrossMajorChunk, VercelEvent, VercelUserMessage } from '../src/vercel/index.js';
-import { vercelAdaptor, vercelDecoder } from '../src/vercel/index.js';
+import type {
+  AblyChatTransport,
+  ChatTransportOptions,
+  VercelCrossMajorChunk,
+  VercelEvent,
+  VercelUserMessage,
+} from '../src/vercel/index.js';
+import { createChatTransport, vercelAdaptor, vercelDecoder } from '../src/vercel/index.js';
 import { createMockChannel } from './helper/mock-channel.js';
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
@@ -161,6 +167,16 @@ describe('@ably/ai-transport/vercel', () => {
     expectTypeOf<VercelEvent>().toHaveProperty('type');
     expectTypeOf<VercelUserMessage>().toHaveProperty('message');
     expectTypeOf<VercelCrossMajorChunk>().toHaveProperty('type');
+  });
+
+  it('exports the useChat transport factory and its types', () => {
+    expect(typeof createChatTransport).toBe('function');
+    expectTypeOf(createChatTransport).returns.toEqualTypeOf<AblyChatTransport>();
+    expectTypeOf<AblyChatTransport>().toHaveProperty('sendMessages');
+    expectTypeOf<AblyChatTransport>().toHaveProperty('reconnectToStream');
+    expectTypeOf<AblyChatTransport>().toHaveProperty('close');
+    expectTypeOf<AblyChatTransport['resumeStreamIsReplay']>().toEqualTypeOf<true>();
+    expectTypeOf<ChatTransportOptions>().toHaveProperty('channel');
   });
 });
 

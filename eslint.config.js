@@ -49,6 +49,7 @@ export default [
       'vercel/**',
       'openai/**',
       'ag-ui/**',
+      'anthropic/**',
     ],
   },
   ...fixupConfigRules(

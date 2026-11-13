@@ -1,13 +1,15 @@
 /**
  * The Anthropic Messages codec's event union.
  *
- * The union is the Messages API's own stream events, as the SDK declares them.
- * One event of the codec's own joins them: `input`, the messages a client
+ * The union is the Messages API's own stream events, as the SDK declares them,
+ * and the API's `error` event, which the SDK throws rather than yields. One
+ * event of the codec's own joins them: `input`, the messages a client
  * publishes to start a turn or answer a tool call, so both directions of a
  * conversation share one codec.
  */
 
 import type * as Anthropic from '@anthropic-ai/sdk/resources/messages';
+import type * as Shared from '@anthropic-ai/sdk/resources/shared';
 
 /**
  * A Messages stream event as the codec carries it: the SDK's own event, with
@@ -28,5 +30,15 @@ export interface AnthropicInput {
   messages: Anthropic.MessageParam[];
 }
 
+/**
+ * A failed reply: the `error` event the Messages API streams, in the SDK's
+ * own type. The SDK throws that event as an `APIError` rather than
+ * yielding it, and a stream that fails part-way can end its iteration without
+ * throwing at all, so nothing the agent pipes tells a client the reply failed.
+ * The agent publishes this event itself when `finalMessage()` rejects, and a
+ * client reads it as the end of the reply that was streaming.
+ */
+export type AnthropicErrorEvent = Shared.ErrorResponse;
+
 /** Every event the Anthropic codec encodes and decodes. */
-export type AnthropicEvent = AnthropicStreamEvent | AnthropicInput;
+export type AnthropicEvent = AnthropicStreamEvent | AnthropicInput | AnthropicErrorEvent;

@@ -27,19 +27,30 @@ const foldOne = async (events: AnthropicStreamEvent[]): Promise<Anthropic.Messag
  * Fold a stream event sequence through the SDK's reducer and return each
  * message it builds, in order. The reducer folds one message per stream, so a
  * sequence carrying several is split at each `message_start`; the codec's own
- * `input` is left out, since the reducer only takes the API's events. The
+ * `input` is left out, since the reducer only takes the API's events. An
+ * `error` that arrives while a message is still streaming rejects the fold,
+ * as it fails that message's `MessageStream` in the README's client. An
+ * `error` that arrives after the message's `message_stop` is ignored. The
  * reducer rejects only a second `message_start` before `message_stop`: it
  * skips a block event that comes before `message_start` and a delta for a
  * block of another type. So a sequence that folds is not proof the SDK
  * accepts it; a test compares the folded messages with the ones it expects.
  * @param events - The events, in wire order.
  * @returns The messages, each as JSON would carry it.
+ * @throws {Error} Rejects with the `error`'s message when an `error` arrives while a message is streaming.
  */
 export const foldWithMessageStream = async (events: AnthropicEvent[]): Promise<unknown[]> => {
   const messages: AnthropicStreamEvent[][] = [];
 
   for (const event of events) {
     if (event.type === 'input') continue;
+
+    if (event.type === 'error') {
+      const current = messages.at(-1);
+      if (current !== undefined && current.at(-1)?.type !== 'message_stop') throw new Error(event.error.message);
+      continue;
+    }
+
     if (event.type === 'message_start') messages.push([]);
     messages.at(-1)?.push(event);
   }

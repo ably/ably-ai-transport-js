@@ -6,7 +6,7 @@ import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { foldWithMessageStream } from '../../helper/anthropic-fold.js';
 import { deliveriesOf, encodeAll, historyOf, roundTrip } from '../../helper/wire.js';
-import { at, citation, emptyText, openedMessage, searchTurn, toolResult, toolTurn } from './fixtures.js';
+import { at, citation, emptyText, failedTurn, openedMessage, searchTurn, toolResult, toolTurn } from './fixtures.js';
 
 /**
  * The body and routing of each encoded message, without the rest of the message.
@@ -127,6 +127,15 @@ describe('the Anthropic codec', () => {
       ]);
     });
 
+    it('publishes an error as its own message, not as part of the unfinished text block', () => {
+      expect(wireOf(codec, failedTurn)).toEqual([
+        { data: at(failedTurn, 0) },
+        { data: at(failedTurn, 1) },
+        { data: 'It is ', append: '0' },
+        { data: at(failedTurn, 3) },
+      ]);
+    });
+
     it('throws for a delta type the codec does not know', () => {
       // CAST: a delta outside the SDK's union, as a newer API version may send.
       const rogue = {
@@ -205,6 +214,11 @@ describe('the Anthropic codec', () => {
       expect(roundTrip(codec, [{ type: 'input', messages: toolResult }])).toStrictEqual([
         { type: 'input', messages: toolResult },
       ]);
+    });
+
+    it('round-trips a failed turn with its error, live and from history', () => {
+      expect(roundTrip(codec, failedTurn)).toStrictEqual(failedTurn);
+      expect(fromHistory(failedTurn)).toStrictEqual(failedTurn);
     });
 
     it('throws for a plain publish whose body is not an object', () => {
@@ -295,6 +309,16 @@ describe('the Anthropic codec', () => {
           stop_reason: 'end_turn',
         },
       ]);
+    });
+
+    it('rejects for a Message an error interrupts, and ignores an error after a Message has finished', async () => {
+      // An error that arrives while a Message is streaming rejects the fold with the API's error message.
+      await expect(foldWithMessageStream(roundTrip(codec, failedTurn))).rejects.toThrow('Overloaded');
+
+      // With no reply streaming, an error fails nothing.
+      const error = at(failedTurn, failedTurn.length - 1);
+
+      expect(await foldWithMessageStream([...toolTurn, error])).toStrictEqual(await foldWithMessageStream(toolTurn));
     });
 
     it('builds the same Message when a citation or signature arrives ahead of the text before it', async () => {

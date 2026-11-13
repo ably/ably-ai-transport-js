@@ -1,6 +1,8 @@
 /**
  * The Anthropic Messages codec: one row per stream event type, plus the
- * `input` a client publishes.
+ * `input` a client publishes and the `error` an agent publishes when a reply
+ * fails. `error` is sent as one complete message. It does not close any
+ * stream, because the agent sends it only after `pipe` has finished.
  *
  * Text, thinking and tool input deltas append to one message per content
  * block, keyed by the block's index, and `content_block_stop` ends the key.
@@ -174,7 +176,10 @@ export const createAnthropicCodec = (): Codec<AnthropicEvent> =>
         decode: event,
       },
 
-      // The codec's own event; see `AnthropicInput`.
+      // The API's own event, which the SDK throws. See `AnthropicErrorEvent`.
+      error: plain(),
+
+      // The codec's own event. See `AnthropicInput`.
       input: {
         encode: (e) => ({ data: e.messages }),
         decode: (m) => {

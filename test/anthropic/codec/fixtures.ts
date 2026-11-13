@@ -163,6 +163,23 @@ export const searchTurn: AnthropicEvent[] = [
 ];
 
 /**
+ * A reply the API cuts off while its text is streaming. The SDK throws the
+ * API's `error` event rather than yielding it, so the pipe ends on the text
+ * delta, and the agent publishes the `error` itself: the text block has no
+ * `content_block_stop` and the message no `message_stop`.
+ */
+export const failedTurn: AnthropicEvent[] = [
+  { type: 'message_start', message: openedMessage('msg_3') },
+  { type: 'content_block_start', index: 0, content_block: emptyText },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'It is ' } },
+  {
+    type: 'error',
+    error: { type: 'overloaded_error', message: 'Overloaded' },
+    request_id: 'req_1',
+  },
+];
+
+/**
  * The event at `index`, for a fixture the suite knows the length of.
  * @param events - The events.
  * @param index - The position.

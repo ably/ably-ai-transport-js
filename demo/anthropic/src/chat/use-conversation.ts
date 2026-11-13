@@ -24,7 +24,7 @@ export interface ConversationHandle {
   deliveries: Delivery<AnthropicEvent>[];
   /** Whether the channel is ATTACHED. */
   attached: boolean;
-  /** Whether a reply is streaming now, from its `message_start` to its `message_stop`. */
+  /** Whether a reply is streaming now, from its `message_start` to its `message_stop` or `error`. */
   streaming: boolean;
   /** Whether this tab's own turn is in flight, from publishing its input to the route's response. */
   busy: boolean;
@@ -61,8 +61,8 @@ export function useConversation({ channelName, stored, onDiscontinuity }: UseCon
   // stream.
   const replies = useRef(new Map<string, ReadableStreamDefaultController<Uint8Array>>());
   // Whether a reply is streaming now, which holds the composer. The route
-  // sends a `message_stop` for any reply it could not finish, so a reply is
-  // left open only if the agent itself dies mid-stream.
+  // sends an `error` for any reply it could not finish, so a reply is left
+  // open only if the agent itself dies mid-stream.
   const [streaming, setStreaming] = useState(false);
 
   // Put an entry in the list by id: an entry the list already holds is
@@ -142,6 +142,19 @@ export function useConversation({ channelName, stored, onDiscontinuity }: UseCon
       // tab, this one included, shows it from the same source.
       if (event.type === 'input') {
         for (const entry of inputEntries(from, event.messages)) upsert(entry);
+        return;
+      }
+
+      // The agent publishes an `error` when a reply fails. The page closes the
+      // reply's stream rather than failing it: failing a stream drops the
+      // events still queued in it, and a page that loads after the failure
+      // gets the whole reply at once, so it would show the reply empty.
+      // Closing keeps the part that arrived on the page and frees the composer.
+      if (event.type === 'error') {
+        console.error('reply failed', event.error.message);
+        replies.current.get(from)?.close();
+        replies.current.delete(from);
+        setStreaming(replies.current.size > 0);
         return;
       }
 

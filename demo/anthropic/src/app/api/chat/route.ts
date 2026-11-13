@@ -123,8 +123,8 @@ export async function POST(req: Request) {
         { signal: req.signal },
       );
       const { serial } = await adaptor.pipe(stream, { signal: req.signal, headers });
-      // A stream that fails part-way can end its iteration without an error,
-      // so the pipe resolves; `finalMessage` is what rejects.
+      // A stream that fails part-way can make the pipe reject, or resolve as if
+      // the reply had finished. `finalMessage()` rejects in both cases.
       const reply = await stream.finalMessage();
 
       // The reply goes back to the model as it came, thinking signatures and
@@ -138,12 +138,18 @@ export async function POST(req: Request) {
 
     return new Response(null, { status: 204 });
   } catch (error) {
-    // A cancelled or failed reply never gets its `message_stop`, and every
-    // page shows a reply as streaming until one arrives, so the route sends
-    // it. The reply itself is not recorded: what landed of it stays on the
-    // channel.
+    // A cancelled or failed reply never gets its `message_stop`. Publish an
+    // `error` so that every page ends the reply. What landed of the reply
+    // stays on the channel, but the store does not record it.
     try {
-      await adaptor.send({ type: 'message_stop' }, { headers });
+      await adaptor.send(
+        {
+          type: 'error',
+          error: { type: 'api_error', message: error instanceof Error ? error.message : String(error) },
+          request_id: null,
+        },
+        { headers },
+      );
     } catch (sendError) {
       console.error('unable to end the reply', sendError);
     }

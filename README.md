@@ -262,7 +262,7 @@ AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its
 `anthropicAdaptor` and `anthropicDecoder` carry the stream events of the [Messages API](https://platform.claude.com/docs/en/build-with-claude/streaming), as `@anthropic-ai/sdk` yields them. An agent pipes `client.messages.stream()`, and every client decodes the same events and can merge them with the SDK's own reducer, `MessageStream.fromReadableStream`. A client starts a turn, or answers a tool call with `tool_result` blocks, by sending the codec's own `input` event, which carries `MessageParam`s.
 
 ```typescript
-import { anthropicAdaptor, anthropicDecoder } from '@ably/ai-transport/anthropic';
+import { anthropicAdaptor } from '@ably/ai-transport/anthropic';
 
 const adaptor = anthropicAdaptor(channel);
 
@@ -271,12 +271,55 @@ await adaptor.send({ type: 'input', messages: [{ role: 'user', content: 'What is
 
 // Agent: pipe the stream as the SDK returns it, then keep the reply for the next turn.
 const stream = claude.messages.stream({ model, max_tokens, messages }); // claude = new Anthropic()
-await adaptor.pipe(stream);
-const reply = await stream.finalMessage();
-messages.push({ role: 'assistant', content: reply.content });
+try {
+  await adaptor.pipe(stream);
+  const reply = await stream.finalMessage();
+  messages.push({ role: 'assistant', content: reply.content });
+} catch (error) {
+  // The reply failed, and nothing the pipe wrote says so. Publish an error so
+  // that every client ends the reply. The publish may fail for the same reason
+  // the pipe did, so it is best effort.
+  try {
+    await adaptor.send({
+      type: 'error',
+      error: { type: 'api_error', message: error instanceof Error ? error.message : String(error) },
+      request_id: null,
+    });
+  } catch (sendError) {
+    console.error('error publish failed', sendError);
+  }
+}
+```
 
-// Client: decode what the channel delivers.
+A client decodes what the channel delivers and merges each reply with the SDK's own reducer, which folds one message at a time: `message_start` opens a `MessageStream.fromReadableStream`, and every event until `message_stop` goes into it, as the newline-delimited JSON the SDK's `toReadableStream()` writes. `MessageStream` ignores an error event that is written into its stream, so the reply would never fail. Instead, when an `error` arrives, the client calls `error()` on the stream's controller, and this makes the `MessageStream` fail.
+
+```typescript
+import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
+import { anthropicDecoder } from '@ably/ai-transport/anthropic';
+
 const decoder = anthropicDecoder();
+const encoder = new TextEncoder();
+let reply: ReadableStreamDefaultController<Uint8Array> | undefined;
+decoder.onEvent(({ event }) => {
+  if (event === undefined || event.type === 'input') return;
+  if (event.type === 'error') {
+    reply?.error(new Error(event.error.message));
+    reply = undefined;
+    return;
+  }
+  if (event.type === 'message_start') {
+    const stream = new ReadableStream<Uint8Array>({ start: (c) => (reply = c) });
+    MessageStream.fromReadableStream(stream)
+      .on('streamEvent', (_event, message) => render(message))
+      .on('error', (error) => console.error(error));
+  }
+  reply?.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+  if (event.type === 'message_stop') {
+    reply?.close();
+    reply = undefined;
+  }
+});
+decoder.onError((error) => console.error(error));
 await channel.subscribe(decoder.receive);
 ```
 
@@ -286,8 +329,9 @@ The codec carries text, extended thinking, tool use, server tools and citations.
 - A `signature_delta` and a `citations_delta` are each their own message, since the SDK's reducer sets a signature and collects citations rather than joining text. A citation does not keep its place among the text deltas around it, and the SDK's reducer adds it to its block either way.
 - `message_start` travels with `message.content` empty. The SDK's stream keeps building that message, so by the time the codec encodes it, the message can hold content that the codec sends as its own events. Its other fields travel as they are, so `stop_reason` and `usage` can already hold their final values. The `message_delta` that follows sets them again, so the SDK's reducer builds the same message.
 - A block that does not stream, such as `redacted_thinking` or a server tool's result, travels whole in its `content_block_start`. The codec does not check sizes, so a block larger than the Ably message size limit fails its publish, and `pipe` rejects.
+- `error` is the Messages API's own error event, `ErrorResponse` in the SDK's types, and travels whole. The SDK does not yield this event: it throws an `APIError` instead. So the agent builds the `error` event itself and publishes it with `send`.
 
-Pass the stream to `pipe` without awaiting anything in between: `MessageStream` starts its request when it is created and only queues events for a reader once one is attached. A stream that fails part-way can end the iteration without an error, so check the turn with `finalMessage()`, which rejects. The SDK's reducer folds one message at a time, so a client starts a new `MessageStream.fromReadableStream` at each `message_start`.
+Pass the stream to `pipe` without awaiting anything in between: `MessageStream` starts its request when it is created and only queues events for a reader once one is attached. A stream that fails part-way, for example with an `overloaded_error` or a dropped connection, can make `pipe` reject, or can make it resolve as if the reply had finished. In both cases `finalMessage()` rejects, so the agent catches the failure and publishes `error`. Without this `error`, the reply's `MessageStream` never ends or fails on any client, including a client that reads the reply from history.
 
 The codec does not support the beta stream (`client.beta.messages.stream()`) or the Claude Agent SDK.
 

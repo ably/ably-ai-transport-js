@@ -1,0 +1,166 @@
+/**
+ * The agent. The browser POSTs one of two things here. The user's message,
+ * which it has already published on the channel. Or the user's answers to the
+ * tool calls the last reply ended with: the route runs each approved call,
+ * refuses each declined one, and publishes the results on the channel itself,
+ * as the input of the next request. Either way the route records the input in
+ * the conversation the store holds for the channel, and streams Claude's
+ * reply back over the same channel, one Message at a time: a reply that
+ * pauses mid-turn (`pause_turn`, a server tool's loop reaching its limit) is
+ * continued with another request. The input is recorded with the serial of
+ * its publish, and each Message with the pipe's last serial once it has
+ * landed. A reply that calls one of the app's tools ends the turn and waits
+ * for the user (see `./tools.ts`).
+ */
+
+import { ErrorCode } from '@ably/ai-transport';
+import { anthropicAdaptor } from '@ably/ai-transport/anthropic';
+import { createRealtimeClient, ErrorInfo } from '@ably/pubsub-server';
+import Anthropic from '@anthropic-ai/sdk';
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
+
+import { loadConversation, recordEntries } from '../store';
+import { answerCalls, pendingCalls, tools } from './tools';
+
+/**
+ * What the page POSTs. Anyone can send this request, so every field is
+ * checked, and the route builds each message the model sees itself: the
+ * browser sends plain text, or a yes or no for each pending call.
+ */
+interface ChatRequest {
+  /** The channel the conversation lives on; only `ai:` channels, as the browser's token allows. */
+  channelName?: unknown;
+  /** The id this turn's messages carry, as the `requestId` header and in their stored ids. */
+  requestId?: unknown;
+  /** The user's message, already published on the channel. */
+  text?: unknown;
+  /** The serial the user's message's publish returned, where a page that loads mid-reply rewinds to. */
+  serial?: unknown;
+  /** The user's answer to each pending tool call, by tool use id: `true` runs it, `false` refuses it. */
+  approvals?: unknown;
+}
+
+export async function POST(req: Request) {
+  const { channelName, requestId, text, serial: inputSerial, approvals } = (await req.json()) as ChatRequest;
+  if (typeof channelName !== 'string' || !channelName.startsWith('ai:') || typeof requestId !== 'string') {
+    return new Response('channelName must name an ai: channel, and requestId is required', { status: 400 });
+  }
+
+  // Answers become the tool results here, from the calls the store holds, so
+  // the browser decides only whether each call runs, never what it runs with.
+  // Nothing is awaited between reading the calls and recording the input, so
+  // a second request for the same calls, from another tab, finds them
+  // answered.
+  const calls = pendingCalls(loadConversation(channelName)?.entries.at(-1)?.param);
+  let input: MessageParam;
+  if (approvals === undefined) {
+    if (typeof text !== 'string') {
+      return new Response('text is required', { status: 400 });
+    }
+
+    // The Messages API rejects a conversation where a tool call is not
+    // answered in the next message.
+    if (calls.length > 0) {
+      return new Response('unable to send a message; the last reply has tool calls waiting for an answer', {
+        status: 409,
+      });
+    }
+
+    input = { role: 'user', content: text };
+  } else {
+    const results = answerCalls(calls, approvals);
+    if (results === undefined) {
+      return new Response('unable to run tools; the answers do not match the pending calls', { status: 409 });
+    }
+
+    input = { role: 'user', content: results };
+  }
+
+  const apiKey = process.env.ABLY_API_KEY;
+  if (apiKey === undefined) {
+    return new Response('ABLY_API_KEY is not set', { status: 500 });
+  }
+
+  // The input is recorded with its serial, so a page that loads while the
+  // reply streams rewinds to just after it and receives the whole reply. Tool
+  // results are published below, so their serial is recorded once it is known.
+  const entry = { id: `${requestId}:0`, param: input };
+  recordEntries(channelName, [entry], typeof inputSerial === 'string' ? inputSerial : undefined);
+
+  // Both clients are made per request, inside the handler: the agent is
+  // short-lived, and `next build` loads this module without either key.
+  // Ably rolls the appends a connection publishes within 40ms into one
+  // delivery; a window of 0 delivers every delta as its own message.
+  const claude = new Anthropic();
+  const pubsubClient = createRealtimeClient({ key: apiKey, transportParams: { appendRollupWindow: 0 } });
+  const adaptor = anthropicAdaptor(pubsubClient.channels.get(channelName));
+  // The input's own id tags every message of the turn, so the page can tell
+  // one turn's Messages from another's.
+  const headers = { requestId };
+
+  try {
+    // The browser published its own message; tool results exist only here.
+    if (approvals !== undefined) {
+      const { serial } = await adaptor.send({ type: 'input', messages: [input] }, { headers });
+      recordEntries(channelName, [entry], serial);
+    }
+
+    for (;;) {
+      const messages = (loadConversation(channelName)?.entries ?? []).map((entry) => entry.param);
+      // The stream goes straight into `pipe`: `MessageStream` starts its
+      // request when it is created and queues events only once a reader is
+      // attached. A closed browser tab aborts the pipe through the request's
+      // signal, and the pipe then rejects OperationCancelled once it has
+      // flushed what it wrote.
+      const stream = claude.messages.stream(
+        {
+          model: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5-5',
+          max_tokens: 16000,
+          thinking: { type: 'adaptive', display: 'summarized' },
+          tools,
+          messages,
+        },
+        { signal: req.signal },
+      );
+      const { serial } = await adaptor.pipe(stream, { signal: req.signal, headers });
+      // A stream that fails part-way can make the pipe reject, or resolve as if
+      // the reply had finished. `finalMessage()` rejects in both cases.
+      const reply = await stream.finalMessage();
+
+      // The reply goes back to the model as it came, thinking signatures and
+      // server tool results included; the rest of the Message is not a param.
+      if (serial !== undefined) {
+        recordEntries(channelName, [{ id: reply.id, param: { role: 'assistant', content: reply.content } }], serial);
+      }
+
+      if (reply.stop_reason !== 'pause_turn') break;
+    }
+
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    // A cancelled or failed reply never gets its `message_stop`. Publish an
+    // `error` so that every page ends the reply. What landed of the reply
+    // stays on the channel, but the store does not record it.
+    try {
+      await adaptor.send(
+        {
+          type: 'error',
+          error: { type: 'api_error', message: error instanceof Error ? error.message : String(error) },
+          request_id: null,
+        },
+        { headers },
+      );
+    } catch (sendError) {
+      console.error('unable to end the reply', sendError);
+    }
+
+    if (error instanceof ErrorInfo && error.code === ErrorCode.OperationCancelled) {
+      return new Response(null, { status: 204 });
+    }
+
+    console.error('turn failed', error);
+    return new Response(error instanceof Error ? error.message : 'turn failed', { status: 500 });
+  } finally {
+    pubsubClient.close();
+  }
+}

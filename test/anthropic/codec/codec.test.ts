@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { anthropic, type AnthropicEvent, createAnthropicCodec } from '../../../src/anthropic/index.js';
+import { anthropic, createAnthropicCodec } from '../../../src/anthropic/codec/index.js';
+import type { AnthropicEvent } from '../../../src/anthropic/index.js';
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { foldWithMessageStream } from '../../helper/anthropic-fold.js';
@@ -65,6 +66,7 @@ describe('the Anthropic codec', () => {
         data: 'The user wants ',
         extras: {
           ai: {
+            codec: 'anthropic-messages',
             type: 'content_block_delta',
             fields: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta' } },
           },
@@ -77,10 +79,18 @@ describe('the Anthropic codec', () => {
       const [cited] = codec.encode(at(searchTurn, 10));
 
       expect(signature).toEqual({
-        message: { name: 'ai', data: at(toolTurn, 4), extras: { ai: { type: 'content_block_delta' } } },
+        message: {
+          name: 'ai',
+          data: at(toolTurn, 4),
+          extras: { ai: { codec: 'anthropic-messages', type: 'content_block_delta' } },
+        },
       });
       expect(cited).toEqual({
-        message: { name: 'ai', data: at(searchTurn, 10), extras: { ai: { type: 'content_block_delta' } } },
+        message: {
+          name: 'ai',
+          data: at(searchTurn, 10),
+          extras: { ai: { codec: 'anthropic-messages', type: 'content_block_delta' } },
+        },
       });
     });
 
@@ -113,7 +123,7 @@ describe('the Anthropic codec', () => {
 
     it('publishes input messages as the message data', () => {
       expect(codec.encode({ type: 'input', messages: toolResult })).toEqual([
-        { message: { name: 'ai', data: toolResult, extras: { ai: { type: 'input' } } } },
+        { message: { name: 'ai', data: toolResult, extras: { ai: { codec: 'anthropic-messages', type: 'input' } } } },
       ]);
     });
 
@@ -199,7 +209,9 @@ describe('the Anthropic codec', () => {
 
     it('throws for a plain publish whose body is not an object', () => {
       const [delivery] = deliveriesOf([
-        { message: { name: 'ai', data: 'nope', extras: { ai: { type: 'message_delta' } } } },
+        {
+          message: { name: 'ai', data: 'nope', extras: { ai: { codec: 'anthropic-messages', type: 'message_delta' } } },
+        },
       ]);
       if (delivery === undefined) throw new Error('fixture');
 
@@ -217,6 +229,7 @@ describe('the Anthropic codec', () => {
             data: 'EqQB',
             extras: {
               ai: {
+                codec: 'anthropic-messages',
                 type: 'content_block_delta',
                 fields: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta' } },
               },
@@ -234,7 +247,9 @@ describe('the Anthropic codec', () => {
     });
 
     it('throws for input whose data is not a list of messages', () => {
-      const [delivery] = deliveriesOf([{ message: { name: 'ai', data: 'nope', extras: { ai: { type: 'input' } } } }]);
+      const [delivery] = deliveriesOf([
+        { message: { name: 'ai', data: 'nope', extras: { ai: { codec: 'anthropic-messages', type: 'input' } } } },
+      ]);
       if (delivery === undefined) throw new Error('fixture');
 
       expect(() => codec.decode(delivery)).toThrowErrorInfo({
@@ -300,8 +315,8 @@ describe('the Anthropic codec', () => {
     });
   });
 
-  it('exports a prebuilt codec carrying the adapter tag', () => {
-    expect(anthropic.adapterTag).toBe('anthropic-messages');
-    expect(Object.keys(anthropic).toSorted()).toEqual(['adapterTag', 'decode', 'encode']);
+  it('builds a codec carrying its id and name and nothing else beside encode and decode', () => {
+    expect(anthropic.id).toBe('anthropic-messages');
+    expect(Object.keys(anthropic).toSorted()).toEqual(['decode', 'encode', 'id', 'name']);
   });
 });

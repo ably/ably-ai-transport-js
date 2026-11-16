@@ -19,10 +19,10 @@ export default defineConfig({
       formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably', '@anthropic-ai/sdk'],
+      external: ['@ably/pubsub-core', '@anthropic-ai/sdk'],
       output: {
         globals: {
-          ably: 'Ably',
+          '@ably/pubsub-core': 'AblyPubSub',
           '@anthropic-ai/sdk': 'Anthropic',
         },
       },

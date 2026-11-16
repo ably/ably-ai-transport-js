@@ -6,7 +6,7 @@
 
 Ably AI Transport carries an AI agent's output over an Ably channel. Your agent pipes LLM output to clients over Ably messages, and every client on the channel receives each event as it is produced, in realtime. A client that reconnects picks up where it left off, and a conversation is available on all the user's devices.
 
-Your application holds the channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes an LLM's events onto that channel. In the client, a decoder turns each message the channel delivers, live or from history, back into the same events. Your application merges the event stream into its own messages. The SDK includes an adaptor and a decoder for the Vercel AI SDK, the OpenAI Responses API and AG-UI, and a codec for the Anthropic Messages API, and you can define your own format with the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
+Your application holds the channel through the Ably Pub/Sub SDK. On the agent, an adaptor publishes an LLM's events onto that channel. In the client, a decoder turns each message the channel delivers, live or from history, back into the same events. Your application merges the event stream into its own messages. The SDK includes an adaptor and a decoder for the Vercel AI SDK, the OpenAI Responses API, the Anthropic Messages API and AG-UI, and you can define your own format with the `defineCodec` builder. Everything is built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
 
 > [!NOTE]
 > From 1.0.0, the SDK follows semantic versioning, so a breaking change comes in a new major version. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release, and the migration guides walk through each move: [0.9.0 to 0.10.0](./docs/migrations/0.9.0-to-0.10.0.md), [0.10.0 to 0.11.0](./docs/migrations/0.10.0-to-0.11.0.md) for the Ably Pub/Sub v3 packages, and [0.11.0 to 1.0.0](./docs/migrations/0.11.0-to-1.0.0.md) for the move from the transport to adaptors and decoders.
@@ -259,13 +259,12 @@ AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its
 
 ### Anthropic
 
-The Anthropic codec carries the stream events of the [Messages API](https://platform.claude.com/docs/en/build-with-claude/streaming), as `@anthropic-ai/sdk` yields them. An agent pipes `client.messages.stream()`, and every client decodes the same events and can merge them with the SDK's own reducer, `MessageStream.fromReadableStream`. A client starts a turn, or answers a tool call with `tool_result` blocks, by sending the codec's own `input` event, which carries `MessageParam`s.
+`anthropicAdaptor` and `anthropicDecoder` carry the stream events of the [Messages API](https://platform.claude.com/docs/en/build-with-claude/streaming), as `@anthropic-ai/sdk` yields them. An agent pipes `client.messages.stream()`, and every client decodes the same events and can merge them with the SDK's own reducer, `MessageStream.fromReadableStream`. A client starts a turn, or answers a tool call with `tool_result` blocks, by sending the codec's own `input` event, which carries `MessageParam`s.
 
 ```typescript
-import { createAgentAdaptor, createDecoder } from '@ably/ai-transport';
-import { anthropic } from '@ably/ai-transport/anthropic';
+import { anthropicAdaptor, anthropicDecoder } from '@ably/ai-transport/anthropic';
 
-const adaptor = createAgentAdaptor(channel, anthropic);
+const adaptor = anthropicAdaptor(channel);
 
 // Client: the user's message, or the results of the tools the last turn called.
 await adaptor.send({ type: 'input', messages: [{ role: 'user', content: 'What is the weather in London?' }] });
@@ -277,7 +276,7 @@ const reply = await stream.finalMessage();
 messages.push({ role: 'assistant', content: reply.content });
 
 // Client: decode what the channel delivers.
-const decoder = createDecoder(anthropic);
+const decoder = anthropicDecoder();
 await channel.subscribe(decoder.receive);
 ```
 
@@ -288,7 +287,7 @@ The codec carries text, extended thinking, tool use, server tools and citations.
 - `message_start` travels with `message.content` empty. The SDK's stream keeps building that message, so by the time the codec encodes it, the message can hold content that the codec sends as its own events. Its other fields travel as they are, so `stop_reason` and `usage` can already hold their final values. The `message_delta` that follows sets them again, so the SDK's reducer builds the same message.
 - A block that does not stream, such as `redacted_thinking` or a server tool's result, travels whole in its `content_block_start`. The codec does not check sizes, so a block larger than the Ably message size limit fails its publish, and `pipe` rejects.
 
-Pass the stream to `adaptor.pipe` without awaiting anything in between: `MessageStream` starts its request when it is created and only queues events for a reader once one is attached. A stream that fails part-way can end the iteration without an error, so check the turn with `finalMessage()`, which rejects. The SDK's reducer folds one message at a time, so a client starts a new `MessageStream.fromReadableStream` at each `message_start`.
+Pass the stream to `pipe` without awaiting anything in between: `MessageStream` starts its request when it is created and only queues events for a reader once one is attached. A stream that fails part-way can end the iteration without an error, so check the turn with `finalMessage()`, which rejects. The SDK's reducer folds one message at a time, so a client starts a new `MessageStream.fromReadableStream` at each `message_start`.
 
 The codec does not support the beta stream (`client.beta.messages.stream()`) or the Claude Agent SDK.
 

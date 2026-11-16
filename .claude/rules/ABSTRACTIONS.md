@@ -24,7 +24,7 @@ point rather than changing an existing one.
 | `@ably/ai-transport/vercel`    | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s, and a `useChat` transport over the decoder | a Pub/Sub client, `ai`                |
 | `@ably/ai-transport/openai`    | An adaptor and a decoder over OpenAI Responses stream events                                                    | a Pub/Sub client, `openai`            |
 | `@ably/ai-transport/ag-ui`     | An adaptor and a decoder over AG-UI events                                                                      | a Pub/Sub client, `@ag-ui/core`       |
-| `@ably/ai-transport/anthropic` | The Anthropic Messages codec: one row per stream event type                                                     | a Pub/Sub client, `@anthropic-ai/sdk` |
+| `@ably/ai-transport/anthropic` | An adaptor and a decoder over Anthropic Messages stream events                                                  | a Pub/Sub client, `@anthropic-ai/sdk` |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.

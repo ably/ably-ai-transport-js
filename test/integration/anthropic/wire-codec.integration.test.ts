@@ -9,34 +9,18 @@
  * history returns it as one message with the text joined.
  */
 
-import type * as Ably from 'ably';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { type AnthropicEvent, createAnthropicCodec } from '../../../src/anthropic/index.js';
-import { createTransport, type Transport } from '../../../src/index.js';
+import { anthropicAdaptor, anthropicDecoder, type AnthropicEvent } from '../../../src/anthropic/index.js';
+import type { AgentAdaptor } from '../../../src/index.js';
 import { searchTurn, toolResult, toolTurn } from '../../anthropic/codec/fixtures.js';
 import { foldWithMessageStream } from '../../helper/anthropic-fold.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
-import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
+import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
-const transportOn = (name: string): Transport<AnthropicEvent> =>
-  createTransport({ client: ablyRealtimeClient(), channelName: name, codec: createAnthropicCodec() });
-
-/**
- * A transport with the channel it reads, for a subscriber that waits for the attach.
- * The channel comes back from a bare `channels.get`, which is how an
- * application shares the channel the transport owns the options of.
- * @param name - The channel name.
- * @returns The transport and its channel.
- */
-const readerOn = (name: string): { transport: Transport<AnthropicEvent>; channel: Ably.RealtimeChannel } => {
-  const client = ablyRealtimeClient();
-  const transport = createTransport({ client, channelName: name, codec: createAnthropicCodec() });
-
-  return { transport, channel: client.channels.get(name) };
-};
+const adaptorOn = (name: string): AgentAdaptor<AnthropicEvent> => anthropicAdaptor(pubsubClient().channels.get(name));
 
 const stops = (deliveries: { event?: AnthropicEvent }[]): number =>
   deliveries.filter((d) => d.event?.type === 'message_stop').length;
@@ -60,16 +44,17 @@ describe('Anthropic codec over Ably', () => {
 
   it('streams a tool call, its result and the answer, and folds each turn to the agent’s Message', async () => {
     const name = uniqueChannelName('anthropic');
-    const agent = transportOn(name);
-    const { transport: client, channel: clientChannel } = readerOn(name);
+    const agent = adaptorOn(name);
+    const clientChannel = pubsubClient().channels.get(name);
+    const decoder = anthropicDecoder();
     const recorder = createDeliveryRecorder<AnthropicEvent>();
-    client.subscribe(recorder.record);
-    await clientChannel.whenState('attached');
+    decoder.onEvent(recorder.record);
+    await clientChannel.subscribe(decoder.receive);
 
     const first = await agent.pipe(streamOf(...toolTurn));
     await recorder.waitFor((d) => stops(d) === 1);
 
-    const sent = await client.send({ type: 'input', messages: toolResult });
+    const sent = await anthropicAdaptor(clientChannel).send({ type: 'input', messages: toolResult });
     const second = await agent.pipe(streamOf(...searchTurn));
     await recorder.waitFor((d) => stops(d) === 2);
 
@@ -91,12 +76,13 @@ describe('Anthropic codec over Ably', () => {
     );
 
     // The raw shape: a delta carries its text as the body and the rest of the
-    // event under extras.ai.fields, with the transport's stream marker beside
+    // event under extras.ai.fields, with the adaptor's stream marker beside
     // the type and nothing under extras.headers.
     const delta = recorder.deliveries.find((d) => d.event?.type === 'content_block_delta');
     expect(delta?.message.data).toBe('The user wants ');
     expect(delta?.message.extras).toEqual({
       ai: {
+        codec: 'anthropic-messages',
         type: 'content_block_delta',
         stream: true,
         fields: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta' } },
@@ -106,11 +92,11 @@ describe('Anthropic codec over Ably', () => {
 
   it('reads both turns from history with each block’s deltas joined, to the same Messages', async () => {
     const name = uniqueChannelName('anthropic');
-    const agent = transportOn(name);
+    const agent = adaptorOn(name);
     await agent.pipe(streamOf(...toolTurn));
     await agent.pipe(streamOf(...searchTurn));
 
-    const history = await drainHistory(transportOn(name));
+    const history = await drainHistory(pubsubClient().channels.get(name), anthropicDecoder());
     const events = history.map((d) => d.event).filter((e): e is AnthropicEvent => e !== undefined);
 
     // Each block's deltas come back as one delta carrying the joined text.

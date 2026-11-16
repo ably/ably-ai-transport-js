@@ -27,7 +27,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
 import { agUiAdaptor, agUiDecoder } from '../src/ag-ui/index.js';
 import type { AnthropicEvent, AnthropicInput, AnthropicStreamEvent } from '../src/anthropic/index.js';
-import { anthropic, createAnthropicCodec } from '../src/anthropic/index.js';
+import { anthropicAdaptor, anthropicDecoder } from '../src/anthropic/index.js';
 import type {
   AgentAdaptor,
   AgentAdaptorOptions,
@@ -220,9 +220,19 @@ describe('@ably/ai-transport/ag-ui', () => {
 });
 
 describe('@ably/ai-transport/anthropic', () => {
-  it('exports the codec, its factory and its event types', () => {
-    expect(typeof createAnthropicCodec).toBe('function');
-    expect(Object.keys(anthropic).toSorted()).toEqual(CODEC_KEYS);
+  it('exports an agent adaptor factory', () => {
+    const adaptor = anthropicAdaptor(createMockChannel());
+    expect(typeof adaptor.send).toBe('function');
+    expect(typeof adaptor.pipe).toBe('function');
+    expect(typeof adaptor.pipeEach).toBe('function');
+  });
+
+  it('exports a decoder factory', () => {
+    expect(typeof anthropicDecoder().receive).toBe('function');
+    expect(typeof anthropicDecoder().decode).toBe('function');
+  });
+
+  it('exports its event types', () => {
     expectTypeOf<AnthropicEvent>().toHaveProperty('type');
     expectTypeOf<AnthropicInput>().toHaveProperty('messages');
     expectTypeOf<AnthropicStreamEvent>().toHaveProperty('type');

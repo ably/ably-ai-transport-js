@@ -31,14 +31,22 @@ export interface AnthropicInput {
 }
 
 /**
- * A failed reply: the `error` event the Messages API streams, in the SDK's
- * own type. The SDK throws that event as an `APIError` rather than
- * yielding it, and a stream that fails part-way can end its iteration without
- * throwing at all, so nothing the agent pipes tells a client the reply failed.
- * The agent publishes this event itself when `finalMessage()` rejects, and a
- * client reads it as the end of the reply that was streaming.
+ * A failed reply: the `error` event the Messages API streams. The SDK throws
+ * that event as an `APIError` rather than yielding it, and a stream that fails
+ * part-way can end its iteration without throwing at all, so nothing the agent
+ * pipes tells a client the reply failed. The agent publishes this event itself
+ * when `finalMessage()` rejects, and a client reads it as the end of the reply
+ * that was streaming.
  */
-export type AnthropicErrorEvent = Shared.ErrorResponse;
+export interface AnthropicErrorEvent extends Omit<Shared.ErrorResponse, 'error'> {
+  /**
+   * The error's type and message. The type is any `ErrorType`, the type an
+   * `APIError` reports, which names more types than the SDK's `ErrorObject`,
+   * so an agent builds the event from the `type` and `apiMessage` of the
+   * `APIError` it caught.
+   */
+  error: Omit<Shared.ErrorObject, 'type'> & { type: Shared.ErrorType };
+}
 
 /** Every event the Anthropic codec encodes and decodes. */
 export type AnthropicEvent = AnthropicStreamEvent | AnthropicInput | AnthropicErrorEvent;

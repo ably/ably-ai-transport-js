@@ -1,3 +1,4 @@
+import { APIError } from '@anthropic-ai/sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { anthropic, createAnthropicCodec } from '../../../src/anthropic/codec/index.js';
@@ -219,6 +220,26 @@ describe('the Anthropic codec', () => {
     it('round-trips a failed turn with its error, live and from history', () => {
       expect(roundTrip(codec, failedTurn)).toStrictEqual(failedTurn);
       expect(fromHistory(failedTurn)).toStrictEqual(failedTurn);
+    });
+
+    it('round-trips an error built from the APIError an agent caught, whatever its type', () => {
+      // conflict_error is an ErrorType that the SDK's ErrorObject does not name.
+      const caught = new APIError(
+        409,
+        { type: 'error', error: { type: 'conflict_error', message: 'Conflict' } },
+        undefined,
+        new Headers({ 'request-id': 'req_2' }),
+      );
+      const event: AnthropicEvent = {
+        type: 'error',
+        error: { type: caught.type ?? 'api_error', message: caught.apiMessage ?? caught.message },
+        // eslint-disable-next-line unicorn/no-null -- the Messages API's request_id is null when there is none
+        request_id: caught.requestID ?? null,
+      };
+
+      expect(roundTrip(codec, [event])).toStrictEqual([
+        { type: 'error', error: { type: 'conflict_error', message: 'Conflict' }, request_id: 'req_2' },
+      ]);
     });
 
     it('throws for a plain publish whose body is not an object', () => {

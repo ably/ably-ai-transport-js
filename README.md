@@ -262,6 +262,7 @@ AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its
 `anthropicAdaptor` and `anthropicDecoder` carry the stream events of the [Messages API](https://platform.claude.com/docs/en/build-with-claude/streaming), as `@anthropic-ai/sdk` yields them. An agent pipes `client.messages.stream()`, and every client decodes the same events and can merge them with the SDK's own reducer, `MessageStream.fromReadableStream`. A client starts a turn, or answers a tool call with `tool_result` blocks, by sending the codec's own `input` event, which carries `MessageParam`s.
 
 ```typescript
+import Anthropic from '@anthropic-ai/sdk';
 import { anthropicAdaptor } from '@ably/ai-transport/anthropic';
 
 const adaptor = anthropicAdaptor(channel);
@@ -279,11 +280,15 @@ try {
   // The reply failed, and nothing the pipe wrote says so. Publish an error so
   // that every client ends the reply. The publish may fail for the same reason
   // the pipe did, so it is best effort.
+  const apiError = error instanceof Anthropic.APIError ? error : undefined;
   try {
     await adaptor.send({
       type: 'error',
-      error: { type: 'api_error', message: error instanceof Error ? error.message : String(error) },
-      request_id: null,
+      error: {
+        type: apiError?.type ?? 'api_error',
+        message: apiError?.apiMessage ?? (error instanceof Error ? error.message : String(error)),
+      },
+      request_id: apiError?.requestID ?? null,
     });
   } catch (sendError) {
     console.error('error publish failed', sendError);

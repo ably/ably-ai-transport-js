@@ -59,6 +59,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Each run of claude-code-action fetches the base branch with --depth=1
+      # to restore `.claude/`, which makes the base tip a shallow boundary and
+      # hides the PR's merge base behind it. Resolve the merge base here, while
+      # the history is whole, and give it to both gates as their base: it stays
+      # reachable from the head however the action fetches.
+      - name: Resolve the merge base
+        id: range
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
       - name: Generate GitHub App Token
         id: generate-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -88,7 +102,7 @@ jobs:
           prompt: |
             Read `.gate/.claude/skills/code-review-ci/SKILL.md` and carry out every step it describes, against this range:
 
-            - base: `${{ github.event.pull_request.base.sha }}`
+            - base: `${{ steps.range.outputs.base }}`
             - head: `${{ github.event.pull_request.head.sha }}`
 
             Both are supplied, so skip Step 1 and pass both to each script. The checkout is the PR's merge commit, not its head, so never let a script default the head.
@@ -125,7 +139,7 @@ jobs:
             Run the signals script, once, exactly as:
 
             ```
-            bash .gate/.claude/skills/dr-required/signals.sh ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+            bash .gate/.claude/skills/dr-required/signals.sh ${{ steps.range.outputs.base }} ${{ github.event.pull_request.head.sha }}
             ```
 
             `PR_NUMBER` is already in the environment, so do not set it on the command line — prefixing the command with an assignment puts it outside what you are permitted to run.

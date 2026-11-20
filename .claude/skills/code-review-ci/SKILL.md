@@ -42,9 +42,10 @@ It prints one `SEVERITY<TAB>check-id<TAB>path:line<TAB>detail` record per
 finding, then a `SUMMARY` block, and exits 0 whatever it finds — the verdict is
 yours to draw in Step 4.
 
-Exit 2 means it could not resolve a ref and ran no checks. Report that as
-`VERDICT: ERROR` with the message; never read it as a pass. A shallow clone is
-the usual cause, so CI must check out with full history.
+Exit 2 means it could not resolve a ref, or the two refs have no merge base, and
+it ran no checks. Report that as `VERDICT: ERROR` with the message; never read it
+as a pass. A shallow clone is the usual cause, so CI must check out with full
+history and pass the merge base as the base.
 
 Run it **once**. Do not re-run it with different arguments to look for more,
 and do not reimplement its greps by hand.

@@ -40,7 +40,8 @@ found in the description, one `SIGNAL<TAB>id<TAB>site<TAB>detail` record per
 place a decision would leave a mark, the description itself between
 `BODY-BEGIN`/`BODY-END`, and a `SUMMARY` block.
 
-Exit 2 means it could not resolve a ref or could not read the description.
+Exit 2 means it could not resolve a ref, the two refs have no merge base, or it
+could not read the description.
 Report `VERDICT: ERROR` with the message. A description this gate cannot read is
 never a pass.
 

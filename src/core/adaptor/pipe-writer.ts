@@ -105,7 +105,7 @@ export interface PipeWriter {
    * live key resolves at once with the stream's serial, before its ack; its
    * failure surfaces from the flush that runs when its stream ends or the
    * pipe ends. An update resolves once acked, with the stream's serial.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` for a publish under a live key or an update to a key that is not live; `InternalError` when a publish returns no serial; `StreamedMessageFinalizeFailed` when a stream this message ends could not be repaired.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` for a publish under a live key or an update to a key that is not live; `InternalError` when a publish returns no serial; `StreamedMessageFinalizeFailed` when a stream this message ends could not be repaired, in which case the message is not written, unless it is an append to the key it ends, which has been sent, and the next write that ends the stream, or the next flush, repairs it again.
    */
   write(encoded: EncodedMessage): Promise<WriteResult>;
   /**
@@ -259,7 +259,15 @@ class DefaultPipeWriter implements PipeWriter {
       key,
       pending: own.length,
     });
-    await this._repair(own);
+    try {
+      await this._repair(own);
+    } catch (error) {
+      // The message is still short of text. The appends stay pending so the
+      // next settle or flush repairs it again, and a caller that carries on
+      // after this failure cannot end or leave the stream without one.
+      this._pending.push(...own);
+      throw error;
+    }
   }
 
   private async _update(key: string, message: Ably.Message): Promise<string> {

@@ -2,21 +2,28 @@
  * The agent adaptor: the publish side of the SDK, over a channel the
  * application got from ably-js.
  *
- * An adaptor knows one codec and one channel. `send` publishes one discrete
- * event, such as the user's message. `pipe` writes a stream of events
- * unattended and resolves once the stream is on the channel. `pipeEach` writes
- * the same stream and hands each event back once it is written, so the agent
- * can act inside the loop and set its pace.
+ * An adaptor knows one codec and one channel, and holds nothing else. A
+ * stream of events is written through an event writer, which `openWriter`
+ * gives out: it owns the key table, the pending appends and the repair state
+ * of what it writes, from its first `write` to its `close`. The adaptor's
+ * other three operations are shorthand: `pipeEach` and `pipe` for common uses
+ * of a writer, and `send` for one whole message, which needs none.
  *
- * Each pipe call gets its own writer, since its key table, pending appends and
- * repair state belong to one stream of events. `send` needs no writer: it
- * publishes, and refuses an event that appends or updates. Every message
- * carries the call's headers over the adaptor's default headers, with a codec
- * row's own headers winning over both.
+ * - `pipeEach(source)` opens a writer, writes each event the source yields,
+ *   hands it back, and closes the writer when the loop ends or leaves early.
+ * - `pipe(source)` is `pipeEach` run to its end, resolving with the serial of
+ *   the last publish.
+ * - `send(event)` publishes one whole message, such as the user's prompt. It
+ *   keeps no key table, so it refuses an event that appends to or updates a
+ *   stream, checks every message before it publishes any, and reports a
+ *   publish failure under its own codes.
  *
- * The adaptor holds no resource of its own, so it has no `close`. A pipe stops
- * on its signal, and `pipeEach` also when the loop leaves early. Either way the
- * pipe flushes and repairs what it wrote before it settles.
+ * Every message carries the call's headers over the adaptor's default
+ * headers, with a codec row's own headers winning over both.
+ *
+ * The adaptor holds no resource of its own, so it has no `close`. A pipe
+ * closes its writer on every exit: its source ending, its signal, a failure,
+ * and for `pipeEach` the loop leaving early.
  */
 
 import * as Ably from '@ably/pubsub-core';
@@ -26,14 +33,9 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
 import { assertCodecWrote } from './codec-fields.js';
+import { createEventWriter, type DefaultEventWriter, type EventWriter, type Published } from './event-writer.js';
 import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
-import {
-  pipeEach as pipeEachDriver,
-  type PipeResult,
-  type PipeSource,
-  pipeStream,
-  type Published,
-} from './pipe-stream.js';
+import { pipeEach as pipeEachDriver, type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
 import { type ChannelWriter, createPipeWriter } from './pipe-writer.js';
 
 /** Options for an agent adaptor factory. */
@@ -87,6 +89,16 @@ export interface PipeOptions {
    * stored message. Merged and checked as {@link SendOptions.headers}; a
    * rejected pipe has not touched its source. They ride on every append, so
    * keep them small.
+   */
+  headers?: MessageHeaders;
+}
+
+/** Options for {@link AgentAdaptor.openWriter}. */
+export interface WriterOptions {
+  /**
+   * Headers for every message the event writer publishes, as
+   * {@link PipeOptions.headers} are for a pipe. Merged and checked as
+   * {@link SendOptions.headers}, when the writer is created.
    */
   headers?: MessageHeaders;
 }
@@ -155,6 +167,25 @@ export interface AgentAdaptor<E> {
    * @throws {Ably.ErrorInfo} `InvalidArgument`, thrown by this call itself and not from the loop, when a header value is not a string, number, boolean or null; from the loop, `OperationCancelled` when the signal fires and `PipeFailed` when the source throws, the codec cannot encode an event or encodes a message without its `name` and `id`, a publish or update fails, or a repair fails, with the failure as `cause`; `PipeFailed` from the loop's exit when the repair after a `break` or `return` fails.
    */
   pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<Published<E>>;
+  /**
+   * Open an event writer: the way to write a stream of events when the
+   * caller is handed them one at a time and owns no source to pipe. Each
+   * `write` resolves once its event is written, with the serial of the
+   * message it landed on, as a `pipeEach` loop hands an event back; `pipe`
+   * and `pipeEach` are loops over a writer of their own. The writer keeps one
+   * key table for its life, and nothing is published until the first `write`.
+   * Its `close` flushes and repairs what was written and ends no open stream.
+   * Open one writer for a run of events and close it, since a writer per
+   * event gives every delta a message of its own and repairs nothing. A new
+   * writer given a stream's later events carries it on in a new message. A
+   * stream stays open in the writer until its end event is written, so close
+   * the writer before reusing the key of a stream that was never ended. See
+   * {@link EventWriter}.
+   * @param options - The writer's headers.
+   * @returns The writer.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null.
+   */
+  openWriter(options?: WriterOptions): EventWriter<E>;
 }
 
 /**
@@ -219,16 +250,31 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
     this._logger.trace('AgentAdaptor.pipe();', { headers: Object.keys(options?.headers ?? {}) });
     // Checked before the source is read, so a rejected pipe has locked no
     // stream and called no iterator's return().
-    const headers = mergeHeaders(this._headers, prepareHeaders(options?.headers, 'pipe'));
-    const writer = createPipeWriter(this._channel, this._logger);
-    return pipeStream(source, this._codec, writer, { signal: options?.signal, headers, logger: this._logger });
+    const writer = this._eventWriter(prepareHeaders(options?.headers, 'pipe'));
+    return pipeStream(source, writer, { signal: options?.signal, logger: this._logger });
   }
 
   pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<Published<E>> {
     this._logger.trace('AgentAdaptor.pipeEach();', { headers: Object.keys(options?.headers ?? {}) });
-    const headers = mergeHeaders(this._headers, prepareHeaders(options?.headers, 'pipe'));
-    const writer = createPipeWriter(this._channel, this._logger);
-    return pipeEachDriver(source, this._codec, writer, { signal: options?.signal, headers, logger: this._logger });
+    const writer = this._eventWriter(prepareHeaders(options?.headers, 'pipe'));
+    return pipeEachDriver(source, writer, { signal: options?.signal, logger: this._logger });
+  }
+
+  openWriter(options?: WriterOptions): EventWriter<E> {
+    this._logger.trace('AgentAdaptor.openWriter();', { headers: Object.keys(options?.headers ?? {}) });
+    return this._eventWriter(prepareHeaders(options?.headers, 'open writer'));
+  }
+
+  /**
+   * Open an event writer with a key table of its own.
+   * @param headers - The call's headers, already checked, laid over the adaptor's defaults.
+   * @returns The writer.
+   */
+  private _eventWriter(headers: MessageHeaders | undefined): DefaultEventWriter<E> {
+    return createEventWriter(this._codec, createPipeWriter(this._channel, this._logger), {
+      headers: mergeHeaders(this._headers, headers),
+      logger: this._logger,
+    });
   }
 
   /**

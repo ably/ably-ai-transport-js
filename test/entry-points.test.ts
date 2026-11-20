@@ -42,6 +42,7 @@ import type {
   EncodedRow,
   EventRow,
   EventRows,
+  EventWriter,
   HeaderPrimitive,
   LogContext,
   Logger,
@@ -58,6 +59,7 @@ import type {
   SendOptions,
   SendResult,
   Stripped,
+  WriterOptions,
 } from '../src/index.js';
 import {
   consoleLogger,
@@ -91,6 +93,9 @@ describe('@ably/ai-transport', () => {
   it('exports the agent adaptor factory', () => {
     expect(typeof createAgentAdaptor).toBe('function');
     expectTypeOf<AgentAdaptor<TestEvent>>().toHaveProperty('pipeEach');
+    expectTypeOf<AgentAdaptor<TestEvent>>().toHaveProperty('openWriter');
+    expectTypeOf<EventWriter<TestEvent>>().toHaveProperty('close');
+    expectTypeOf<WriterOptions>().toHaveProperty('headers');
     expectTypeOf<AgentAdaptorOptions>().toHaveProperty('headers');
     expectTypeOf<Published<TestEvent>>().toHaveProperty('serial');
   });
@@ -156,6 +161,7 @@ describe('@ably/ai-transport/vercel', () => {
     expect(typeof adaptor.send).toBe('function');
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
+    expect(typeof adaptor.openWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {
@@ -186,6 +192,7 @@ describe('@ably/ai-transport/openai', () => {
     expect(typeof adaptor.send).toBe('function');
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
+    expect(typeof adaptor.openWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {
@@ -206,6 +213,7 @@ describe('@ably/ai-transport/ag-ui', () => {
     expect(typeof adaptor.send).toBe('function');
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
+    expect(typeof adaptor.openWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {
@@ -225,6 +233,7 @@ describe('@ably/ai-transport/anthropic', () => {
     expect(typeof adaptor.send).toBe('function');
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
+    expect(typeof adaptor.openWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {

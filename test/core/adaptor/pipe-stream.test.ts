@@ -1,12 +1,19 @@
 import * as Ably from '@ably/pubsub-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pipeEach, pipeStream, type Published } from '../../../src/core/adaptor/pipe-stream.js';
+import { createEventWriter, type Published } from '../../../src/core/adaptor/event-writer.js';
+import type { MessageHeaders } from '../../../src/core/adaptor/headers.js';
+import {
+  pipeEach as pipeEachDriver,
+  type PipeResult,
+  type PipeSource,
+  pipeStream as pipeStreamDriver,
+} from '../../../src/core/adaptor/pipe-stream.js';
 import type { PipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
 import { createPipeWriter } from '../../../src/core/adaptor/pipe-writer.js';
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { type Logger, LogLevel, makeLogger } from '../../../src/logger.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createSplitCodec, type SplitEvent } from '../../helper/split-codec.js';
 import { flushMicrotasks } from '../../helper/streams.js';
@@ -20,6 +27,51 @@ import {
   type TestEvent,
   textEvents,
 } from '../../helper/test-codec.js';
+
+/** What a test gives a pipe: the driver's options, and the headers of the event writer the pipe is handed. */
+interface PipeTestOptions {
+  signal?: AbortSignal;
+  headers?: MessageHeaders;
+  logger?: Logger;
+}
+
+/**
+ * Run `pipeStream` through an event writer opened over `writer`, as the
+ * adaptor composes them for a `pipe` call.
+ * @param source - The events to pipe.
+ * @param codec - The event writer's codec.
+ * @param writer - The pipe writer the event writer holds.
+ * @param options - The signal, the event writer's headers and the logger.
+ * @returns What the pipe resolves with.
+ */
+const pipeStream = async <E>(
+  source: PipeSource<E>,
+  codec: Codec<E>,
+  writer: PipeWriter,
+  options: PipeTestOptions = {},
+): Promise<PipeResult> => {
+  const { signal, headers, logger } = options;
+  return pipeStreamDriver(source, createEventWriter(codec, writer, { headers, logger }), { signal, logger });
+};
+
+/**
+ * Run `pipeEach` through an event writer opened over `writer`, as the adaptor
+ * composes them for a `pipeEach` call.
+ * @param source - The events to pipe.
+ * @param codec - The event writer's codec.
+ * @param writer - The pipe writer the event writer holds.
+ * @param options - The signal, the event writer's headers and the logger.
+ * @returns The pipe's loop.
+ */
+const pipeEach = <E>(
+  source: PipeSource<E>,
+  codec: Codec<E>,
+  writer: PipeWriter,
+  options: PipeTestOptions = {},
+): AsyncGenerator<Published<E>, void, undefined> => {
+  const { signal, headers, logger } = options;
+  return pipeEachDriver(source, createEventWriter(codec, writer, { headers, logger }), { signal, logger });
+};
 
 /**
  * The `extras.headers` a recorded message carries.
@@ -106,6 +158,23 @@ describe('pipeStream', () => {
           extras: { ai: { codec: 'test-codec', type: 'text-delta', stream: true, fields: { id: 'm1' } } },
         },
       ]);
+    });
+
+    it('resolves with the serial of the last publish when a later event lands on an earlier message', async () => {
+      const result = await pipeStream(
+        streamOf<TestEvent>(
+          { type: 'text-start', id: 'm1' },
+          { type: 'text-delta', id: 'm1', delta: 'a' },
+          { type: 'note', text: 'aside' },
+          { type: 'text-delta', id: 'm1', delta: 'b' },
+        ),
+        codec,
+        writer,
+      );
+      // The last event is an append to the message the first delta opened;
+      // the last publish is the note.
+      expect(result).toEqual({ serial: 'serial-3' });
+      expect(channel.appendCalls).toMatchObject([{ serial: 'serial-2', data: 'b' }]);
     });
 
     it('writes every message an event encodes to, in order, and resolves with the last serial', async () => {
@@ -271,7 +340,7 @@ describe('pipeStream', () => {
       // channel is missing text, so the repair failure is the rejection.
       await expect(pipeStream(source, codec, writer, { signal: controller.signal })).rejects.toBeErrorInfo({
         code: ErrorCode.PipeFailed,
-        message: 'unable to pipe; repair failed: unable to repair stream; 1 of 1 repairs failed',
+        message: 'unable to close writer; repair failed: unable to repair stream; 1 of 1 repairs failed',
         cause: { code: ErrorCode.StreamedMessageFinalizeFailed },
       });
     });
@@ -322,6 +391,20 @@ describe('pipeStream', () => {
       expect(channel.publishCalls).toHaveLength(1);
     });
 
+    it('logs a source that throws at error', async () => {
+      const logHandler = vi.fn();
+      const logger = makeLogger({ logLevel: LogLevel.Error, logHandler });
+      await expect(
+        pipeStream(erroringIterableOf<TestEvent>([], new Error('provider down')), codec, writer, { logger }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.PipeFailed);
+      expect(logHandler).toHaveBeenCalledTimes(1);
+      expect(logHandler).toHaveBeenCalledWith(
+        expect.stringContaining('pipeEach(); source failed'),
+        LogLevel.Error,
+        expect.objectContaining({ error: 'provider down' }),
+      );
+    });
+
     it('stops at a failed publish and names the event in the error', async () => {
       channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('rejected', 40160, 401));
       await expect(
@@ -332,7 +415,7 @@ describe('pipeStream', () => {
         ),
       ).rejects.toBeErrorInfo({
         code: ErrorCode.PipeFailed,
-        message: 'unable to pipe; write failed for event {"type":"note","text":"first"}: rejected',
+        message: 'unable to write event; write failed for event {"type":"note","text":"first"}: rejected',
         cause: { code: 40160 },
       });
       expect(channel.publish).toHaveBeenCalledTimes(1);
@@ -658,7 +741,7 @@ describe('pipeEach', () => {
     };
     await expect(run()).rejects.toBeErrorInfo({
       code: ErrorCode.PipeFailed,
-      message: 'unable to pipe; repair failed: unable to repair stream; 1 of 1 repairs failed',
+      message: 'unable to close writer; repair failed: unable to repair stream; 1 of 1 repairs failed',
       cause: { code: ErrorCode.StreamedMessageFinalizeFailed },
     });
     expect(state.returned).toBe(true);
@@ -692,7 +775,7 @@ describe('pipeEach', () => {
     };
     await expect(run()).rejects.toBe(thrown);
     expect(logHandler).toHaveBeenCalledWith(
-      expect.stringContaining('pipeEach(); repair failed'),
+      expect.stringContaining('DefaultEventWriter.close(); repair failed'),
       LogLevel.Error,
       expect.objectContaining({ error: expect.stringContaining('1 of 1 repairs failed') as unknown }),
     );

@@ -393,6 +393,31 @@ describe('createPipeWriter', () => {
       });
     });
 
+    it('does not write the closer when its repair fails, and repairs again before the next one', async () => {
+      await writer.write(publish('k1', 'The'));
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await writer.write(append('k1', ' weather'));
+      channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+      await expect(writer.write(end('k1'))).rejects.toBeErrorInfoWithCode(ErrorCode.StreamedMessageFinalizeFailed);
+      // The one append so far is the delta: the closer was not sent.
+      expect(channel.appendMessage).toHaveBeenCalledTimes(1);
+
+      await writer.write(end('k1'));
+      expect(channel.updateCalls).toMatchObject([{ serial: 'serial-1', data: 'The weather' }]);
+      expect(channel.appendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('repairs at flush a stream whose repair failed before its closer', async () => {
+      await writer.write(publish('k1', 'The'));
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await writer.write(append('k1', ' weather'));
+      channel.updateMessage.mockRejectedValueOnce(new Ably.ErrorInfo('still down', 50000, 500));
+      await expect(writer.write(end('k1'))).rejects.toBeErrorInfoWithCode(ErrorCode.StreamedMessageFinalizeFailed);
+
+      await writer.flush();
+      expect(channel.updateCalls).toMatchObject([{ serial: 'serial-1', data: 'The weather' }]);
+    });
+
     it('is idempotent once pending appends are drained', async () => {
       await writer.write(publish('k1'));
       await writer.write(append('k1', 'a'));

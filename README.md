@@ -145,6 +145,29 @@ for await (const { event, serial } of adaptor.pipeEach(stream, { signal })) {
 
 Like `pipe`, `pipeEach` flushes the stream's appends and repairs any that failed before it settles, however the loop ends: the source ending, the pipe failing, the signal, or a `break`, a `return` or a throw in the loop body. A stop writes nothing more and ends no stream, so a client sees a stream that was cut off stay open, with its full text. Leaving the loop waits for that repair. Stopping early does not stop the source either: a `ReadableStream` is released, not cancelled, so abort the model call with the same signal if it should stop too.
 
+Both pipes are shorthand. A stream of events is written through an event writer, which `adaptor.openWriter()` gives out, and a pipe opens one, writes each event its source yields, and closes it. Open a writer yourself when your code is handed events one at a time and has no source to pipe: a relay that reads a log, or an SDK that calls back with each event. Each `write` resolves once its event is written, with the serial of the message it landed on, and writes are made in the order you call them, so you do not have to wait for one before calling the next.
+
+```typescript
+let writer = adaptor.openWriter({ headers });
+let failure: unknown;
+for await (const entry of log.readFrom(offset)) {
+  if (entry.type === 'event') {
+    writer.write(entry.event).catch((error) => (failure ??= error));
+    continue;
+  }
+  // A checkpoint: every write that resolved is on the channel once close resolves.
+  await writer.close();
+  // A write that failed left its event off the channel, so save no offset past it.
+  if (failure) throw failure;
+  await saveOffset(entry.offset);
+  writer = adaptor.openWriter({ headers });
+}
+await writer.close();
+if (failure) throw failure;
+```
+
+`close` makes the writes you have already called, flushes and repairs what was written, and ends no stream. A `write` called after `close` rejects with `StreamClosed` and publishes nothing. A delta's `write` resolves before the channel acknowledges it, so record how far you have written after `close` resolves, not after a `write` does. A write that fails rejects and the writer stays open, so you decide whether to close it; `close` still resolves after a failed write, so check for one before you record progress. To carry on after a close, wait for it and give the later events to a new writer; a writer you write through before the last one has closed can reach the channel first. A stream the closed writer was part-way through continues in a new Ably message, and a client decodes the same events as if one writer had written them all. Keep one writer for a run of events: a writer per event gives every delta a message of its own. A stream stays open in its writer until its end event is written, so close the writer when a stream is cut off before its end, or a later stream that reuses its id would append to the same message.
+
 ### Client
 
 The client subscribes to the channel through the Ably Pub/Sub SDK and passes every message to a decoder. The decoder gives each message back as deliveries holding the decoded event, and the application merges the events into whatever it renders from.
@@ -222,7 +245,7 @@ The channel keeps its `rewind` param. After the channel goes DETACHED or FAILED 
 
 ### Tagging a turn
 
-`send`, `pipe` and `pipeEach` take `headers`, a flat map of string, number, boolean or null values that the adaptor includes in `extras.headers` on every message the call publishes. An adaptor can carry default headers as well, `vercelAdaptor(channel, { headers })`. A call's headers win over the defaults, and any headers the codec writes win over both.
+`send`, `pipe`, `pipeEach` and `openWriter` take `headers`, a flat map of string, number, boolean or null values that the adaptor includes in `extras.headers` on every message the call, or the writer, publishes. An adaptor can carry default headers as well, `vercelAdaptor(channel, { headers })`. A call's headers win over the defaults, and any headers the codec writes win over both.
 
 You can read the headers from the raw Ably message in a delivery, `message.extras.headers`, or in the `headers` field passed to `decode` in the codec builder.
 

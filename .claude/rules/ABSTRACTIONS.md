@@ -77,7 +77,7 @@ Codec, adaptor and decoder are distinct. The **codec** owns the wire format:
 which Ably message an event becomes, whether that message is a publish, an
 append or an update, which stream key it belongs to, and which keys it ends,
 and the event each message decodes back to. It holds no state. The **agent
-adaptor** owns writing: the per-pipe key table, sending appends and repairing
+adaptor** owns writing: the per-writer key table, sending appends and repairing
 a failed one. The **decoder** owns reading: the per-serial state the
 platform's append model forces on a reader, and the filter that keeps other
 messages away from the codec. One rule of the key table shapes every codec's
@@ -134,16 +134,27 @@ codec was written.
 ## The adaptor and decoder surface
 
 `createAgentAdaptor(channel, codec, { logger?, headers? })`, or a provider's
-`vercelAdaptor(channel)` and its siblings, returns an adaptor with three
-operations. `send` encodes one event and publishes it, resolving with the ack
-serial. `pipe` reads a stream or async iterable unattended, writes each event
-as its row directs, and resolves with the serial of its last publish; it
-rejects with `OperationCancelled` when its signal fires and `PipeFailed` when
-it could not finish, having flushed and repaired what it wrote either way.
-`pipeEach` writes the same source and hands each event back with the serial it
-landed on, reading the next event only when the loop asks for it. It flushes
-and repairs on every exit as `pipe` does, leaving the loop early included,
-and a stop writes no closer. See the
+`vercelAdaptor(channel)` and its siblings, returns an adaptor with four
+operations. One is the primitive for a stream of events, two are loops over
+it, and `send` publishes one whole message and uses none. `openWriter`
+gives out an event writer, the one thing that writes a stream of events: it
+owns the key table from its first `write` to its `close`, each `write`
+resolves with the serial its event landed on, writes are made in the order
+they were called, a failed write leaves the writer open, and `close` drains
+the writes already called, flushes and repairs, writing no closer. A new
+writer given a stream's later events carries it on in a new message, since it
+has no key table to append under, and a stream stays open in a writer until
+its closer is written (`src/core/adaptor/event-writer.ts`).
+`pipeEach` opens a writer, writes each event a stream or async iterable
+yields, reading the next only when the loop asks for it, and closes the
+writer on every exit, leaving the loop early included. `pipe` is `pipeEach`
+run to its end, resolving with the serial of its last publish; both reject
+with `OperationCancelled` when the signal fires and `PipeFailed` when the pipe
+could not finish. `send` publishes one whole message and resolves with the ack
+serial: it keeps no key table, so it refuses an event that appends or updates,
+and it reports a publish failure under its own codes. A new way to write a
+stream is a loop over an event writer, never a second copy of the step that
+writes one event. See the
 module doc comment on `src/core/adaptor/agent-adaptor.ts` for the current
 contract.
 
@@ -165,21 +176,23 @@ The application always sees the raw message and decides for itself.
 
 ## Composition, not inheritance
 
-The adaptor and the decoder are assembled from parts, not class
-hierarchies. An adaptor composes a pipe writer per pipe call (the key table,
-the append chain and the repair) and the pipe driver that reads a source
-through the codec into that writer. A decoder composes the decoder core, the
-codec and one event emitter for deliveries and errors. There is no base class
-anywhere. Each part is constructed and injected, and each layer wires the
-layer below it.
+The adaptor and the decoder are assembled from parts, not class hierarchies. An
+event writer composes a pipe writer (the key table, the append chain and the
+repair) and the step that encodes one event and writes its messages. A pipe
+driver composes an event writer and the source it reads into it. A decoder
+composes the decoder core, the codec and one event emitter for deliveries and
+errors. There is no base class anywhere. Each part is constructed and
+injected, and each layer wires the layer below it.
 
-The split follows what a part's state is scoped to. State scoped to one pipe
-(the live keys, the pending appends) lives in that pipe's writer, so an
-adaptor holds none of its own and needs no `close`. State scoped to a channel's
-reader (the decoder core's table of the streams in flight, opened by the
-writer's `stream` marker and freed by its `ends` marker) lives in the decoder.
-A codec holds no state, so one codec value serves every adaptor and decoder
-that uses it.
+The split follows what a part's state is scoped to. The wire state of one
+event writer, a pipe's included (the live keys, the pending appends), lives in
+its pipe writer, and the event writer itself holds only the order of its
+writes and whether it has closed, so an adaptor holds none of its own and
+needs no `close`. State
+scoped to a channel's reader (the decoder core's table of the streams in
+flight, opened by the writer's `stream` marker and freed by its `ends` marker)
+lives in the decoder. A codec holds no state, so one codec value serves every
+adaptor and decoder that uses it.
 
 ## Dependency injection
 
@@ -246,7 +259,7 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    nothing about any specific provider; each codec (Vercel, OpenAI, …) is a
    row table over its provider's own types.
 2. **Codec, adaptor and decoder separation.** The codec owns the wire format
-   and holds no state; the adaptor owns writing and the per-pipe key table;
+   and holds no state; the adaptor owns writing and the per-writer key table;
    the decoder owns the per-serial reading state. The application owns the
    channel. None holds conversation state.
 3. **The builder is one-to-one.** A row's encode and decode each map one to
@@ -281,8 +294,9 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    flat map of string, number, boolean and null values under it (error 40032
    otherwise), so the row property is typed to that and written as given; the
    builder translates and checks nothing. The adaptor adds its default
-   headers and the headers of the `send` or `pipe` call, the call's over the
-   defaults, and prefers the row's over both where they name a key, so a
+   headers and the headers of the call that publishes, or of the event
+   writer it opened, those over the defaults, and prefers the row's over both
+   where they name a key, so a
    row keeps a header it writes and its `decode` sees the merged map
    (`src/core/adaptor/headers.ts`), since the wire cannot tell a caller's
    headers from the row's; the shipped codecs rebuild events from `fields` and

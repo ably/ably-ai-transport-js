@@ -15,7 +15,7 @@ import { createAgentAdaptor, createDecoder, type Delivery, ErrorCode, type Publi
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { createTestCodec, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
-import { controlledStream, createDeliveryRecorder, failingFirstAppend } from '../helpers.js';
+import { controlledStream, createDeliveryRecorder, drainHistory, failingFirstAppend } from '../helpers.js';
 
 const isTextEnd = (deliveries: { event?: TestEvent }[]): boolean =>
   deliveries.some((d) => d.event?.type === 'text-end');
@@ -274,5 +274,48 @@ describe('agent adaptor and decoder over Ably', () => {
     const text = events.flatMap((e) => (e.type === 'text-delta' ? [e.delta] : [])).join('');
     expect(text).toBe('The weather is mild.');
     expect(events.some((e) => e.type === 'note')).toBe(false);
+  });
+
+  it('writes a reply one event at a time, and a new writer carries on a message the first stopped part-way through', async () => {
+    const name = uniqueChannelName();
+    const clientChannel = pubsubClient().channels.get(name);
+    const decoder = createDecoder(createTestCodec());
+    const recorder = createDeliveryRecorder<TestEvent>();
+    decoder.onEvent(recorder.record);
+    await clientChannel.subscribe(decoder.receive);
+
+    const adaptor = createAgentAdaptor(pubsubClient().channels.get(name), createTestCodec());
+    const first = adaptor.newWriter();
+    first.write({ type: 'text-start', id: 'm1' });
+    first.write({ type: 'text-delta', id: 'm1', delta: 'The weather' });
+    first.write({ type: 'text-delta', id: 'm1', delta: ' is mild' });
+    // Each flush resolves with the serial of the message the last event landed on.
+    const opened = await first.flush();
+    const closed = await first.close();
+
+    const second = adaptor.newWriter();
+    second.write({ type: 'text-delta', id: 'm1', delta: ' today' });
+    second.write({ type: 'text-delta', id: 'm1', delta: '.' });
+    const carried = await second.flush();
+    second.write({ type: 'text-end', id: 'm1' });
+    await second.close();
+    await recorder.waitFor(isTextEnd);
+
+    // A subscriber decodes what one writer would have written.
+    expect(recorder.events()).toEqual(textEvents('m1', 'The weather', ' is mild', ' today', '.'));
+    // The deltas the first writer wrote share the message the first opened,
+    // and the second writer's first delta opens a message of its own.
+    expect(opened.serial).toBe(recorder.deliveries[1]?.message.serial);
+    expect(closed.serial).toBe(opened.serial);
+    expect(carried.serial).toBe(recorder.deliveries[3]?.message.serial);
+    expect(carried.serial).not.toBe(opened.serial);
+
+    const history = await drainHistory(pubsubClient().channels.get(name), createDecoder(createTestCodec()));
+    expect(history.map((d) => d.event)).toEqual([
+      { type: 'text-start', id: 'm1' },
+      { type: 'text-delta', id: 'm1', delta: 'The weather is mild' },
+      { type: 'text-delta', id: 'm1', delta: ' today.' },
+      { type: 'text-end', id: 'm1' },
+    ]);
   });
 });

@@ -118,4 +118,31 @@ describe('OpenAI codec over Ably', () => {
     ]);
     expect(history[2]?.message.data).toBe('It is 21°C in London.');
   });
+
+  it('writes a response event by event through two writers, the second carrying on the text the first stopped in', async () => {
+    const name = uniqueChannelName('openai');
+    const clientChannel = pubsubClient().channels.get(name);
+    const decoder = openaiDecoder();
+    const recorder = createDeliveryRecorder<OpenAIEvent>();
+    decoder.onEvent(recorder.record);
+    await clientChannel.subscribe(decoder.receive);
+
+    // The first writer stops after the text's first delta.
+    const agent = adaptorOn(name);
+    const first = agent.newWriter();
+    for (const event of textResponse.slice(0, 4)) first.write(event);
+    await first.close();
+    const second = agent.newWriter();
+    for (const event of textResponse.slice(4)) second.write(event);
+    await second.close();
+    await recorder.waitFor((d) => completions(d) === 1);
+
+    const expected = decodedOf(textResponse);
+    expect(recorder.events()).toStrictEqual(expected);
+
+    // History holds the text as two messages, one per writer, so each delta
+    // reads back as itself.
+    const history = await drainHistory(pubsubClient().channels.get(name), openaiDecoder());
+    expect(history.map((d) => d.event)).toStrictEqual(expected);
+  });
 });

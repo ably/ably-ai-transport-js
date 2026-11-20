@@ -764,4 +764,37 @@ describe('AG-UI codec over Ably', () => {
 
     expect(recorder.deliveries.map((d) => d.event)).toStrictEqual(decodedOf(run));
   });
+
+  it('writes a run event by event through two writers, the second carrying on the text the first stopped in', async () => {
+    const name = uniqueChannelName('ag-ui');
+    const clientChannel = pubsubClient().channels.get(name);
+    const decoder = agUiDecoder();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
+    decoder.onEvent(recorder.record);
+    await clientChannel.subscribe(decoder.receive);
+
+    // The first writer stops after the text's second delta of three.
+    const agent = adaptorOn(name);
+    const first = agent.newWriter();
+    for (const event of textRun.slice(0, 4)) first.write(event);
+    await first.close();
+    const second = agent.newWriter();
+    for (const event of textRun.slice(4)) second.write(event);
+    await second.close();
+    await recorder.waitFor((d) => finished(d) === 1);
+
+    expect(recorder.events()).toStrictEqual(decodedOf(textRun));
+    // The run's start carries the prompt, so the reducer shows it before the reply.
+    const live = await foldWithAGUIReducer(recorder.events(), history);
+    expect(live.slice(history.length)).toStrictEqual([
+      prompt,
+      { id: 'm1', role: 'assistant', content: 'It is 21°C in London.', metadata: { model: 'm-1' } },
+    ]);
+
+    // History holds the text as two messages, one per writer, and AG-UI's
+    // reducer merges them into the message the live subscriber built.
+    const stored = await drainHistory(pubsubClient().channels.get(name), agUiDecoder());
+    const events = stored.map((d) => d.event).filter((e) => e !== undefined);
+    expect(await foldWithAGUIReducer(events, history)).toStrictEqual(live);
+  });
 });

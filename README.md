@@ -145,6 +145,36 @@ for await (const { event, serial } of adaptor.pipeEach(stream, { signal })) {
 
 Like `pipe`, `pipeEach` flushes the stream's appends and repairs any that failed before it settles, however the loop ends: the source ending, the pipe failing, the signal, or a `break`, a `return` or a throw in the loop body. A stop writes nothing more and ends no stream, so a client sees a stream that was cut off stay open, with its full text. Leaving the loop waits for that repair. Stopping early does not stop the source either: a `ReadableStream` is released, not cancelled, so abort the model call with the same signal if it should stop too.
 
+Both pipes are shorthand. A stream of events is written through an event writer, which `adaptor.newWriter()` gives out, and a pipe opens one, writes each event its source yields, and flushes it when it stops. A pipe still reports a failure as `PipeFailed`; the writer's own codes, below, are for code that drives a writer itself. Open a writer yourself when your code is handed events one at a time and has no source to pipe: a consumer that takes events off a queue, or an SDK that calls back with each event. `write` hands an event over and returns at once, without waiting for the channel; the writer makes the writes in the order you call them.
+
+```typescript
+const writer = adaptor.newWriter({ headers });
+for await (const entry of queue.readFrom(offset)) {
+  if (entry.type === 'event') {
+    writer.write(entry.event);
+    continue;
+  }
+  // A commit point: everything written so far is on the channel once flush resolves.
+  // If a write did not reach the channel, flush rejects and nothing is committed.
+  const { serial } = await writer.flush();
+  await queue.commit({ offset: entry.offset, serial });
+}
+await writer.close();
+```
+
+`flush` makes the writes you have already called and waits until what was written is on the channel, repairing it where an append failed, then resolves with the serial of the message the last event landed on. The writer stays open, and a stream that was part-way through carries on. Record how far you have written once `flush` resolves. `close` does what `flush` does and then refuses later writes; it ends no stream. Calling `close` again settles as the first call did. `await using writer = adaptor.newWriter()` closes the writer however the block is left.
+
+An event the codec cannot write throws `InvalidArgument` from its `write`. Nothing is published for it, writing it again fails the same way, and the writer carries on.
+
+A failure to get a write onto the channel stops the writer, with one of these errors:
+
+- The channel's own error, as it threw it, when the channel refused a write: `40160` for a missing capability, for example.
+- `StreamedMessageFinalizeFailed`: an append failed and repairing the message failed too, so the channel is missing text.
+
+Once the writer has stopped, the events queued behind the failed write are not written and nothing more is published. The next `flush` and `close` reject with the error, and the next `write` throws it. Open a new writer and replay from the last point you recorded. A `write` after `close` throws `StreamClosed`.
+
+To carry on in another process, such as after a restart, close the writer, wait for the close, and give the later events to a new writer; a writer you write through before the last one has closed can reach the channel first. A client decodes the same events as if one writer had written them all. Keep one writer for a run of events and flush it where you record progress, rather than opening a writer per event: a writer joins a stream's events only while it is open. A stream stays open in its writer until its end event is written, so close the writer when a stream is cut off before its end, or a later stream that reuses its id would append to the same message.
+
 ### Client
 
 The client subscribes to the channel through the Ably Pub/Sub SDK and passes every message to a decoder. The decoder gives each message back as deliveries holding the decoded event, and the application merges the events into whatever it renders from.
@@ -222,7 +252,7 @@ The channel keeps its `rewind` param. After the channel goes DETACHED or FAILED 
 
 ### Tagging a turn
 
-`send`, `pipe` and `pipeEach` take `headers`, a flat map of string, number, boolean or null values that the adaptor includes in `extras.headers` on every message the call publishes. An adaptor can carry default headers as well, `vercelAdaptor(channel, { headers })`. A call's headers win over the defaults, and any headers the codec writes win over both.
+`send`, `pipe`, `pipeEach` and `newWriter` take `headers`, a flat map of string, number, boolean or null values that the adaptor includes in `extras.headers` on every message the call, or the writer, publishes. An adaptor can carry default headers as well, `vercelAdaptor(channel, { headers })`. A call's headers win over the defaults, and any headers the codec writes win over both.
 
 You can read the headers from the raw Ably message in a delivery, `message.extras.headers`, or in the `headers` field passed to `decode` in the codec builder.
 

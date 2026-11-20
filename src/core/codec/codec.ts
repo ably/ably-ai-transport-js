@@ -7,7 +7,7 @@
  * are one-to-one; the contract admits zero or several so a hand-written codec
  * can split a payload that is too large for one message, or fold one message
  * into several events. A codec holds the wire format and nothing else: the
- * agent adaptor writes to the channel and keeps the per-pipe key table that
+ * agent adaptor writes to the channel and keeps the per-writer key table that
  * turns a stream key into the serial an append targets, and the decoder holds
  * the per-serial state a reader needs. Every message a codec
  * encodes carries the codec's `name` as its message name and the codec's `id`
@@ -16,7 +16,8 @@
  * reads both to tell its messages from anyone else's. The adaptor owns two
  * fields under `extras.ai`: `stream`, on every write under a live key, and
  * `ends`, on the message that ends one, carrying the serial it ends. It also adds
- * the headers of the `send` or `pipe` call under `extras.headers`, preferring
+ * the headers of the `send` or `pipe` call, or of the event writer, under
+ * `extras.headers`, preferring
  * the codec's own where both name a key. Everything else in `data` and
  * `extras` is the codec's.
  */

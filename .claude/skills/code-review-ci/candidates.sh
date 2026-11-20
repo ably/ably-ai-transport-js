@@ -33,6 +33,11 @@ for ref in "$BASE" "$HEAD"; do
     exit 2
   fi
 done
+# The diff is `base...head`, which needs a merge base; without one it is empty.
+if ! git merge-base "$BASE" "$HEAD" >/dev/null; then
+  echo "candidates.sh: no merge base between '$BASE' and '$HEAD'" >&2
+  exit 2
+fi
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

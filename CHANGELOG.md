@@ -2,6 +2,14 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [1.1.0](https://github.com/ably/ably-ai-transport-js/tree/1.1.0) (2026-11-20)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/1.0.0...1.1.0)
+
+### New Features
+
+- **Stream the Anthropic Messages API over a channel.** `anthropicAdaptor(channel)` and `anthropicDecoder()` from the new `@ably/ai-transport/anthropic` entry point carry the stream events of `client.messages.stream()`, and a client can merge the decoded events with the SDK's own `MessageStream`. A client starts a turn, or answers a tool call, by sending the codec's `input` event. When a reply fails, an agent can publish the API's `error` event, `AnthropicErrorEvent`, built from the `APIError` it caught. `@anthropic-ai/sdk` version 1 is a new optional peer dependency, needed only by this entry point. The [README](https://github.com/ably/ably-ai-transport-js#anthropic) shows an agent and a client. [#375](https://github.com/ably/ably-ai-transport-js/pull/375), [#381](https://github.com/ably/ably-ai-transport-js/pull/381)
+
 ## [1.0.0](https://github.com/ably/ably-ai-transport-js/tree/1.0.0) (2026-11-12)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.11.0...1.0.0)

@@ -23,7 +23,7 @@ import { CODEC_FIELD, readOwnExtras } from '../wire.js';
 export const assertCodecWrote = (
   message: Ably.Message,
   codec: Pick<Codec<unknown>, 'id' | 'name'>,
-  operation: 'send' | 'pipe',
+  operation: 'send' | 'write event',
 ): void => {
   const written = readOwnExtras(message.extras)?.[CODEC_FIELD];
   if (message.name === codec.name && written === codec.id) return;

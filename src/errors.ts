@@ -60,10 +60,11 @@ export enum ErrorCode {
   SessionSendFailed = 104005,
 
   /**
-   * A pipe rejected: the source stream threw (a provider rate limit, a model
-   * error, a network failure), the codec could not encode an event, a publish
-   * or update failed mid-stream, or the repair of a stream whose append failed
-   * also failed. The underlying failure is the `cause`. Registered in
+   * A pipe rejected, or an event writer's `write` or `close` did: the source
+   * stream threw (a provider rate limit, a model error, a network failure),
+   * the codec could not encode an event, a publish or update failed
+   * mid-stream, or the repair of a stream whose append failed also failed.
+   * The underlying failure is the `cause`. Registered in
    * ably-common as `run_response_stream_failed`.
    */
   PipeFailed = 104008,
@@ -77,6 +78,15 @@ export enum ErrorCode {
    * logged, and the reply goes on without it.
    */
   SessionMessageProcessingFailed = 104009,
+
+  /**
+   * An event writer's `write` was called after its `close`. Nothing is
+   * published for the event, and a closed writer does not reopen: open a new
+   * one and hand it the event. Known gap: the code is not in the ably-common
+   * registry yet, where it is to be registered as `stream_closed`, so
+   * `check:error-codes` reports it missing until the registry has it.
+   */
+  StreamClosed = 104014,
 }
 
 /**

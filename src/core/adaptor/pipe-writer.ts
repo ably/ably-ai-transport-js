@@ -1,9 +1,11 @@
 /**
- * Pipe writer — one pipe's key table and its append pipeline.
+ * Pipe writer — one event writer's key table and its append pipeline, a
+ * pipe's included.
  *
  * A codec names streams by its own keys (a message id, a tool call id, a block
  * index) because it cannot know the serial a publish ack returns. The writer
- * keeps that table for the life of one pipe. `publish` under a key remembers
+ * keeps that table for the life of the event writer that holds it. `publish`
+ * under a key remembers
  * the serial. `append` to a key that is not live publishes the message, awaits
  * the ack and remembers its serial under the key, so a stream's first delta
  * opens the message the later deltas append to; `append` to a live key appends.
@@ -25,11 +27,13 @@
  * message, so stamping every write keeps `stream` on the message however it is
  * read back. A plain publish with no key carries neither.
  *
- * Appends are sent as they arrive and never awaited by the pipe loop, so a
+ * Appends are sent as they arrive and never awaited by the write that sent
+ * them, so a
  * token stream runs at the speed of the connection rather than one round trip
  * per token. A realtime connection keeps them in order, and a discrete publish
  * needs no ordering against them. Their acks are awaited where a stream ends
- * and when the pipe ends, and a stream whose append failed is repaired there
+ * and when the event writer closes, and a stream whose append failed is
+ * repaired there
  * with one full-content `updateMessage`, before the message that ends it, so
  * history holds the whole message, a live subscriber reads the missing text as
  * the update's tail, and the closer is the last write a decoder sees for the
@@ -96,7 +100,7 @@ export interface WriteResult {
   published: boolean;
 }
 
-/** One pipe's writer. */
+/** One event writer's key table and append pipeline. */
 export interface PipeWriter {
   /**
    * Perform the operation an encoded message asks for, and resolve with where
@@ -104,7 +108,8 @@ export interface PipeWriter {
    * the publish that an append to a key not yet live becomes. An append to a
    * live key resolves at once with the stream's serial, before its ack; its
    * failure surfaces from the flush that runs when its stream ends or the
-   * pipe ends. An update resolves once acked, with the stream's serial.
+   * event writer closes. An update resolves once acked, with the stream's
+   * serial.
    * @throws {Ably.ErrorInfo} `InvalidArgument` for a publish under a live key or an update to a key that is not live; `InternalError` when a publish returns no serial; `StreamedMessageFinalizeFailed` when a stream this message ends could not be repaired, in which case the message is not written, unless it is an append to the key it ends, which has been sent, and the next write that ends the stream, or the next flush, repairs it again.
    */
   write(encoded: EncodedMessage): Promise<WriteResult>;
@@ -321,7 +326,7 @@ class DefaultPipeWriter implements PipeWriter {
 }
 
 /**
- * Create a writer for one pipe.
+ * Create a pipe writer for one event writer.
  * @param channel - The channel to write to.
  * @param logger - Logger for diagnostics.
  * @returns A new {@link PipeWriter}.

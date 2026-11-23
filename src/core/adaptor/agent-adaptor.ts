@@ -26,15 +26,11 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
 import { assertCodecWrote } from './codec-fields.js';
+import { createCodecSink } from './codec-sink.js';
+import { createEventWriter, type DefaultEventWriter, type Published } from './event-writer.js';
 import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import type { ChannelWriter } from './message-stream.js';
-import {
-  pipeEach as pipeEachDriver,
-  type PipeResult,
-  type PipeSource,
-  pipeStream,
-  type Published,
-} from './pipe-stream.js';
+import { pipeEach as pipeEachDriver, type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
 import { createPipeWriter } from './pipe-writer.js';
 
 /** Options for an agent adaptor factory. */
@@ -220,16 +216,25 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
     this._logger.trace('AgentAdaptor.pipe();', { headers: Object.keys(options?.headers ?? {}) });
     // Checked before the source is read, so a rejected pipe has locked no
     // stream and called no iterator's return().
-    const headers = mergeHeaders(this._headers, prepareHeaders(options?.headers, 'pipe'));
-    const writer = createPipeWriter(this._channel, this._logger);
-    return pipeStream(source, this._codec, writer, { signal: options?.signal, headers, logger: this._logger });
+    const writer = this._eventWriter(prepareHeaders(options?.headers, 'pipe'));
+    return pipeStream(source, writer, { signal: options?.signal, logger: this._logger });
   }
 
   pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<Published<E>> {
     this._logger.trace('AgentAdaptor.pipeEach();', { headers: Object.keys(options?.headers ?? {}) });
-    const headers = mergeHeaders(this._headers, prepareHeaders(options?.headers, 'pipe'));
+    const writer = this._eventWriter(prepareHeaders(options?.headers, 'pipe'));
+    return pipeEachDriver(source, writer, { signal: options?.signal, logger: this._logger });
+  }
+
+  /**
+   * Open an event writer with a key table of its own, writing through the
+   * adaptor's codec.
+   * @param headers - The call's headers, already checked, laid over the adaptor's defaults.
+   * @returns The writer.
+   */
+  private _eventWriter(headers: MessageHeaders | undefined): DefaultEventWriter<E> {
     const writer = createPipeWriter(this._channel, this._logger);
-    return pipeEachDriver(source, this._codec, writer, { signal: options?.signal, headers, logger: this._logger });
+    return createEventWriter(createCodecSink(this._codec, writer, mergeHeaders(this._headers, headers)));
   }
 
   /**

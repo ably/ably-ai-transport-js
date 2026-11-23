@@ -1,16 +1,16 @@
 /**
- * Pipe writer — one pipe's key table.
+ * Pipe writer — one event writer's key table, a pipe's included.
  *
  * A codec names streams by its own keys (a message id, a tool call id, a block
  * index) because it cannot know the serial a publish ack returns. The writer
- * keeps that table for the life of one pipe, from each key to the message
- * stream that writes its message (`message-stream.ts`). `publish` under a key
- * opens a message stream. `append` to a key that is not live opens one with
- * the message, so a stream's first delta opens the message the later deltas
- * append to; `append` to a live key appends through its stream. `update`
- * routes to a live key's stream, and `ends` forgets a key. The table, and the
- * markers below, are the codec's wire format; the writes to one message and
- * their repair are the message stream's.
+ * keeps that table for the life of the event writer that holds it, from each
+ * key to the message stream that writes its message (`message-stream.ts`).
+ * `publish` under a key opens a message stream. `append` to a key that is not
+ * live opens one with the message, so a stream's first delta opens the message
+ * the later deltas append to; `append` to a live key appends through its
+ * stream. `update` routes to a live key's stream, and `ends` forgets a key. The
+ * table, and the markers below, are the codec's wire format; the writes to one
+ * message and their repair are the message stream's.
  *
  * The first delta opens the message because Ably's append replaces the stored
  * `name` and `extras` with the append's own. A message opened by a start event
@@ -31,14 +31,13 @@
  * A message stream sends appends as they arrive and never awaits them one by
  * one, so a token stream runs at the speed of the connection rather than one
  * round trip per token. A realtime connection keeps them in order, and a
- * discrete publish needs no ordering against them. The writer flushes a
- * stream where it ends and when the pipe ends, and a stream whose append
+ * discrete publish needs no ordering against them. The writer flushes a stream
+ * where it ends and when the event writer flushes, and a stream whose append
  * failed is repaired there with one full-content update, before the message
- * that ends it, so
- * history holds the whole message, a live subscriber reads the missing text as
- * the update's tail, and the closer is the last write a decoder sees for the
- * stream. A closer that appends to the key it ends is the one shape repaired
- * after itself when that append fails; no shipped row does that.
+ * that ends it, so history holds the whole message, a live subscriber reads the
+ * missing text as the update's tail, and the closer is the last write a decoder
+ * sees for the stream. A closer that appends to the key it ends is the one
+ * shape repaired after itself when that append fails; no shipped row does that.
  *
  * One platform behaviour shapes the one wait the writer does: the append
  * rollup. Ably holds the appends a connection publishes within a window (40ms
@@ -76,7 +75,7 @@ export interface WriteResult {
   published: boolean;
 }
 
-/** One pipe's writer. */
+/** One event writer's key table. */
 export interface PipeWriter {
   /**
    * Perform the operation an encoded message asks for, and resolve with where
@@ -84,7 +83,8 @@ export interface PipeWriter {
    * the publish that an append to a key not yet live becomes. An append to a
    * live key resolves at once with the stream's serial, before its ack; its
    * failure surfaces from the flush that runs when its stream ends or the
-   * pipe ends. An update resolves once acked, with the stream's serial.
+   * event writer flushes. An update resolves once acked, with the stream's
+   * serial.
    * @throws {Ably.ErrorInfo} `InvalidArgument` for a publish under a live key or an update to a key that is not live; `InternalError` when a publish returns no serial; `StreamedMessageFinalizeFailed` when a stream this message ends could not be repaired.
    */
   write(encoded: EncodedMessage): Promise<WriteResult>;
@@ -232,7 +232,7 @@ class DefaultPipeWriter implements PipeWriter {
 }
 
 /**
- * Create a writer for one pipe.
+ * Create a pipe writer for one event writer.
  * @param channel - The channel to write to.
  * @param logger - Logger for diagnostics.
  * @returns A new {@link PipeWriter}.

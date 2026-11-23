@@ -21,7 +21,7 @@ structurally.
 **The codec's union is the SDK's `UIMessageChunk` plus the chunk types some
 supported releases lack.** `VercelCrossMajorChunk` in
 `src/vercel/codec/events.ts` declares those members structurally (the three
-v7 adds, and `reset-step`, added within v7), so the row table in
+v7 adds, and `reset-step` and `steering-message`, added within v7), so the row table in
 `src/vercel/codec/index.ts` has one row per member on every supported release.
 On a release that has a member the declaration coincides with the SDK's own;
 on one that does not, it is a member nothing produces. Never name a chunk type

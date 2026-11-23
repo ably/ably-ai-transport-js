@@ -186,6 +186,7 @@ describe('the Vercel codec', () => {
         { type: 'reasoning-file', url: 'https://example.com/r.png', mediaType: 'image/png' },
         { type: 'custom', kind: 'acme.ping' },
         { type: 'reset-step' },
+        { type: 'steering-message', id: 'm1', parts: [{ type: 'text', text: 'use Paris, Texas' }] },
         { type: 'message-metadata', messageMetadata: { tokens: 3 } },
         { type: 'error', errorText: 'boom' },
         { type: 'abort', reason: 'user' },

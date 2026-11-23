@@ -164,6 +164,7 @@ export const createVercelCodec = <
       'start-step': plain(),
       'finish-step': plain(),
       'reset-step': plain(),
+      'steering-message': plain(),
       finish: plain(),
       abort: plain(),
       error: plain(),

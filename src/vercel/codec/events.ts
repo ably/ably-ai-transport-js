@@ -13,7 +13,7 @@ import type * as AI from 'ai';
 /**
  * Chunk types some supported AI SDK releases lack, declared structurally so
  * the codec's row table is the same on every one of them: the three v7 adds,
- * and `reset-step`, added within v7. On a release that has them they coincide
+ * and `reset-step` and `steering-message`, added within v7. On a release that has them they coincide
  * with the SDK's own members; on one that does not, they are members nothing
  * produces.
  */
@@ -21,6 +21,7 @@ export type VercelCrossMajorChunk =
   | { type: 'custom'; kind: `${string}.${string}`; providerMetadata?: AI.ProviderMetadata }
   | { type: 'reasoning-file'; url: string; mediaType: string; providerMetadata?: AI.ProviderMetadata }
   | { type: 'reset-step' }
+  | { type: 'steering-message'; id: string; parts: (AI.TextUIPart | AI.FileUIPart)[] }
   | {
       type: 'tool-approval-response';
       approvalId: string;

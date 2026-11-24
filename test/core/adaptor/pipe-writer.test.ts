@@ -250,6 +250,50 @@ describe('createPipeWriter', () => {
     });
   });
 
+  describe('reserve', () => {
+    it('refuses an update to a key no reserved write has opened', () => {
+      expect(() => {
+        writer.reserve([update('k1', 'x')]);
+      }).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: "unable to write event; it updates stream 'k1', which this writer has not opened",
+      });
+    });
+
+    it('refuses a publish under a key a reserved write left live', () => {
+      writer.reserve([publish('k1')]);
+      expect(() => {
+        writer.reserve([publish('k1')]);
+      }).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: "unable to write event; it publishes under stream 'k1', which is still open",
+      });
+    });
+
+    it('records the keys an append opens and an end closes', () => {
+      writer.reserve([append('k1', 'a')]);
+      writer.reserve([update('k1', 'b')]);
+      writer.reserve([end('k1')]);
+      expect(() => {
+        writer.reserve([update('k1', 'c')]);
+      }).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('records nothing for an event it refuses', () => {
+      expect(() => {
+        writer.reserve([append('k1', 'a'), update('k2', 'b')]);
+      }).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+      expect(() => {
+        writer.reserve([update('k1', 'c')]);
+      }).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('writes nothing', () => {
+      writer.reserve([publish('k1'), append('k1', 'a')]);
+      expect(channel.publish).not.toHaveBeenCalled();
+    });
+  });
+
   describe('update', () => {
     it('awaits the update and routes it to the key', async () => {
       await writer.write(publish('k1', 'draft'));

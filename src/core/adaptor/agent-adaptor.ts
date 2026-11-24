@@ -27,6 +27,7 @@ import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
 import { assertCodecWrote } from './codec-fields.js';
 import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
+import type { ChannelWriter } from './message-stream.js';
 import {
   pipeEach as pipeEachDriver,
   type PipeResult,
@@ -34,7 +35,7 @@ import {
   pipeStream,
   type Published,
 } from './pipe-stream.js';
-import { type ChannelWriter, createPipeWriter } from './pipe-writer.js';
+import { createPipeWriter } from './pipe-writer.js';
 
 /** Options for an agent adaptor factory. */
 export interface AgentAdaptorOptions {

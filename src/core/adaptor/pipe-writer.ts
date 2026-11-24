@@ -1,13 +1,16 @@
 /**
- * Pipe writer — one pipe's key table and its append pipeline.
+ * Pipe writer — one pipe's key table.
  *
  * A codec names streams by its own keys (a message id, a tool call id, a block
  * index) because it cannot know the serial a publish ack returns. The writer
- * keeps that table for the life of one pipe. `publish` under a key remembers
- * the serial. `append` to a key that is not live publishes the message, awaits
- * the ack and remembers its serial under the key, so a stream's first delta
- * opens the message the later deltas append to; `append` to a live key appends.
- * `update` routes to a live key, and `ends` forgets a key.
+ * keeps that table for the life of one pipe, from each key to the message
+ * stream that writes its message (`message-stream.ts`). `publish` under a key
+ * opens a message stream. `append` to a key that is not live opens one with
+ * the message, so a stream's first delta opens the message the later deltas
+ * append to; `append` to a live key appends through its stream. `update`
+ * routes to a live key's stream, and `ends` forgets a key. The table, and the
+ * markers below, are the codec's wire format; the writes to one message and
+ * their repair are the message stream's.
  *
  * The first delta opens the message because Ably's append replaces the stored
  * `name` and `extras` with the append's own. A message opened by a start event
@@ -25,12 +28,13 @@
  * message, so stamping every write keeps `stream` on the message however it is
  * read back. A plain publish with no key carries neither.
  *
- * Appends are sent as they arrive and never awaited by the pipe loop, so a
- * token stream runs at the speed of the connection rather than one round trip
- * per token. A realtime connection keeps them in order, and a discrete publish
- * needs no ordering against them. Their acks are awaited where a stream ends
- * and when the pipe ends, and a stream whose append failed is repaired there
- * with one full-content `updateMessage`, before the message that ends it, so
+ * A message stream sends appends as they arrive and never awaits them one by
+ * one, so a token stream runs at the speed of the connection rather than one
+ * round trip per token. A realtime connection keeps them in order, and a
+ * discrete publish needs no ordering against them. The writer flushes a
+ * stream where it ends and when the pipe ends, and a stream whose append
+ * failed is repaired there with one full-content update, before the message
+ * that ends it, so
  * history holds the whole message, a live subscriber reads the missing text as
  * the update's tail, and the closer is the last write a decoder sees for the
  * stream. A closer that appends to the key it ends is the one shape repaired
@@ -59,34 +63,10 @@ import * as Ably from '@ably/pubsub-core';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause, errorMessage } from '../../utils.js';
+import { errorCause } from '../../utils.js';
 import type { EncodedMessage } from '../codec/codec.js';
 import { ENDS_FIELD, STREAM_FIELD, withOwnField } from '../wire.js';
-
-/**
- * The channel operations the writer needs. An `Ably.RealtimeChannel` satisfies
- * it directly; tests supply a fake.
- */
-export interface ChannelWriter {
-  /**
-   * Publish a new message.
-   * @param message - The message to publish.
-   * @returns The ack, whose first serial names the new message.
-   */
-  publish(message: Ably.Message): Promise<Ably.PublishResult>;
-  /**
-   * Append `data` to the message named by `message.serial`.
-   * @param message - The fragment, with the serial of the message to append to.
-   * @returns The ack.
-   */
-  appendMessage(message: Ably.Message): Promise<Ably.UpdateDeleteResult>;
-  /**
-   * Replace the content of the message named by `message.serial`.
-   * @param message - The new content, with the serial of the message to replace.
-   * @returns The ack.
-   */
-  updateMessage(message: Ably.Message): Promise<Ably.UpdateDeleteResult>;
-}
+import { type ChannelWriter, type MessageStream, openMessageStream, publishMessage } from './message-stream.js';
 
 /** Where one write landed. */
 export interface WriteResult {
@@ -116,28 +96,25 @@ export interface PipeWriter {
   flush(): Promise<void>;
 }
 
-interface StreamState {
-  serial: string;
-  /** The text written to the message so far, for a repair. */
-  accumulated: string;
-  /** The name the last write carried, re-stamped by a repair because Ably replaces the name on update. */
-  name: string | undefined;
-  /** The extras the last write carried, re-stamped by a repair because Ably replaces extras on update. */
-  extras: unknown;
-}
-
-interface PendingAppend {
-  key: string;
-  promise: Promise<Ably.UpdateDeleteResult>;
-}
-
-const stringOf = (data: unknown): string => (typeof data === 'string' ? data : '');
+/**
+ * The error for repairs that failed: `StreamedMessageFinalizeFailed`, with the
+ * first failure as `cause`.
+ * @param failures - What each failed repair threw.
+ * @param needed - How many streams needed a repair.
+ * @returns The error.
+ */
+const repairFailed = (failures: unknown[], needed: number): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(
+    `unable to repair stream; ${String(failures.length)} of ${String(needed)} repairs failed`,
+    ErrorCode.StreamedMessageFinalizeFailed,
+    500,
+    errorCause(failures[0]),
+  );
 
 class DefaultPipeWriter implements PipeWriter {
   private readonly _channel: ChannelWriter;
   private readonly _logger: Logger | undefined;
-  private readonly _streams = new Map<string, StreamState>();
-  private _pending: PendingAppend[] = [];
+  private readonly _streams = new Map<string, MessageStream>();
   private _flushing: Promise<void> | undefined;
 
   constructor(channel: ChannelWriter, logger: Logger | undefined) {
@@ -162,15 +139,18 @@ class DefaultPipeWriter implements PipeWriter {
       // The first append of a stream opens its message; see the module comment.
       const stream = this._streams.get(append);
       if (stream === undefined) {
-        result = { serial: await this._publish(append, marked), published: true };
+        result = { serial: await this._open(append, marked), published: true };
       } else {
-        this._append(append, stream, marked);
+        stream.append(marked);
         result = { serial: stream.serial, published: false };
       }
-    } else if (update === undefined) {
-      result = { serial: await this._publish(publish, publish === undefined ? closing : marked), published: true };
-    } else {
+    } else if (update !== undefined) {
       result = { serial: await this._update(update, marked), published: false };
+    } else if (publish === undefined) {
+      this._logger?.trace('PipeWriter.write(); publish', { name: closing.name });
+      result = { serial: await publishMessage(this._channel, closing), published: true };
+    } else {
+      result = { serial: await this._open(publish, marked), published: true };
     }
 
     if (ends !== undefined) {
@@ -187,12 +167,8 @@ class DefaultPipeWriter implements PipeWriter {
   async flush(): Promise<void> {
     // Re-entrancy guard: a flush in progress is the flush.
     if (this._flushing) return this._flushing;
-    const snapshot = this._pending;
-    this._pending = [];
-    if (snapshot.length === 0) return;
-
-    this._logger?.trace('PipeWriter.flush();', { pending: snapshot.length });
-    this._flushing = this._repair(snapshot);
+    this._logger?.trace('PipeWriter.flush();', { streams: this._streams.size });
+    this._flushing = this._repair([...this._streams.values()]);
     try {
       await this._flushing;
     } finally {
@@ -200,8 +176,8 @@ class DefaultPipeWriter implements PipeWriter {
     }
   }
 
-  private async _publish(key: string | undefined, message: Ably.Message): Promise<string> {
-    if (key !== undefined && this._streams.has(key)) {
+  private async _open(key: string, message: Ably.Message): Promise<string> {
+    if (this._streams.has(key)) {
       throw new Ably.ErrorInfo(
         `unable to publish; key '${key}' is still live, use update to replace its content or end it first`,
         ErrorCode.InvalidArgument,
@@ -209,57 +185,23 @@ class DefaultPipeWriter implements PipeWriter {
       );
     }
     this._logger?.trace('PipeWriter.write(); publish', { name: message.name, key });
-    const result = await this._channel.publish(message);
-    const serial = result.serials[0] ?? undefined;
-    if (serial === undefined) {
-      throw new Ably.ErrorInfo('unable to publish; no serial returned', ErrorCode.InternalError, 500);
-    }
-    if (key !== undefined) {
-      this._streams.set(key, {
-        serial,
-        accumulated: stringOf(message.data),
-        name: message.name,
-        extras: message.extras,
-      });
-      this._logger?.debug('PipeWriter.write(); stream opened', { key, serial });
-    }
-    return serial;
-  }
-
-  private _append(key: string, stream: StreamState, message: Ably.Message): void {
-    stream.accumulated += stringOf(message.data);
-    stream.name = message.name;
-    stream.extras = message.extras;
-    const promise = this._channel.appendMessage({ ...message, serial: stream.serial });
-    // Not awaited here: the ack is collected by flush. The catch keeps an
-    // early rejection from surfacing as unhandled before flush collects it,
-    // and warns, since the channel is missing that text until the flush
-    // repairs the stream.
-    promise.catch((error: unknown) => {
-      this._logger?.warn('PipeWriter.write(); append failed, the next flush repairs the stream', {
-        key,
-        serial: stream.serial,
-        error: errorMessage(error),
-      });
-    });
-    this._pending.push({ key, promise });
+    const stream = await openMessageStream(this._channel, message, this._logger?.withContext({ key }));
+    this._streams.set(key, stream);
+    this._logger?.debug('PipeWriter.write(); stream opened', { key, serial: stream.serial });
+    return stream.serial;
   }
 
   /**
-   * Await the pending appends of one stream and repair it if any failed, so
-   * the message that ends the stream is the last write on its message.
+   * Flush one stream and repair it if an append failed, so the message that
+   * ends the stream is the last write on its message.
    * @param key - The stream.
    * @throws {Ably.ErrorInfo} `StreamedMessageFinalizeFailed` when the repair fails.
    */
   private async _settle(key: string): Promise<void> {
-    const own = this._pending.filter((p) => p.key === key);
-    if (own.length === 0) return;
-    this._pending = this._pending.filter((p) => p.key !== key);
-    this._logger?.trace('PipeWriter.write(); settling appends before the message that ends the stream', {
-      key,
-      pending: own.length,
-    });
-    await this._repair(own);
+    const stream = this._streams.get(key);
+    if (stream === undefined) return;
+    this._logger?.trace('PipeWriter.write(); settling appends before the message that ends the stream', { key });
+    await this._repair([stream]);
   }
 
   private async _update(key: string, message: Ably.Message): Promise<string> {
@@ -268,47 +210,24 @@ class DefaultPipeWriter implements PipeWriter {
       throw new Ably.ErrorInfo(`unable to update; no live stream for key '${key}'`, ErrorCode.InvalidArgument, 400);
     }
     this._logger?.trace('PipeWriter.write(); update', { key, serial: stream.serial });
-    await this._channel.updateMessage({ ...message, serial: stream.serial });
-    stream.accumulated = stringOf(message.data);
-    stream.name = message.name;
-    stream.extras = message.extras;
+    await stream.update(message);
     return stream.serial;
   }
 
-  private async _repair(snapshot: PendingAppend[]): Promise<void> {
-    const results = await Promise.allSettled(snapshot.map(async (p) => p.promise));
-    const failed = new Set<string>();
-    for (const [i, result] of results.entries()) {
-      const entry = snapshot[i];
-      if (entry !== undefined && result.status === 'rejected') failed.add(entry.key);
-    }
-    if (failed.size === 0) return;
-
-    this._logger?.warn('PipeWriter.flush(); repairing streams with failed appends', { keys: [...failed] });
+  /**
+   * Flush streams, repairing each whose append failed.
+   * @param streams - The streams.
+   * @throws {Ably.ErrorInfo} `StreamedMessageFinalizeFailed` when a repair fails, with the first failure as `cause`.
+   */
+  private async _repair(streams: MessageStream[]): Promise<void> {
+    const results = await Promise.allSettled(streams.map(async (stream) => stream.flush()));
     const failures: unknown[] = [];
-    for (const key of failed) {
-      const stream = this._streams.get(key);
-      if (stream === undefined) continue;
-      try {
-        await this._channel.updateMessage({
-          serial: stream.serial,
-          name: stream.name,
-          data: stream.accumulated,
-          extras: stream.extras,
-        });
-      } catch (error) {
-        this._logger?.error('PipeWriter.flush(); repair failed', { key, error: errorMessage(error) });
-        failures.push(error);
-      }
+    let repaired = 0;
+    for (const result of results) {
+      if (result.status === 'rejected') failures.push(result.reason);
+      else if (result.value) repaired += 1;
     }
-    if (failures.length > 0) {
-      throw new Ably.ErrorInfo(
-        `unable to repair stream; ${String(failures.length)} of ${String(failed.size)} repairs failed`,
-        ErrorCode.StreamedMessageFinalizeFailed,
-        500,
-        errorCause(failures[0]),
-      );
-    }
+    if (failures.length > 0) throw repairFailed(failures, repaired + failures.length);
   }
 }
 

@@ -94,6 +94,16 @@ export interface PipeWriter {
    * @throws {Ably.ErrorInfo} `StreamedMessageFinalizeFailed` when a repair fails; the first repair failure is the `cause`.
    */
   flush(): Promise<void>;
+  /**
+   * Check an event's messages against the keys the writes already handed over
+   * leave live, and record the keys these leave live in turn, before the
+   * messages are written. A caller that queues writes uses it to refuse, when
+   * a write is made, a message `write` would refuse later. Checks every
+   * message before it records any, so a refused event changes nothing.
+   * @param messages - The event's messages, in order.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` for an update to a key that is not live, or a publish under one that is.
+   */
+  reserve(messages: EncodedMessage[]): void;
 }
 
 /**
@@ -116,6 +126,8 @@ class DefaultPipeWriter implements PipeWriter {
   private readonly _logger: Logger | undefined;
   private readonly _streams = new Map<string, MessageStream>();
   private _flushing: Promise<void> | undefined;
+  /** The keys the writes reserved so far leave live, which {@link DefaultPipeWriter.reserve} checks against. */
+  private readonly _reserved = new Set<string>();
 
   constructor(channel: ChannelWriter, logger: Logger | undefined) {
     this._channel = channel;
@@ -162,6 +174,31 @@ class DefaultPipeWriter implements PipeWriter {
     }
 
     return result;
+  }
+
+  reserve(messages: EncodedMessage[]): void {
+    const live = new Set(this._reserved);
+    for (const { append, publish, update, ends } of messages) {
+      if (update !== undefined && !live.has(update)) {
+        throw new Ably.ErrorInfo(
+          `unable to write event; it updates stream '${update}', which this writer has not opened`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      if (publish !== undefined && live.has(publish)) {
+        throw new Ably.ErrorInfo(
+          `unable to write event; it publishes under stream '${publish}', which is still open`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      const opened = append ?? publish;
+      if (opened !== undefined) live.add(opened);
+      if (ends !== undefined) live.delete(ends);
+    }
+    this._reserved.clear();
+    for (const key of live) this._reserved.add(key);
   }
 
   async flush(): Promise<void> {

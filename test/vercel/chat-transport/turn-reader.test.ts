@@ -291,7 +291,7 @@ describe('TurnReader', () => {
       expect(warnings).toEqual(['TurnReader._receive(); passing over a chunk written outside any turn']);
     });
 
-    it('fails the streams reading the turn with SessionMessageProcessingFailed when one of its messages cannot be decoded', async () => {
+    it('fails the streams reading the turn with MessageDecodeFailed when one of its messages cannot be decoded', async () => {
       const wire = wireAcross(first.slice(0, 3), first.slice(3));
       const fixture = channelWith(wire.stored);
       const reader = readerOn(fixture);
@@ -304,9 +304,7 @@ describe('TurnReader', () => {
       // CAST: the turn's last message, its data replaced with what its row cannot decode.
       fixture.deliver([{ ...wire.live.at(-1), data: 'not an object' } as Ably.InboundMessage]);
 
-      await expect(drain(reading.stream.readable)).rejects.toBeErrorInfoWithCode(
-        ErrorCode.SessionMessageProcessingFailed,
-      );
+      await expect(drain(reading.stream.readable)).rejects.toBeErrorInfoWithCode(ErrorCode.MessageDecodeFailed);
       expect(waiting.ends()).toBe(0);
     });
 

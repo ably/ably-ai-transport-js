@@ -261,7 +261,7 @@ describe('sendMessages', () => {
     expect(await drain(stream)).toEqual([failedToStart]);
   });
 
-  it('errors the stream with SessionMessageProcessingFailed when a message of its turn cannot be decoded', async () => {
+  it('errors the stream with MessageDecodeFailed when a message of its turn cannot be decoded', async () => {
     const { transport, fixture } = setup();
     const stream = await transport.sendMessages(sendOptions());
     const wire = wireOf(reply).live;
@@ -270,17 +270,17 @@ describe('sendMessages', () => {
     // CAST: the turn's finish message, its data replaced with what its row cannot decode.
     fixture.deliver([{ ...wire.at(-1), data: 'not an object' } as Ably.InboundMessage]);
 
-    await expect(drain(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+    await expect(drain(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.MessageDecodeFailed);
   });
 
-  it('errors the stream with SessionSendFailed when the backend answers outside 2xx', async () => {
+  it('errors the stream with WriteFailed when the backend answers outside 2xx', async () => {
     fetchMock.mockResolvedValue(new Response('the agent is down', { status: 503 }));
     const { transport } = setup();
 
     const stream = await transport.sendMessages(sendOptions());
 
     await expect(drain(stream)).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSendFailed,
+      code: ErrorCode.WriteFailed,
       statusCode: 503,
       message: 'unable to send messages; /api/chat answered 503: the agent is down',
     });
@@ -321,10 +321,10 @@ describe('sendMessages', () => {
     const { transport } = setup([], { logger });
 
     await expect(drain(await transport.sendMessages(sendOptions()))).rejects.toBeErrorInfoWithCode(
-      ErrorCode.SessionSendFailed,
+      ErrorCode.WriteFailed,
     );
     await expect(drain(await transport.sendMessages(sendOptions()))).rejects.toBeErrorInfoWithCode(
-      ErrorCode.SessionSendFailed,
+      ErrorCode.WriteFailed,
     );
 
     expect(logHandler).toHaveBeenCalledTimes(2);
@@ -343,14 +343,14 @@ describe('sendMessages', () => {
     expect(JSON.stringify(logHandler.mock.calls)).not.toContain('echoed');
   });
 
-  it('errors the stream with SessionSendFailed when the request fails', async () => {
+  it('errors the stream with WriteFailed when the request fails', async () => {
     fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
     const { transport } = setup();
 
     const stream = await transport.sendMessages(sendOptions());
 
     await expect(drain(stream)).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSendFailed,
+      code: ErrorCode.WriteFailed,
       statusCode: 500,
       message: 'unable to send messages; Failed to fetch',
     });

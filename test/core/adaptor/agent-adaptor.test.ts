@@ -106,10 +106,10 @@ describe('createAgentAdaptor', () => {
       });
     });
 
-    it('rejects SessionSendFailed for any other publish failure', async () => {
+    it('rejects WriteFailed for any other publish failure', async () => {
       channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('down', 50000, 500));
       await expect(adaptor.send({ type: 'note', text: 'x' })).rejects.toBeErrorInfo({
-        code: ErrorCode.SessionSendFailed,
+        code: ErrorCode.WriteFailed,
         cause: { code: 50000 },
       });
     });

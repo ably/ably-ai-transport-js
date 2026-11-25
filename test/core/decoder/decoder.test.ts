@@ -158,7 +158,7 @@ describe('createDecoder', () => {
       expect(failingDecoder.decode(message)).toEqual([{ event: undefined, message }]);
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeErrorInfo({
-        code: ErrorCode.SessionMessageProcessingFailed,
+        code: ErrorCode.MessageDecodeFailed,
         message: 'unable to process channel message; bad row',
         cause: { code: ErrorCode.InvalidArgument },
       });

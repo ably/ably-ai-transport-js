@@ -94,7 +94,7 @@ export interface Decoder<E> {
   onEvent(handler: (delivery: Delivery<E>) => void): () => void;
   /**
    * Listen for decode failures from `receive` and `decode`. Each carries
-   * `SessionMessageProcessingFailed`, with the codec's error as `cause`.
+   * `MessageDecodeFailed`, with the codec's error as `cause`.
    * @param handler - Called with each error, to observe.
    * @returns The unsubscribe.
    */
@@ -115,7 +115,7 @@ interface DecoderEvents<E> {
 const decodeFailed = (error: unknown): Ably.ErrorInfo =>
   new Ably.ErrorInfo(
     `unable to process channel message; ${errorMessage(error)}`,
-    ErrorCode.SessionMessageProcessingFailed,
+    ErrorCode.MessageDecodeFailed,
     500,
     errorCause(error),
   );

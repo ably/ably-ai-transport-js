@@ -3,10 +3,8 @@ import * as Ably from '@ably/pubsub-core';
 /**
  * Error codes for the AI Transport SDK.
  *
- * The `Session*` member names mirror the canonical identifiers in the
- * ably-common error registry (`session_send_failed`, …), so they are kept even
- * though this SDK has no session. Read `Session` as the adaptor, decoder or
- * `useChat` transport that raised it.
+ * A deprecated member shares its code with the member that replaces it, so
+ * code that names it still compiles and matches the same errors.
  */
 export enum ErrorCode {
   /**
@@ -39,7 +37,8 @@ export enum ErrorCode {
 
   /**
    * Operation not permitted with the provided capability (Ably 40160).
-   * Used when the Ably channel rejects a publish for a capability reason.
+   * Used when the Ably channel rejects a publish through `send`, or a publish
+   * or update an event writer makes, for a capability reason.
    */
   InsufficientCapability = 40160,
 
@@ -63,32 +62,46 @@ export enum ErrorCode {
   StreamedMessageFinalizeFailed = 104000,
 
   /**
-   * A publish through an agent adaptor's `send` was rejected. A capability rejection surfaces as
+   * @deprecated Use {@link ErrorCode.WriteFailed}, which has the same code.
+   */
+  SessionSendFailed = 104005,
+
+  /**
+   * A write failed (Ably 104005, `write_failed`): a publish through an agent
+   * adaptor's `send` was rejected. A capability rejection surfaces as
    * {@link ErrorCode.InsufficientCapability} instead. The underlying Ably
    * failure is the `cause`. The useChat transport uses it too, when the POST
    * of a turn fails or answers with a status outside 2xx. That error has no
    * `cause`, and for an answer outside 2xx its `statusCode` is that status.
    */
-  SessionSendFailed = 104005,
+  // eslint-disable-next-line @typescript-eslint/no-duplicate-enum-values -- replaces the deprecated SessionSendFailed, which keeps the code so code naming it still compiles
+  WriteFailed = 104005,
 
   /**
-   * A pipe rejected: the source stream threw (a provider rate limit, a model
-   * error, a network failure), the codec could not encode an event, a publish
-   * or update failed mid-stream, or the repair of a stream whose append failed
-   * also failed. The underlying failure is the `cause`. Registered in
-   * ably-common as `run_response_stream_failed`.
+   * A pipe rejected (Ably 104008, `pipe_failed`): the source stream threw (a
+   * provider rate limit, a model error, a network failure), the codec could
+   * not encode an event, a publish or update failed mid-stream, or the repair
+   * of a stream whose append failed also failed. The underlying failure is the
+   * `cause`.
    */
   PipeFailed = 104008,
 
   /**
-   * The codec threw while the decoder decoded a channel message. The message
-   * is still delivered with no event, and the decoder carries on. The thrown
-   * value is the `cause`. The useChat transport ends a reply that is reading a
-   * turn with this when a message arrives live during that turn and cannot be
-   * decoded. A message it reads from history that cannot be decoded is only
-   * logged, and the reply goes on without it.
+   * @deprecated Use {@link ErrorCode.MessageDecodeFailed}, which has the same code.
    */
   SessionMessageProcessingFailed = 104009,
+
+  /**
+   * The codec threw while the decoder decoded a channel message (Ably 104009,
+   * `message_decode_failed`). The message is still delivered with no event,
+   * and the decoder carries on. The thrown value is the `cause`. The useChat
+   * transport ends a reply that is reading a turn with this when a message
+   * arrives live during that turn and cannot be decoded. A message it reads
+   * from history that cannot be decoded is only logged, and the reply goes on
+   * without it.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-duplicate-enum-values -- replaces the deprecated SessionMessageProcessingFailed, which keeps the code so code naming it still compiles
+  MessageDecodeFailed = 104009,
 }
 
 /**

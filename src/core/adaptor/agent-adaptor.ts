@@ -126,7 +126,7 @@ export interface AgentAdaptor<E> {
    * @param event - The event to publish.
    * @param options - The call's headers.
    * @returns The ack serial of the last publish, or `undefined` when the codec published nothing.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, when a message the codec encoded lacks the codec's `name` or its `id` under `extras.ai.codec`, or when any of the event's messages appends or updates, since `send` has no key table (nothing is published either way); `InsufficientCapability` when the channel rejects a publish for a capability reason; `SessionSendFailed` for any other publish failure; `InternalError` when a publish's ack carries no serial. Whatever the codec's `encode` throws is passed on unchanged: for a `defineCodec` codec, `InvalidArgument` for an event whose type has no row.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, when a message the codec encoded lacks the codec's `name` or its `id` under `extras.ai.codec`, or when any of the event's messages appends or updates, since `send` has no key table (nothing is published either way); `InsufficientCapability` when the channel rejects a publish for a capability reason; `WriteFailed` for any other publish failure; `InternalError` when a publish's ack carries no serial. Whatever the codec's `encode` throws is passed on unchanged: for a `defineCodec` codec, `InvalidArgument` for an event whose type has no row.
    */
   send(event: E, options?: SendOptions): Promise<SendResult>;
   /**
@@ -267,7 +267,7 @@ const wrapPublishError = (error: unknown): Ably.ErrorInfo => {
     isPermission
       ? 'unable to publish; missing publish capability on the channel'
       : `unable to publish; ${errorMessage(error)}`,
-    isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
+    isPermission ? ErrorCode.InsufficientCapability : ErrorCode.WriteFailed,
     isPermission ? 401 : 500,
     cause,
   );
@@ -366,7 +366,7 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
    * Publish one message and return its ack serial.
    * @param message - The message.
    * @returns The ack serial.
-   * @throws {Ably.ErrorInfo} `InsufficientCapability` or `SessionSendFailed` when the publish fails; `InternalError` when the ack carries no serial.
+   * @throws {Ably.ErrorInfo} `InsufficientCapability` or `WriteFailed` when the publish fails; `InternalError` when the ack carries no serial.
    */
   private async _publish(message: Ably.Message): Promise<string> {
     let result: Ably.PublishResult;

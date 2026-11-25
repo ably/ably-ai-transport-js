@@ -19,6 +19,7 @@ import {
   decodedOf,
   history,
   messagesSnapshot,
+  prompt,
   reasoningRun,
   runInput,
   textRun,
@@ -278,8 +279,8 @@ describe('AG-UI codec over Ably', () => {
 
     // Live, the three text deltas share one message: the first creates it
     // and the other two append their fragments on the same serial, each with
-    // its own fields. The run's start carries its input with the messages
-    // emptied, and the end carries the serial it ends.
+    // its own fields. The run's start carries its input whole, the prompt on
+    // its messages included, and the end carries the serial it ends.
     expect(wireOf(recorder.deliveries.map((d) => d.message))).toStrictEqual([
       {
         action: 'message.create',
@@ -292,7 +293,7 @@ describe('AG-UI codec over Ably', () => {
           input: {
             threadId: 'th1',
             runId: 'r1',
-            messages: [],
+            messages: [{ id: 'u1', role: 'user', content: 'What is the weather in London?' }],
             tools: [{ name: 'weather', description: 'The weather in a city' }],
             context: [{ description: 'units', value: 'metric' }],
             state: { step: 0 },
@@ -382,7 +383,7 @@ describe('AG-UI codec over Ably', () => {
           input: {
             threadId: 'th1',
             runId: 'r1',
-            messages: [],
+            messages: [{ id: 'u1', role: 'user', content: 'What is the weather in London?' }],
             tools: [{ name: 'weather', description: 'The weather in a city' }],
             context: [{ description: 'units', value: 'metric' }],
             state: { step: 0 },
@@ -445,6 +446,43 @@ describe('AG-UI codec over Ably', () => {
       content: 'It is 21°C in London.',
       metadata: { model: 'm-1' },
     });
+  });
+
+  it('carries the prompt on a run’s start to a client that did not send it, live and from history', async () => {
+    const name = uniqueChannelName('ag-ui');
+    const clientChannel = pubsubClient().channels.get(name);
+    const clientDecoder = agUiDecoder();
+    const recorder = createDeliveryRecorder<AGUIEvent>();
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
+    await adaptorOn(name).pipe(streamOf(...textRun));
+    await recorder.waitFor((d) => finished(d) === 1);
+
+    // The run's start arrives as the agent emitted it, with the prompt on its
+    // input's messages, live and from history.
+    const started: AGUIEvent = {
+      type: EventType.RUN_STARTED,
+      threadId: 'th1',
+      runId: 'r1',
+      input: { ...runInput, messages: [prompt] },
+    };
+    expect(recorder.events()[0]).toStrictEqual(started);
+    const stored = await drainHistory(pubsubClient().channels.get(name), agUiDecoder());
+    expect(stored[0]?.event).toStrictEqual(started);
+
+    // A client that holds the conversation before the prompt shows the prompt.
+    const reply = { id: 'm1', role: 'assistant', content: 'It is 21°C in London.', metadata: { model: 'm-1' } };
+    const fromHistory = stored.flatMap((d) => (d.event === undefined ? [] : [d.event]));
+    expect(await foldWithAGUIReducer(recorder.events(), history)).toStrictEqual([...history, prompt, reply]);
+    expect(await foldWithAGUIReducer(fromHistory, history)).toStrictEqual([...history, prompt, reply]);
+    // The client that sent the prompt holds it already. AG-UI's reducer adds a
+    // message from a run's input only when the client holds none with that
+    // id, so that client shows the prompt once.
+    expect(await foldWithAGUIReducer(recorder.events(), [...history, prompt])).toStrictEqual([
+      ...history,
+      prompt,
+      reply,
+    ]);
   });
 
   it('streams a reasoning message and a text message under one id as two appended messages, live and from history', async () => {

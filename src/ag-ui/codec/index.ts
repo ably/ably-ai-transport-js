@@ -26,15 +26,13 @@
  * stream. An agent that wants a stream compacted into one message can emit
  * the START, CONTENT and END events instead.
  *
- * Two events repeat the whole conversation, and the codec strips the
- * conversation from both. The codec does not publish `MESSAGES_SNAPSHOT`,
- * because it grows with every run past the Ably message size limit, and a
- * client loads its conversation from the application's store and joins the
+ * The codec does not publish `MESSAGES_SNAPSHOT`. It repeats the whole
+ * conversation and grows with every run past the Ably message size limit, and
+ * a client loads its conversation from the application's store and joins the
  * channel at a run boundary instead. An inbound one does not decode to an
  * event, the same as a foreign message, because AG-UI's reducer treats a
  * snapshot as the complete message list and would drop every message the
- * snapshot leaves out. `RUN_STARTED` travels with `input.messages` emptied,
- * for the same reason, and keeps the rest of its input.
+ * snapshot leaves out.
  *
  * The codec strips `rawEvent` from every event. The field carries the
  * provider event the AG-UI event was translated from, so it repeats the
@@ -146,14 +144,8 @@ export const createAGUICodec = (): Codec<AGUIEvent> =>
     id: CODEC_ID,
     typeOf: (e: AGUIEvent): AGUIEventType => e.type,
     events: {
-      // The run lifecycle. RUN_STARTED's input repeats the conversation, so
-      // it travels with its messages emptied.
-      RUN_STARTED: {
-        encode: (e) => ({
-          data: withoutRawEvent(e.input === undefined ? e : { ...e, input: { ...e.input, messages: [] } }),
-        }),
-        decode: event,
-      },
+      // The run lifecycle.
+      RUN_STARTED: plain(),
       RUN_FINISHED: plain(),
       RUN_ERROR: plain(),
       STEP_STARTED: plain(),

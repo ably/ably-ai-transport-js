@@ -14,7 +14,8 @@
  * append. So when history returns the message the deltas built, it carries the
  * last delta's fields and the whole text as its `data`. A subscriber that
  * reads history, or that joins late, decodes one delta event carrying all of
- * the text, without the earlier deltas' `timestamp` and `metadata`.
+ * the text, without the earlier deltas' `timestamp`, `metadata` and
+ * `rawEvent`.
  *
  * The `*_CHUNK` events are plain publishes, one message per chunk, and the
  * codec does not append to them. A chunk stream does not have an end event to
@@ -33,17 +34,11 @@
  * snapshot as the complete message list and would drop every message the
  * snapshot leaves out.
  *
- * The codec strips `rawEvent` from every event. The field carries the
- * provider event the AG-UI event was translated from, so it repeats the
- * event's own content, and a provider's final event can repeat the whole
- * response. AG-UI's reducer does not read it.
- *
  * Every other event is a plain publish that the codec does not append to, so
  * it travels whole as the message `data`, an object, with every field it
- * carries except `rawEvent`. The codec does not check sizes, so an event
- * larger than the Ably message size limit fails its publish. No row writes
- * Ably `headers`; a caller that wants the `runId` on every message can pass
- * it in the `pipe` headers.
+ * carries. The codec does not check sizes, so an event larger than the Ably
+ * message size limit fails its publish. No row writes Ably `headers`; a caller
+ * that wants the `runId` on every message can pass it in the `pipe` headers.
  */
 
 import * as Ably from '@ably/pubsub-core';
@@ -102,23 +97,11 @@ const deltaEvent = ({ data, fields, type }: DecodedRow): AGUI.Event =>
   ({ ...fields, type, delta: asString(data) }) as AGUI.Event;
 
 /**
- * A copy of an event without its `rawEvent`, the provider event it was
- * translated from, which repeats what the event itself carries.
- * @param e - The event.
- * @returns The copy.
- */
-const withoutRawEvent = <T extends object>(e: T): Omit<T, 'rawEvent'> => {
-  const copy: T & { rawEvent?: unknown } = { ...e };
-  delete copy.rawEvent;
-  return copy;
-};
-
-/**
  * The row of an event that travels whole as the message body.
  * @returns The row.
  */
 const plain = <T extends AGUIEventType>(): Row<T> => ({
-  encode: (e) => ({ data: withoutRawEvent(e) }),
+  encode: (e) => ({ data: e }),
   decode: event,
 });
 
@@ -150,15 +133,11 @@ export const createAGUICodec = (): Codec<AGUI.Event> =>
       // anything else; the end event is published whole and ends the key.
       TEXT_MESSAGE_START: plain(),
       TEXT_MESSAGE_CONTENT: {
-        encode: ({ delta, ...rest }) => ({
-          data: delta,
-          fields: withoutRawEvent(rest),
-          append: textKey(rest.messageId),
-        }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: textKey(rest.messageId) }),
         decode: deltaEvent,
       },
       TEXT_MESSAGE_END: {
-        encode: (e) => ({ data: withoutRawEvent(e), ends: textKey(e.messageId) }),
+        encode: (e) => ({ data: e, ends: textKey(e.messageId) }),
         decode: event,
       },
       TEXT_MESSAGE_CHUNK: plain(),
@@ -166,15 +145,11 @@ export const createAGUICodec = (): Codec<AGUI.Event> =>
       // Tool calls, keyed by the call id.
       TOOL_CALL_START: plain(),
       TOOL_CALL_ARGS: {
-        encode: ({ delta, ...rest }) => ({
-          data: delta,
-          fields: withoutRawEvent(rest),
-          append: toolKey(rest.toolCallId),
-        }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: toolKey(rest.toolCallId) }),
         decode: deltaEvent,
       },
       TOOL_CALL_END: {
-        encode: (e) => ({ data: withoutRawEvent(e), ends: toolKey(e.toolCallId) }),
+        encode: (e) => ({ data: e, ends: toolKey(e.toolCallId) }),
         decode: event,
       },
       TOOL_CALL_CHUNK: plain(),
@@ -186,15 +161,11 @@ export const createAGUICodec = (): Codec<AGUI.Event> =>
       REASONING_START: plain(),
       REASONING_MESSAGE_START: plain(),
       REASONING_MESSAGE_CONTENT: {
-        encode: ({ delta, ...rest }) => ({
-          data: delta,
-          fields: withoutRawEvent(rest),
-          append: reasoningKey(rest.messageId),
-        }),
+        encode: ({ delta, ...rest }) => ({ data: delta, fields: rest, append: reasoningKey(rest.messageId) }),
         decode: deltaEvent,
       },
       REASONING_MESSAGE_END: {
-        encode: (e) => ({ data: withoutRawEvent(e), ends: reasoningKey(e.messageId) }),
+        encode: (e) => ({ data: e, ends: reasoningKey(e.messageId) }),
         decode: event,
       },
       REASONING_MESSAGE_CHUNK: plain(),

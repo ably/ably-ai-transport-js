@@ -30,7 +30,8 @@
  * string, number, boolean and null values under it (error 40032 otherwise),
  * so a row's `headers` are typed to that and written as given; the builder
  * translates nothing. An `undefined` value in either map is dropped. The
- * adaptor adds the headers of the publishing `send` or `pipe` call and
+ * adaptor adds the headers of the publishing `send` or `pipe` call, or event
+ * writer, and
  * prefers a row's where both name a key, so a row keeps a header it writes
  * and its decode sees the merged map. The
  * builder hands the type it matched to a row's decode on the body. A row that

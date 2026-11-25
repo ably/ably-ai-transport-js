@@ -3,6 +3,8 @@ export type {
   AgentAdaptor,
   AgentAdaptorOptions,
   ChannelWriter,
+  EventWriter,
+  EventWriterResult,
   MessageHeaders,
   PipeOptions,
   PipeResult,
@@ -10,6 +12,7 @@ export type {
   Published,
   SendOptions,
   SendResult,
+  WriterOptions,
 } from './core/adaptor/index.js';
 export { createAgentAdaptor } from './core/adaptor/index.js';
 

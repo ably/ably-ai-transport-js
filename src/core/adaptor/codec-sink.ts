@@ -29,6 +29,9 @@ export const createCodecSink = <E>(codec: Codec<E>, writer: PipeWriter, headers?
     const messages =
       headers === undefined ? encoded : encoded.map((m) => ({ ...m, message: withHeaders(m.message, headers) }));
     return {
+      reserve: () => {
+        writer.reserve(messages);
+      },
       write: async (): Promise<SinkOutcome> => {
         let serial: string | undefined;
         let publishedSerial: string | undefined;

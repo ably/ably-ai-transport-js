@@ -1,6 +1,6 @@
 /**
- * The headers a `send` or `pipe` call attaches to every message it publishes,
- * over the defaults an agent adaptor was created with.
+ * The headers a `send` or `pipe` call, or an event writer, attaches to every
+ * message it publishes, over the defaults an agent adaptor was created with.
  *
  * They ride under `extras.headers`, the key Ably provides for a publisher's
  * own fields, alongside the headers the codec's encode row wrote. Where two
@@ -18,7 +18,8 @@ import { ErrorCode } from '../../errors.js';
 import { type HeaderPrimitive, HEADERS_KEY, isHeaderPrimitive, isRecord } from '../wire.js';
 
 /**
- * The headers a `send` or `pipe` call attaches to every message it publishes:
+ * The headers a `send` or `pipe` call, or an event writer, attaches to every
+ * message it publishes:
  * a flat map of the values Ably stores under `extras.headers`.
  */
 export type MessageHeaders = Record<string, HeaderPrimitive>;
@@ -34,7 +35,7 @@ export type MessageHeaders = Record<string, HeaderPrimitive>;
  */
 export const prepareHeaders = (
   headers: Record<string, unknown> | undefined,
-  operation: 'send' | 'pipe' | 'create agent adaptor',
+  operation: 'send' | 'pipe' | 'create writer' | 'create agent adaptor',
 ): MessageHeaders | undefined => {
   if (headers === undefined) return undefined;
   const prepared: MessageHeaders = {};

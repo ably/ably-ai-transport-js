@@ -144,6 +144,33 @@ const pipeFailed = (what: string, error: unknown, event?: unknown): Ably.ErrorIn
     errorCause(error),
   );
 
+/**
+ * Why a pipe stopped: the error it throws, and what it logs for it. The error
+ * quotes the event for the developer who catches it; the log names only the
+ * step and the underlying failure, so no event content reaches a log handler.
+ */
+interface PipeFailure {
+  /** The pipe's error. */
+  error: Ably.ErrorInfo;
+  /** The step that failed. */
+  step: string;
+  /** The underlying failure's message. */
+  reason: string;
+}
+
+/**
+ * Record a failure that stops the pipe.
+ * @param step - The step that failed.
+ * @param error - The failure.
+ * @param event - The event being written, quoted in the error but not logged.
+ * @returns The failure.
+ */
+const pipeFailure = (step: string, error: unknown, event?: unknown): PipeFailure => ({
+  error: pipeFailed(step, error, event),
+  step,
+  reason: errorMessage(error),
+});
+
 const cancelledError = (): Ably.ErrorInfo =>
   new Ably.ErrorInfo('unable to pipe; cancelled by signal', ErrorCode.OperationCancelled, 400);
 
@@ -227,7 +254,7 @@ export async function* pipeEach<E>(
   const { signal, logger } = options;
   logger?.trace('pipeEach();');
   const puller = toPuller(source, logger);
-  let failure: Ably.ErrorInfo | undefined;
+  let failure: PipeFailure | undefined;
   let cancelled = false;
   try {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by break
@@ -236,7 +263,7 @@ export async function* pipeEach<E>(
       try {
         pulled = await pullNext(puller, signal);
       } catch (error) {
-        failure = pipeFailed('source failed', error);
+        failure = pipeFailure('source failed', error);
         break;
       }
       if (pulled === 'cancelled') {
@@ -250,7 +277,7 @@ export async function* pipeEach<E>(
       }
       const attempt = await writer.attempt(pulled.value, 'pipe');
       if (!attempt.ok) {
-        failure = pipeFailed(
+        failure = pipeFailure(
           attempt.failed === 'encode' ? 'encode failed' : 'write failed',
           attempt.error,
           pulled.value,
@@ -278,8 +305,8 @@ export async function* pipeEach<E>(
     }
   }
   if (failure !== undefined) {
-    logger?.debug('pipeEach(); pipe failed', { error: failure.message });
-    throw failure;
+    logger?.error('pipeEach(); pipe failed', { step: failure.step, error: failure.reason });
+    throw failure.error;
   }
   if (cancelled) throw cancelledError();
   logger?.debug('pipeEach(); finished');

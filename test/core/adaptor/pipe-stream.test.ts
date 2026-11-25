@@ -408,6 +408,34 @@ describe('pipeStream', () => {
       expect(channel.publish).toHaveBeenCalledTimes(1);
     });
 
+    it('logs a source that throws at error', async () => {
+      const logHandler = vi.fn();
+      const logger = makeLogger({ logLevel: LogLevel.Error, logHandler });
+      await expect(
+        pipeStream(erroringIterableOf<TestEvent>([], new Error('provider down')), codec, writer, { logger }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.PipeFailed);
+      expect(logHandler).toHaveBeenCalledTimes(1);
+      expect(logHandler).toHaveBeenCalledWith(expect.stringContaining('pipeEach(); pipe failed'), LogLevel.Error, {
+        step: 'source failed',
+        error: 'provider down',
+      });
+    });
+
+    it('logs a failed write at error, with no event content', async () => {
+      channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('rejected', 40160, 401));
+      const logHandler = vi.fn();
+      const logger = makeLogger({ logLevel: LogLevel.Error, logHandler });
+      await expect(
+        pipeStream(streamOf<TestEvent>({ type: 'note', text: 'secret' }), codec, writer, { logger }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.PipeFailed);
+      expect(logHandler).toHaveBeenCalledTimes(1);
+      expect(logHandler).toHaveBeenCalledWith(expect.stringContaining('pipeEach(); pipe failed'), LogLevel.Error, {
+        step: 'write failed',
+        error: 'rejected',
+      });
+      expect(JSON.stringify(logHandler.mock.calls)).not.toContain('secret');
+    });
+
     it("stops at an event whose message lacks the codec's name or id, writing nothing for it", async () => {
       const misnamed: Codec<TestEvent> = {
         id: 'misnamed',

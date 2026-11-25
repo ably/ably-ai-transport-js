@@ -136,9 +136,9 @@ export interface AblyChatTransport extends ChatTransport<AI.UIMessage> {
    * `start` chunk, and closes after its terminal chunk. An `error` chunk that
    * arrives while no turn is running, from an agent that failed before it
    * streamed anything, ends it too. The stream errors with
-   * `SessionSendFailed` when the request fails, or answers with a status
+   * `WriteFailed` when the request fails, or answers with a status
    * outside 2xx, before the reply has ended; a failure after that is only
-   * logged. It errors with `SessionMessageProcessingFailed` when a message
+   * logged. It errors with `MessageDecodeFailed` when a message
    * that arrives while its turn runs cannot be decoded. It ends with
    * `OperationCancelled` when `abortSignal` fires or `close()` is called.
    * @param options - What `useChat` passes: the trigger, the chat's id, the message to regenerate, the conversation, the abort signal, and the request's `headers` and `body`.
@@ -165,7 +165,7 @@ export interface AblyChatTransport extends ChatTransport<AI.UIMessage> {
    * returns `null` too. When `abortSignal` fires after the stream is
    * returned, or `close()` is called, the stream ends with
    * `OperationCancelled`. The stream errors with
-   * `SessionMessageProcessingFailed` when a message that arrives while it
+   * `MessageDecodeFailed` when a message that arrives while it
    * follows the turn cannot be decoded.
    *
    * A rejoined reply is `useChat`'s like any other, so every tab that rejoins
@@ -559,13 +559,13 @@ class DefaultAblyChatTransport implements AblyChatTransport {
       detail = { status: response.status };
       failure = new Ably.ErrorInfo(
         `unable to send messages; ${this._api} answered ${String(response.status)}: ${await responseText(response)}`,
-        ErrorCode.SessionSendFailed,
+        ErrorCode.WriteFailed,
         response.status,
       );
     } catch (error) {
       failure = new Ably.ErrorInfo(
         `unable to send messages; ${errorMessage(error)}`,
-        ErrorCode.SessionSendFailed,
+        ErrorCode.WriteFailed,
         500,
         errorCause(error),
       );

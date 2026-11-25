@@ -233,14 +233,14 @@ describe('the chat transport under the AI SDK’s chat', () => {
     expect(chat.error?.message).toBe('the agent failed to start');
   });
 
-  it('shows a failed post as the chat’s error, with SessionSendFailed', async () => {
+  it('shows a failed post as the chat’s error, with WriteFailed', async () => {
     fetchMock.mockResolvedValue(new Response('the agent is down', { status: 503 }));
     const { chat } = chatOn();
 
     await chat.sendMessage({ text: 'Hello?' });
 
     expect(chat.status).toBe('error');
-    expect(chat.error).toBeErrorInfo({ code: ErrorCode.SessionSendFailed, statusCode: 503 });
+    expect(chat.error).toBeErrorInfo({ code: ErrorCode.WriteFailed, statusCode: 503 });
   });
 
   it('stops on stop(), keeping the text that arrived and aborting its request', async () => {

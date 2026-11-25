@@ -292,7 +292,7 @@ describe('the AG-UI codec', () => {
       expect(decoder.decode(message)).toStrictEqual([{ event: undefined, message }]);
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeErrorInfo({
-        code: ErrorCode.SessionMessageProcessingFailed,
+        code: ErrorCode.MessageDecodeFailed,
         cause: { code: ErrorCode.InvalidArgument, message: "unable to decode message; no row for type 'run-input'" },
       });
     });

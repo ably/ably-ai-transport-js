@@ -1,7 +1,7 @@
 import * as Ably from '@ably/pubsub-core';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { AgentAdaptor, MessageHeaders, Published } from '../../../src/core/adaptor/index.js';
+import type { AgentAdaptor, MessageHeaders, WrittenEvent } from '../../../src/core/adaptor/index.js';
 import { createAgentAdaptor } from '../../../src/core/adaptor/index.js';
 import { type Codec, defineCodec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -27,8 +27,8 @@ const headersOf = (message: Ably.Message): unknown =>
  * @param iterable - The iterable pipe.
  * @returns What it yielded.
  */
-const collect = async <E>(iterable: AsyncIterable<Published<E>>): Promise<Published<E>[]> => {
-  const yielded: Published<E>[] = [];
+const collect = async <E>(iterable: AsyncIterable<WrittenEvent<E>>): Promise<WrittenEvent<E>[]> => {
+  const yielded: WrittenEvent<E>[] = [];
   for await (const published of iterable) yielded.push(published);
   return yielded;
 };

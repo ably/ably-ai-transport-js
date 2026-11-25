@@ -11,7 +11,7 @@
 import type * as Ably from '@ably/pubsub-core';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createAgentAdaptor, createDecoder, type Delivery, ErrorCode, type Published } from '../../../src/index.js';
+import { createAgentAdaptor, createDecoder, type Delivery, ErrorCode, type WrittenEvent } from '../../../src/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { createTestCodec, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
@@ -36,7 +36,7 @@ describe('agent adaptor and decoder over Ably', () => {
 
     const adaptor = createAgentAdaptor(agentChannel, createTestCodec());
     const sent = await createAgentAdaptor(clientChannel, createTestCodec()).send({ type: 'note', text: 'Weather?' });
-    const yielded: Published<TestEvent>[] = [];
+    const yielded: WrittenEvent<TestEvent>[] = [];
     for await (const published of adaptor.pipeEach(streamOf(...textEvents('m1', 'The weather', ' is mild.')))) {
       yielded.push(published);
     }
@@ -152,7 +152,7 @@ describe('agent adaptor and decoder over Ably', () => {
     const flaky = failingFirstAppend(pubsubClient(), new Error('injected append failure'));
     const adaptor = createAgentAdaptor(flaky.channels.get(name), createTestCodec());
     // Drained to the end, so the repair runs before the stream's closer.
-    const yielded: Published<TestEvent>[] = [];
+    const yielded: WrittenEvent<TestEvent>[] = [];
     for await (const published of adaptor.pipeEach(streamOf(...textEvents('m1', 'The weather', ' is mild.')))) {
       yielded.push(published);
     }

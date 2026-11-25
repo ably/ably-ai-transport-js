@@ -9,11 +9,13 @@ export type {
   PipeOptions,
   PipeResult,
   PipeSource,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- Published stays exported as a deprecated alias of WrittenEvent, so code that names it still compiles
   Published,
   SendOptions,
   SendResult,
   WriterHandoff,
   WriterOptions,
+  WrittenEvent,
 } from './core/adaptor/index.js';
 export { createAgentAdaptor } from './core/adaptor/index.js';
 

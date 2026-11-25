@@ -41,7 +41,19 @@ export type PipeSource<E> = ReadableStream<E> | AsyncIterable<E>;
 export interface PipeResult {
   /**
    * The ack serial of the last publish the pipe made, including the publish
-   * that opens an append key, or `undefined` when it published nothing.
+   * that opens an append key, or `undefined` when it published nothing. It is
+   * the newest message the pipe created, so the latest point in channel order
+   * it wrote: a client that rewinds to it misses nothing the pipe published
+   * before it. It is not always the message the last event landed on, which
+   * is an earlier one when that event appended to or updated a stream opened
+   * before the last publish; `pipeEach` hands that serial back with each
+   * event.
+   */
+  lastPublishSerial: string | undefined;
+  /**
+   * The same value as {@link PipeResult.lastPublishSerial}.
+   * @deprecated Use {@link PipeResult.lastPublishSerial}. Everywhere else in
+   * the SDK `serial` is the message an event landed on, which this is not.
    */
   serial: string | undefined;
 }
@@ -292,7 +304,7 @@ export const pipeStream = async <E>(
   // before this function first awaits, so a stream source is locked at once.
   let step = await piped.next();
   while (!step.done) step = await piped.next();
-  const serial = writer.lastPublishSerial;
-  options.logger?.debug('pipeStream(); finished', { serial });
-  return { serial };
+  const lastPublishSerial = writer.lastPublishSerial;
+  options.logger?.debug('pipeStream(); finished', { lastPublishSerial });
+  return { lastPublishSerial, serial: lastPublishSerial };
 };

@@ -103,7 +103,7 @@ export async function POST(req: Request) {
   // One Ably operation per chunk: a text or tool-input stream's deltas share
   // one message that grows by appends, and every other chunk, the stream's
   // start and end included, is a publish. The pipe resolves with the serial of
-  // its last publish, and rejects with an ErrorInfo whose code says whether
+  // its last publish as `lastPublishSerial`, and rejects with an ErrorInfo whose code says whether
   // the signal cancelled it (OperationCancelled) or it failed (PipeFailed).
   // The headers ride on every message of the reply, so the client can tell
   // which prompt it answers. The AI SDK puts a message id on the reply's

@@ -166,7 +166,10 @@ describe('createAgentAdaptor', () => {
 
   describe('pipe', () => {
     it('writes every event and resolves with the serial of the last publish', async () => {
-      await expect(adaptor.pipe(streamOf(...textEvents('m1', 'a', 'b')))).resolves.toEqual({ serial: 'serial-3' });
+      await expect(adaptor.pipe(streamOf(...textEvents('m1', 'a', 'b')))).resolves.toEqual({
+        lastPublishSerial: 'serial-3',
+        serial: 'serial-3',
+      });
       expect(channel.appendCalls.map((m) => m.data as unknown)).toEqual(['b']);
     });
 

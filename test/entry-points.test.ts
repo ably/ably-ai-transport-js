@@ -132,7 +132,7 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<SendOptions>().toHaveProperty('headers');
     expectTypeOf<MessageHeaders>().not.toBeNever();
     expectTypeOf<PipeOptions>().toHaveProperty('signal');
-    expectTypeOf<PipeResult>().toHaveProperty('serial');
+    expectTypeOf<PipeResult>().toHaveProperty('lastPublishSerial');
     expectTypeOf<PipeSource<TestEvent>>().not.toBeNever();
     expectTypeOf<ChannelWriter>().toHaveProperty('appendMessage');
     expectTypeOf<Codec<TestEvent>>().toHaveProperty('decode');

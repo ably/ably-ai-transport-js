@@ -69,7 +69,7 @@ export async function POST(req: Request) {
     // it resolves, so the callback has run by the time the serial is known.
     let reply: UIMessage | undefined;
     try {
-      const { serial } = await adaptor.pipe(
+      const { lastPublishSerial } = await adaptor.pipe(
         toUIMessageStream({
           stream: result.fullStream,
           originalMessages: messages,
@@ -80,9 +80,12 @@ export async function POST(req: Request) {
         }),
         { signal: req.signal, headers },
       );
-      // The reply replaces its placeholder. `serial` is undefined only when
-      // the pipe published nothing, and then there is no reply to record.
-      if (reply !== undefined && serial !== undefined) recordMessages(channelName, [reply], serial);
+      // The reply replaces its placeholder. `lastPublishSerial` is undefined
+      // only when the pipe published nothing, and then there is no reply to
+      // record.
+      if (reply !== undefined && lastPublishSerial !== undefined) {
+        recordMessages(channelName, [reply], lastPublishSerial);
+      }
     } catch (error) {
       // A cancelled or failed pipe leaves the placeholder empty: a browser
       // that comes back fills it from what did land on the channel. It

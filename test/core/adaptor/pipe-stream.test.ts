@@ -142,7 +142,7 @@ describe('pipeStream', () => {
       );
       // The start, the message the first delta opens, the end and the note are
       // publishes; only the second delta is an append.
-      expect(result).toEqual({ serial: 'serial-4' });
+      expect(result).toEqual({ lastPublishSerial: 'serial-4', serial: 'serial-4' });
       // The deltas' writes carry the adaptor's stream marker and the end
       // names the message it ends; the start and the note carry neither.
       expect(channel.publishCalls.map((m) => m.extras as unknown)).toEqual([
@@ -174,7 +174,7 @@ describe('pipeStream', () => {
       );
       // The last event is an append to the message the first delta opened;
       // the last publish is the note.
-      expect(result).toEqual({ serial: 'serial-3' });
+      expect(result).toEqual({ lastPublishSerial: 'serial-3', serial: 'serial-3' });
       expect(channel.appendCalls).toMatchObject([{ serial: 'serial-2', data: 'b' }]);
     });
 
@@ -184,20 +184,20 @@ describe('pipeStream', () => {
         createSplitCodec(),
         writer,
       );
-      expect(result).toEqual({ serial: 'serial-2' });
+      expect(result).toEqual({ lastPublishSerial: 'serial-2', serial: 'serial-2' });
       expect(channel.publishCalls.map((m) => m.data as unknown)).toEqual(['x', 'y']);
     });
 
     it('skips an event the codec publishes nothing for', async () => {
       const result = await pipeStream(streamOf<TestEvent>({ type: 'ping' }, { type: 'ping' }), codec, writer);
-      expect(result).toEqual({ serial: undefined });
+      expect(result).toEqual({ lastPublishSerial: undefined, serial: undefined });
       expect(channel.publishCalls).toHaveLength(0);
     });
 
     it('reads an async iterable', async () => {
       const { iterable } = asyncIterableOf<TestEvent>({ type: 'note', text: 'a' }, { type: 'note', text: 'b' });
       const result = await pipeStream(iterable, codec, writer);
-      expect(result.serial).toBe('serial-2');
+      expect(result.lastPublishSerial).toBe('serial-2');
     });
 
     it('releases a stream reader so the source can be read again', async () => {
@@ -217,7 +217,7 @@ describe('pipeStream', () => {
         codec,
         writer,
       );
-      expect(result).toEqual({ serial: 'serial-2' });
+      expect(result).toEqual({ lastPublishSerial: 'serial-2', serial: 'serial-2' });
       expect(channel.updateCalls).toEqual([
         {
           serial: 'serial-2',
@@ -445,7 +445,7 @@ describe('pipeStream', () => {
     it('carries on past a failed append and resolves once repaired', async () => {
       channel.appendMessage.mockRejectedValueOnce(new Error('network'));
       const result = await pipeStream(streamOf<TestEvent>(...textEvents('m1', 'a', 'b')), codec, writer);
-      expect(result).toEqual({ serial: 'serial-3' });
+      expect(result).toEqual({ lastPublishSerial: 'serial-3', serial: 'serial-3' });
       // The first delta publishes; the second is the one append, and it fails.
       // The end waits for the stream's acks and the repair rewrites the deltas'
       // message with the text so far under the last delta's extras.

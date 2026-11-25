@@ -12,7 +12,8 @@
  * - `pipeEach(source)` opens a writer, writes each event the source yields,
  *   hands it back, and flushes the writer when the loop ends or leaves early.
  * - `pipe(source)` is `pipeEach` run to its end, resolving with the serial of
- *   the last publish.
+ *   the last publish as `lastPublishSerial`. Everywhere else, a `serial` the
+ *   adaptor returns is the message an event landed on.
  * - `send(event)` publishes one whole message, such as the user's prompt. It
  *   keeps no key table, so it refuses an event that appends to or updates a
  *   stream, checks every message before it publishes any, and reports a
@@ -132,13 +133,13 @@ export interface AgentAdaptor<E> {
   /**
    * Read a source of events and write each one as the codec directs,
    * unattended. Resolves when the source ends, with the ack serial of the
-   * last publish. Before it settles either way the pipe flushes and repairs
+   * last publish as `lastPublishSerial`. Before it settles either way the pipe flushes and repairs
    * what it wrote, so every message it wrote holds its full text. A stream
    * the source had not ended gets no closing message, so a subscriber sees it
    * stay open.
    * @param source - The events to write, a ReadableStream or an async iterable.
    * @param options - The pipe's abort signal and the call's headers.
-   * @returns The serial of the last publish; see {@link PipeResult}.
+   * @returns The serial of the last publish, as `lastPublishSerial`; see {@link PipeResult}.
    * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null, before the source is touched; `OperationCancelled` when the signal fires; `PipeFailed` when the source throws, the codec cannot encode an event or encodes a message without its `name` and `id`, a publish or update fails, or a stream's repair fails, with the failure as `cause`.
    */
   pipe(source: PipeSource<E>, options?: PipeOptions): Promise<PipeResult>;

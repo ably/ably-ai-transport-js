@@ -46,8 +46,9 @@ preserve.
 
 - **Generic layer** (`src/core/`) defines the codec contract
   (`src/core/codec/codec.ts`), the `defineCodec` builder (`src/core/codec/`),
-  the agent adaptor with its pipe writer (`src/core/adaptor/`), and the
-  decoder with its core (`src/core/decoder/`). It is framework-agnostic and
+  the agent adaptor with its event writer, codec sink, pipe writer and
+  message streams (`src/core/adaptor/`), and the decoder with its core
+  (`src/core/decoder/`). It is framework-agnostic and
   knows nothing about any provider's wire types (Vercel's `UIMessageChunk`,
   OpenAI's `ResponseStreamEvent`). Of what a codec writes it reads only three
   things: the decoder filters on the message name and `extras.ai.codec`, which
@@ -119,9 +120,9 @@ within a window (40ms by default) as one message with the data joined and the
 last append's extras, so a subscriber can receive fewer deltas than the agent
 wrote, each carrying more text. The window is the publishing client's
 `appendRollupWindow` transport param, and 0 gives one delivery per append.
-The pipe writer sends appends as they arrive and waits only before the
-message that ends a stream, so a closer is never rolled up with, or delivered
-ahead of, the delta before it (`src/core/adaptor/pipe-writer.ts`).
+A message stream sends appends as they arrive, and the pipe writer waits only
+before the message that ends a stream, so a closer is never rolled up with, or
+delivered ahead of, the delta before it (`src/core/adaptor/pipe-writer.ts`).
 
 **Wire curation belongs to the codec, at encode.** Every type in the codec's
 event union has a row. A row that returns `undefined` keeps its event off the
@@ -165,21 +166,34 @@ The application always sees the raw message and decides for itself.
 
 ## Composition, not inheritance
 
-The adaptor and the decoder are assembled from parts, not class
-hierarchies. An adaptor composes a pipe writer per pipe call (the key table,
-the append chain and the repair) and the pipe driver that reads a source
-through the codec into that writer. A decoder composes the decoder core, the
-codec and one event emitter for deliveries and errors. There is no base class
-anywhere. Each part is constructed and injected, and each layer wires the
-layer below it.
+The adaptor and the decoder are assembled from parts, not class hierarchies.
+An event writer composes a sink, which turns each event into channel writes.
+The codec sink composes the codec, the call's headers and a pipe writer; a
+pipe writer composes the key table from a codec's stream keys to message
+streams, and stamps the markers a decoder reads; a message stream holds one
+message's appends, its content and its repair. A pipe driver composes an event
+writer and the source it reads into it, and each pipe call gets an event writer
+of its own. A decoder composes the decoder core, the codec and one event
+emitter for deliveries and errors. There is no base class anywhere. Each part
+is constructed and injected, and each layer wires the layer below it.
 
-The split follows what a part's state is scoped to. State scoped to one pipe
-(the live keys, the pending appends) lives in that pipe's writer, so an
-adaptor holds none of its own and needs no `close`. State scoped to a channel's
-reader (the decoder core's table of the streams in flight, opened by the
-writer's `stream` marker and freed by its `ends` marker) lives in the decoder.
-A codec holds no state, so one codec value serves every adaptor and decoder
-that uses it.
+The split follows what a part's state is scoped to. One message's pending
+appends and content live in its message stream, and the live keys of one pipe
+live in its pipe writer, so an adaptor holds none of its own and needs no
+`close`. State scoped to a channel's reader (the decoder core's table of the
+streams in flight, opened by the writer's `stream` marker and freed by its
+`ends` marker) lives in the decoder. A codec holds no state, so one codec value
+serves every adaptor and decoder that uses it.
+
+The split also follows what outlives the codec. Streaming patches, which
+mutate one message per response through the Pub/Sub SDK's message stream, are
+to replace the codec. The codec, the codec sink, the pipe writer's key table
+and markers, and the decoder core's stream tracking are the codec's wire
+format and go with it; the message stream here stands in for the SDK's and
+gives way to it; the event writer, the pipe drivers and the adaptor's surface
+stay. So nothing that stays reads a codec's stream keys or markers: the event
+writer reaches them only through its sink, and a sink of another kind takes
+the codec sink's place.
 
 ## Dependency injection
 

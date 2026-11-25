@@ -8,17 +8,23 @@ import { EventType } from '@ag-ui/core';
 
 import type { AGUIEvent } from '../../../src/ag-ui/index.js';
 
-/** The history a client already holds, repeated on a run's input. */
+/** The conversation a client holds before a run, as it loads it from the application's store. */
 export const history: AGUI.Message[] = [
   { id: 'u0', role: 'user', content: 'Hello' },
   { id: 'a0', role: 'assistant', content: 'Hi, how can I help?' },
 ];
 
-/** A run's input, as a client sends it and as `RUN_STARTED` repeats it. */
+/** The user message that starts the text run. */
+export const prompt: AGUI.Message = { id: 'u1', role: 'user', content: 'What is the weather in London?' };
+
+/**
+ * The text run's input, as its `RUN_STARTED` carries it, with only the prompt
+ * that started the run on its messages.
+ */
 export const runInput: AGUI.RunAgentInput = {
   threadId: 'th1',
   runId: 'r1',
-  messages: [...history, { id: 'u1', role: 'user', content: 'What is the weather in London?' }],
+  messages: [prompt],
   tools: [{ name: 'weather', description: 'The weather in a city' }],
   context: [{ description: 'units', value: 'metric' }],
   state: { step: 0 },
@@ -105,18 +111,12 @@ export const messagesSnapshot: AGUIEvent = { type: EventType.MESSAGES_SNAPSHOT, 
 
 /**
  * The events a subscriber decodes for a run: every event the agent produced
- * except a messages snapshot, with `RUN_STARTED.input.messages` emptied.
+ * except a messages snapshot.
  * @param events - The run's events, as the agent produced them.
  * @returns The decoded events.
  */
 export const decodedOf = (events: AGUIEvent[]): AGUIEvent[] =>
-  events.flatMap((e): AGUIEvent[] => {
-    if (e.type === EventType.MESSAGES_SNAPSHOT) return [];
-    if (e.type === EventType.RUN_STARTED && e.input !== undefined) {
-      return [{ ...e, input: { ...e.input, messages: [] } }];
-    }
-    return [e];
-  });
+  events.filter((e) => e.type !== EventType.MESSAGES_SNAPSHOT);
 
 /**
  * The event at an index, for a test that knows the fixture has one there.

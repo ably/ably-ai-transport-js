@@ -13,6 +13,7 @@ import {
   decodedOf,
   history,
   messagesSnapshot,
+  prompt,
   reasoningRun,
   runInput,
   textRun,
@@ -42,6 +43,15 @@ const withRawEvents = (events: AGUIEvent[]): AGUIEvent[] =>
 
 const everyRun = [textRun, toolRun, reasoningRun, chunkRun, wholeEvents];
 
+/**
+ * A run's start whose input carries only the prompt that started the run, and
+ * one whose input repeats the whole conversation.
+ */
+const runStarts: AGUIEvent[] = [
+  at(textRun, 0),
+  { type: EventType.RUN_STARTED, threadId: 'th1', runId: 'r1', input: { ...runInput, messages: [...history, prompt] } },
+];
+
 describe('the AG-UI codec', () => {
   let codec: Codec<AGUIEvent>;
 
@@ -52,7 +62,7 @@ describe('the AG-UI codec', () => {
   describe('encode', () => {
     it('appends a text message’s deltas under its id and publishes the rest whole', () => {
       expect(wireOf(codec, textRun)).toEqual([
-        { data: decodedOf(textRun)[0] },
+        { data: at(textRun, 0) },
         { data: at(textRun, 1) },
         { data: 'It is ', append: 'text:m1' },
         { data: '21°C in ', append: 'text:m1' },
@@ -121,18 +131,15 @@ describe('the AG-UI codec', () => {
       expect(codec.encode(messagesSnapshot)).toEqual([]);
     });
 
-    it('empties the messages a run’s start repeats and keeps the rest of its input', () => {
-      const [started] = codec.encode(at(textRun, 0));
-      expect(started?.message.data).toEqual({
-        type: 'RUN_STARTED',
-        threadId: 'th1',
-        runId: 'r1',
-        input: { ...runInput, messages: [] },
-      });
-      // The agent's own event is left as it was.
-      expect(runInput.messages).toHaveLength(3);
-      const [bare] = codec.encode(at(toolRun, 0));
-      expect(bare?.message.data).toEqual(at(toolRun, 0));
+    it('publishes a run’s start whole, with the messages on its input', () => {
+      for (const started of runStarts) {
+        const [encoded] = codec.encode(started);
+        expect(encoded?.message).toEqual({
+          name: 'ai',
+          data: started,
+          extras: { ai: { codec: 'ag-ui-events', type: 'RUN_STARTED' } },
+        });
+      }
     });
 
     it('encodes an event with a rawEvent exactly as the same event without one', () => {
@@ -179,6 +186,12 @@ describe('the AG-UI codec', () => {
       // decoder table that has seen them would drop as replays.
       for (const run of [textRun, toolRun, reasoningRun, chunkRun, [...wholeEvents, messagesSnapshot]]) {
         expect(roundTrip(createAGUICodec(), run)).toStrictEqual(decodedOf(run));
+      }
+    });
+
+    it('round-trips a run’s start with the messages on its input', () => {
+      for (const started of runStarts) {
+        expect(roundTrip(createAGUICodec(), [started])).toStrictEqual([started]);
       }
     });
 

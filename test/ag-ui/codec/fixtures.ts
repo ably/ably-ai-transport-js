@@ -6,8 +6,6 @@
 import type * as AGUI from '@ag-ui/core';
 import { EventType } from '@ag-ui/core';
 
-import type { AGUIEvent } from '../../../src/ag-ui/index.js';
-
 /** The conversation a client holds before a run, as it loads it from the application's store. */
 export const history: AGUI.Message[] = [
   { id: 'u0', role: 'user', content: 'Hello' },
@@ -31,7 +29,7 @@ export const runInput: AGUI.RunAgentInput = {
 };
 
 /** A run that answers in three text deltas, with metadata on its end. */
-export const textRun: AGUIEvent[] = [
+export const textRun: AGUI.Event[] = [
   { type: EventType.RUN_STARTED, threadId: 'th1', runId: 'r1', input: runInput },
   { type: EventType.TEXT_MESSAGE_START, messageId: 'm1', role: 'assistant' },
   { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'm1', delta: 'It is ', timestamp: 1 },
@@ -42,7 +40,7 @@ export const textRun: AGUIEvent[] = [
 ];
 
 /** A run that calls a tool, streams its arguments and publishes its result. */
-export const toolRun: AGUIEvent[] = [
+export const toolRun: AGUI.Event[] = [
   { type: EventType.RUN_STARTED, threadId: 'th1', runId: 'r2' },
   { type: EventType.TOOL_CALL_START, toolCallId: 't1', toolCallName: 'weather', parentMessageId: 'm2' },
   { type: EventType.TOOL_CALL_ARGS, toolCallId: 't1', delta: '{"city":' },
@@ -53,7 +51,7 @@ export const toolRun: AGUIEvent[] = [
 ];
 
 /** A run that reasons before it answers, with the reasoning and the answer under one id. */
-export const reasoningRun: AGUIEvent[] = [
+export const reasoningRun: AGUI.Event[] = [
   { type: EventType.RUN_STARTED, threadId: 'th1', runId: 'r3' },
   { type: EventType.REASONING_START, messageId: 'm3' },
   { type: EventType.REASONING_MESSAGE_START, messageId: 'm3', role: 'reasoning' },
@@ -73,7 +71,7 @@ export const reasoningRun: AGUIEvent[] = [
  * open it, and the chunks after it carry the id and a delta, which is how
  * AG-UI's `transformChunks` expects them.
  */
-export const chunkRun: AGUIEvent[] = [
+export const chunkRun: AGUI.Event[] = [
   { type: EventType.RUN_STARTED, threadId: 'th1', runId: 'r4' },
   { type: EventType.TOOL_CALL_CHUNK, toolCallId: 't2', toolCallName: 'weather', parentMessageId: 'm4', delta: '{"ci' },
   { type: EventType.TOOL_CALL_CHUNK, toolCallId: 't2', delta: 'ty":"Par' },
@@ -85,7 +83,7 @@ export const chunkRun: AGUIEvent[] = [
 ];
 
 /** One of each event that travels whole and is missing from the fixture runs above. */
-export const wholeEvents: AGUIEvent[] = [
+export const wholeEvents: AGUI.Event[] = [
   { type: EventType.STEP_STARTED, stepName: 'plan' },
   { type: EventType.STATE_SNAPSHOT, snapshot: { step: 1, todo: ['a'] } },
   { type: EventType.STATE_DELTA, delta: [{ op: 'replace', path: '/step', value: 2 }] },
@@ -107,7 +105,7 @@ export const wholeEvents: AGUIEvent[] = [
 ];
 
 /** A messages snapshot, which the codec never publishes. */
-export const messagesSnapshot: AGUIEvent = { type: EventType.MESSAGES_SNAPSHOT, messages: history };
+export const messagesSnapshot: AGUI.Event = { type: EventType.MESSAGES_SNAPSHOT, messages: history };
 
 /**
  * The events a subscriber decodes for a run: every event the agent produced
@@ -115,7 +113,7 @@ export const messagesSnapshot: AGUIEvent = { type: EventType.MESSAGES_SNAPSHOT, 
  * @param events - The run's events, as the agent produced them.
  * @returns The decoded events.
  */
-export const decodedOf = (events: AGUIEvent[]): AGUIEvent[] =>
+export const decodedOf = (events: AGUI.Event[]): AGUI.Event[] =>
   events.filter((e) => e.type !== EventType.MESSAGES_SNAPSHOT);
 
 /**
@@ -124,7 +122,7 @@ export const decodedOf = (events: AGUIEvent[]): AGUIEvent[] =>
  * @param index - The index.
  * @returns The event.
  */
-export const at = (events: AGUIEvent[], index: number): AGUIEvent => {
+export const at = (events: AGUI.Event[], index: number): AGUI.Event => {
   const e = events[index];
   if (e === undefined) throw new Error(`no event at ${String(index)}`);
   return e;

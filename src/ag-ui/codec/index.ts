@@ -1,6 +1,5 @@
 /**
- * The AG-UI codec: one row per AG-UI event type, plus the `run-input` a client
- * publishes.
+ * The AG-UI codec: one row per AG-UI event type.
  *
  * Three event types stream. `TEXT_MESSAGE_CONTENT` appends under
  * `text:{messageId}`, `TOOL_CALL_ARGS` under `tool:{toolCallId}` and
@@ -48,16 +47,23 @@
  */
 
 import * as Ably from '@ably/pubsub-core';
+import type * as AGUI from '@ag-ui/core';
 
 import type { Codec, DecodedRow, EventRow } from '../../core/codec/index.js';
 import { defineCodec } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
-import type { AGUIEvent, AGUIEventType, AGUIRunInput } from './events.js';
+
+/**
+ * The type of every AG-UI event, as plain strings. AG-UI declares its types as
+ * a string enum, and the template literal widens each member to the string it
+ * holds. The row table's keys are those strings.
+ */
+type AGUIEventType = `${AGUI.Event['type']}`;
 
 /** The codec's id. */
 const CODEC_ID = 'ag-ui-events';
 
-type Row<T extends AGUIEventType> = EventRow<AGUIEvent, T>;
+type Row<T extends AGUIEventType> = EventRow<AGUI.Event, T>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -74,12 +80,12 @@ const asString = (value: unknown): string => (typeof value === 'string' ? value 
  * @returns The event.
  * @throws {Ably.ErrorInfo} `InvalidArgument` when the body is not an object.
  */
-const event = ({ data, type }: DecodedRow): AGUIEvent => {
+const event = ({ data, type }: DecodedRow): AGUI.Event => {
   if (!isRecord(data)) {
     throw new Ably.ErrorInfo(`unable to decode ${type}; data is not an object`, ErrorCode.InvalidArgument, 400);
   }
-  // CAST: trust boundary of what was received on the wire. data is the event's own fields, and the entire record is an AGUIEvent
-  return { ...data, type } as AGUIEvent;
+  // CAST: trust boundary of what was received on the wire. data is the event's own fields, and the entire record is an AG-UI event
+  return { ...data, type } as AGUI.Event;
 };
 
 /**
@@ -91,9 +97,9 @@ const event = ({ data, type }: DecodedRow): AGUIEvent => {
  * @param body.type - The type the builder matched.
  * @returns The event.
  */
-const deltaEvent = ({ data, fields, type }: DecodedRow): AGUIEvent =>
-  // CAST: trust boundary of what was received on the wire. delta is string data, and the entire record is an AGUIEvent
-  ({ ...fields, type, delta: asString(data) }) as AGUIEvent;
+const deltaEvent = ({ data, fields, type }: DecodedRow): AGUI.Event =>
+  // CAST: trust boundary of what was received on the wire. delta is string data, and the entire record is an AG-UI event
+  ({ ...fields, type, delta: asString(data) }) as AGUI.Event;
 
 /**
  * A copy of an event without its `rawEvent`, the provider event it was
@@ -121,28 +127,13 @@ const toolKey = (toolCallId: string): string => `tool:${toolCallId}`;
 const reasoningKey = (messageId: string): string => `reasoning:${messageId}`;
 
 /**
- * Whether `data` has the fields a `RunAgentInput` requires: `threadId` and
- * `runId` as strings, and `messages`, `tools` and `context` as arrays. It
- * does not check the entries inside the arrays.
- * @param data - The delivered `data`.
- * @returns True when the shape is a run's input.
- */
-const isRunAgentInput = (data: unknown): data is AGUIRunInput['input'] =>
-  isRecord(data) &&
-  typeof data.threadId === 'string' &&
-  typeof data.runId === 'string' &&
-  Array.isArray(data.messages) &&
-  Array.isArray(data.tools) &&
-  Array.isArray(data.context);
-
-/**
  * Build the AG-UI codec.
  * @returns The codec.
  */
-export const createAGUICodec = (): Codec<AGUIEvent> =>
+export const createAGUICodec = (): Codec<AGUI.Event> =>
   defineCodec({
     id: CODEC_ID,
-    typeOf: (e: AGUIEvent): AGUIEventType => e.type,
+    typeOf: (e: AGUI.Event): AGUIEventType => e.type,
     events: {
       // The run lifecycle.
       RUN_STARTED: plain(),
@@ -228,25 +219,8 @@ export const createAGUICodec = (): Codec<AGUIEvent> =>
 
       CUSTOM: plain(),
       RAW: plain(),
-
-      // The codec's own event, which AG-UI does not define: the input a
-      // client publishes to start a run. See `AGUIRunInput` in ./events.ts.
-      'run-input': {
-        encode: (e) => ({ data: e.input }),
-        decode: (m) => {
-          const data: unknown = m.data;
-          if (!isRunAgentInput(data)) {
-            throw new Ably.ErrorInfo(
-              'unable to decode run-input; data is not a run agent input',
-              ErrorCode.InvalidArgument,
-              400,
-            );
-          }
-          return { type: 'run-input', input: data };
-        },
-      },
     },
   });
 
 /** The AG-UI codec. */
-export const agui: Codec<AGUIEvent> = createAGUICodec();
+export const agui: Codec<AGUI.Event> = createAGUICodec();

@@ -1,5 +1,6 @@
+import type * as AGUI from '@ag-ui/core';
+
 import { createDecoder, type Decoder, type DecoderOptions } from '../core/decoder/index.js';
-import type { AGUIEvent } from './codec/events.js';
 import { agui } from './codec/index.js';
 
 /**
@@ -8,4 +9,4 @@ import { agui } from './codec/index.js';
  * @param options - See {@link DecoderOptions}.
  * @returns The decoder.
  */
-export const agUiDecoder = (options?: DecoderOptions): Decoder<AGUIEvent> => createDecoder(agui, options);
+export const agUiDecoder = (options?: DecoderOptions): Decoder<AGUI.Event> => createDecoder(agui, options);

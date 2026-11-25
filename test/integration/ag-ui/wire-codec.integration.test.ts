@@ -1,18 +1,19 @@
 /**
  * The AG-UI codec over a real Ably channel.
  *
- * A client publishes a run's input, an agent pipes the run, and a subscriber
- * decodes every event in order and merges them with AG-UI's own reducer. These
- * tests need the platform because the argument and text streams are appends,
- * and history returns each stream's deltas as one message with the text
- * joined, which the reducer must still accept.
+ * An agent pipes a run, and a subscriber decodes every event in order and
+ * merges them with AG-UI's own reducer. These tests need the platform because
+ * the argument and text streams are appends, and history returns each
+ * stream's deltas as one message with the text joined, which the reducer must
+ * still accept.
  */
 
 import type * as Ably from '@ably/pubsub-core';
+import type * as AGUI from '@ag-ui/core';
 import { EventType } from '@ag-ui/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { agUiAdaptor, agUiDecoder, type AGUIEvent, type AGUIRunInput } from '../../../src/ag-ui/index.js';
+import { agUiAdaptor, agUiDecoder } from '../../../src/ag-ui/index.js';
 import type { AgentAdaptor } from '../../../src/index.js';
 import {
   chunkRun,
@@ -31,7 +32,7 @@ import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { streamOf } from '../../helper/test-codec.js';
 import { createDeliveryRecorder, drainHistory } from '../helpers.js';
 
-const adaptorOn = (name: string): AgentAdaptor<AGUIEvent> => agUiAdaptor(pubsubClient().channels.get(name));
+const adaptorOn = (name: string): AgentAdaptor<AGUI.Event> => agUiAdaptor(pubsubClient().channels.get(name));
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -73,7 +74,7 @@ const wireOf = (messages: Ably.InboundMessage[]): WireMessage[] => {
   });
 };
 
-const finished = (deliveries: { event?: AGUIEvent }[]): number =>
+const finished = (deliveries: { event?: AGUI.Event }[]): number =>
   deliveries.filter((d) => d.event?.type === EventType.RUN_FINISHED).length;
 
 describe('AG-UI codec over Ably', () => {
@@ -81,24 +82,20 @@ describe('AG-UI codec over Ably', () => {
     closeAllClients();
   });
 
-  it('streams a run’s input and a tool-calling run, event for event, and merges them with AG-UI’s reducer', async () => {
+  it('streams a tool-calling run, event for event, and merges it with AG-UI’s reducer', async () => {
     const name = uniqueChannelName('ag-ui');
     const agent = adaptorOn(name);
     const clientChannel = pubsubClient().channels.get(name);
     const clientDecoder = agUiDecoder();
-    const recorder = createDeliveryRecorder<AGUIEvent>();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
     clientDecoder.onEvent(recorder.record);
     await clientChannel.subscribe(clientDecoder.receive);
 
-    const input: AGUIRunInput = { type: 'run-input', input: { ...runInput, runId: 'r2', messages: [] } };
-    const sent = await agUiAdaptor(clientChannel).send(input);
     const piped = await agent.pipe(streamOf(...toolRun), { headers: { runId: 'r2' } });
     await recorder.waitFor((d) => finished(d) === 1);
 
-    expect(recorder.events()).toStrictEqual([input, ...decodedOf(toolRun)]);
-    const [inputDelivery, ...run] = recorder.deliveries;
-    expect(inputDelivery?.message.serial).toBe(sent.serial);
-    expect(run.at(-1)?.message.serial).toBe(piped.serial);
+    expect(recorder.events()).toStrictEqual(toolRun);
+    expect(recorder.deliveries.at(-1)?.message.serial).toBe(piped.serial);
     // Live, the argument deltas share one message: the first creates it and
     // the second appends its fragment on the same serial. The start, the end
     // and the result are each a message of their own. The end carries the
@@ -109,33 +106,19 @@ describe('AG-UI codec over Ably', () => {
         action: 'message.create',
         serial: 's1',
         name: 'ai',
-        data: {
-          threadId: 'th1',
-          runId: 'r2',
-          messages: [],
-          tools: [{ name: 'weather', description: 'The weather in a city' }],
-          context: [{ description: 'units', value: 'metric' }],
-          state: { step: 0 },
-        },
-        extras: { ai: { codec: 'ag-ui-events', type: 'run-input' } },
-      },
-      {
-        action: 'message.create',
-        serial: 's2',
-        name: 'ai',
         data: { type: 'RUN_STARTED', threadId: 'th1', runId: 'r2' },
         extras: { ai: { codec: 'ag-ui-events', type: 'RUN_STARTED' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.create',
-        serial: 's3',
+        serial: 's2',
         name: 'ai',
         data: { type: 'TOOL_CALL_START', toolCallId: 't1', toolCallName: 'weather', parentMessageId: 'm2' },
         extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_START' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.create',
-        serial: 's4',
+        serial: 's3',
         name: 'ai',
         data: '{"city":',
         extras: {
@@ -150,7 +133,7 @@ describe('AG-UI codec over Ably', () => {
       },
       {
         action: 'message.append',
-        serial: 's4',
+        serial: 's3',
         name: 'ai',
         data: '"London"}',
         extras: {
@@ -165,21 +148,21 @@ describe('AG-UI codec over Ably', () => {
       },
       {
         action: 'message.create',
-        serial: 's5',
+        serial: 's4',
         name: 'ai',
         data: { type: 'TOOL_CALL_END', toolCallId: 't1' },
-        extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_END', ends: 's4' }, headers: { runId: 'r2' } },
+        extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_END', ends: 's3' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.create',
-        serial: 's6',
+        serial: 's5',
         name: 'ai',
         data: { type: 'TOOL_CALL_RESULT', messageId: 'tm1', toolCallId: 't1', content: '{"temp":21}', role: 'tool' },
         extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_RESULT' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.create',
-        serial: 's7',
+        serial: 's6',
         name: 'ai',
         data: { type: 'RUN_FINISHED', threadId: 'th1', runId: 'r2' },
         extras: { ai: { codec: 'ag-ui-events', type: 'RUN_FINISHED' }, headers: { runId: 'r2' } },
@@ -194,33 +177,19 @@ describe('AG-UI codec over Ably', () => {
         action: 'message.create',
         serial: 's1',
         name: 'ai',
-        data: {
-          threadId: 'th1',
-          runId: 'r2',
-          messages: [],
-          tools: [{ name: 'weather', description: 'The weather in a city' }],
-          context: [{ description: 'units', value: 'metric' }],
-          state: { step: 0 },
-        },
-        extras: { ai: { codec: 'ag-ui-events', type: 'run-input' } },
-      },
-      {
-        action: 'message.create',
-        serial: 's2',
-        name: 'ai',
         data: { type: 'RUN_STARTED', threadId: 'th1', runId: 'r2' },
         extras: { ai: { codec: 'ag-ui-events', type: 'RUN_STARTED' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.create',
-        serial: 's3',
+        serial: 's2',
         name: 'ai',
         data: { type: 'TOOL_CALL_START', toolCallId: 't1', toolCallName: 'weather', parentMessageId: 'm2' },
         extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_START' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.update',
-        serial: 's4',
+        serial: 's3',
         name: 'ai',
         data: '{"city":"London"}',
         extras: {
@@ -235,21 +204,21 @@ describe('AG-UI codec over Ably', () => {
       },
       {
         action: 'message.create',
-        serial: 's5',
+        serial: 's4',
         name: 'ai',
         data: { type: 'TOOL_CALL_END', toolCallId: 't1' },
-        extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_END', ends: 's4' }, headers: { runId: 'r2' } },
+        extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_END', ends: 's3' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.create',
-        serial: 's6',
+        serial: 's5',
         name: 'ai',
         data: { type: 'TOOL_CALL_RESULT', messageId: 'tm1', toolCallId: 't1', content: '{"temp":21}', role: 'tool' },
         extras: { ai: { codec: 'ag-ui-events', type: 'TOOL_CALL_RESULT' }, headers: { runId: 'r2' } },
       },
       {
         action: 'message.create',
-        serial: 's7',
+        serial: 's6',
         name: 'ai',
         data: { type: 'RUN_FINISHED', threadId: 'th1', runId: 'r2' },
         extras: { ai: { codec: 'ag-ui-events', type: 'RUN_FINISHED' }, headers: { runId: 'r2' } },
@@ -271,7 +240,7 @@ describe('AG-UI codec over Ably', () => {
     const name = uniqueChannelName('ag-ui');
     const clientChannel = pubsubClient().channels.get(name);
     const clientDecoder = agUiDecoder();
-    const recorder = createDeliveryRecorder<AGUIEvent>();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
     clientDecoder.onEvent(recorder.record);
     await clientChannel.subscribe(clientDecoder.receive);
     await adaptorOn(name).pipe(streamOf(...textRun));
@@ -452,7 +421,7 @@ describe('AG-UI codec over Ably', () => {
     const name = uniqueChannelName('ag-ui');
     const clientChannel = pubsubClient().channels.get(name);
     const clientDecoder = agUiDecoder();
-    const recorder = createDeliveryRecorder<AGUIEvent>();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
     clientDecoder.onEvent(recorder.record);
     await clientChannel.subscribe(clientDecoder.receive);
     await adaptorOn(name).pipe(streamOf(...textRun));
@@ -460,7 +429,7 @@ describe('AG-UI codec over Ably', () => {
 
     // The run's start arrives as the agent emitted it, with the prompt on its
     // input's messages, live and from history.
-    const started: AGUIEvent = {
+    const started: AGUI.Event = {
       type: EventType.RUN_STARTED,
       threadId: 'th1',
       runId: 'r1',
@@ -489,7 +458,7 @@ describe('AG-UI codec over Ably', () => {
     const name = uniqueChannelName('ag-ui');
     const clientChannel = pubsubClient().channels.get(name);
     const clientDecoder = agUiDecoder();
-    const recorder = createDeliveryRecorder<AGUIEvent>();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
     clientDecoder.onEvent(recorder.record);
     await clientChannel.subscribe(clientDecoder.receive);
     await adaptorOn(name).pipe(streamOf(...reasoningRun));
@@ -711,7 +680,7 @@ describe('AG-UI codec over Ably', () => {
     const name = uniqueChannelName('ag-ui');
     const clientChannel = pubsubClient().channels.get(name);
     const clientDecoder = agUiDecoder();
-    const recorder = createDeliveryRecorder<AGUIEvent>();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
     clientDecoder.onEvent(recorder.record);
     await clientChannel.subscribe(clientDecoder.receive);
     await adaptorOn(name).pipe(streamOf(...chunkRun));
@@ -738,7 +707,7 @@ describe('AG-UI codec over Ably', () => {
     const name = uniqueChannelName('ag-ui');
     const clientChannel = pubsubClient().channels.get(name);
     const decoder = agUiDecoder();
-    const recorder = createDeliveryRecorder<AGUIEvent>();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
     decoder.onEvent(recorder.record);
     await clientChannel.subscribe(decoder.receive);
 
@@ -760,7 +729,7 @@ describe('AG-UI codec over Ably', () => {
     const name = uniqueChannelName('ag-ui');
     const clientChannel = pubsubClient().channels.get(name);
     const clientDecoder = agUiDecoder();
-    const recorder = createDeliveryRecorder<AGUIEvent>();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
     clientDecoder.onEvent(recorder.record);
     await clientChannel.subscribe(clientDecoder.receive);
 

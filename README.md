@@ -228,15 +228,12 @@ You can read the headers from the raw Ably message in a delivery, `message.extra
 
 ### AG-UI
 
-`agUiAdaptor` and `agUiDecoder` carry [AG-UI](https://docs.ag-ui.com) events. An agent pipes its event stream, and every client decodes the same events and can merge them with AG-UI's own reducer, such as an `AbstractAgent` from `@ag-ui/client`. A client can start a run by sending the codec's own `run-input` event, which carries a `RunAgentInput`.
+`agUiAdaptor` and `agUiDecoder` carry [AG-UI](https://docs.ag-ui.com) events. An agent pipes its event stream, and every client decodes the same events and can merge them with AG-UI's own reducer, such as an `AbstractAgent` from `@ag-ui/client`.
 
 ```typescript
 import { agUiAdaptor, agUiDecoder } from '@ably/ai-transport/ag-ui';
 
 const adaptor = agUiAdaptor(channel);
-
-// Client: send only the messages this run adds.
-await adaptor.send({ type: 'run-input', input: { threadId, runId, messages: [userMessage], tools, context } });
 
 // Agent: the runId header goes on every message of the run.
 await adaptor.pipe(events, { headers: { runId } });

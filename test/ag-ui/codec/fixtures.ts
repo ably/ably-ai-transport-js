@@ -117,6 +117,16 @@ export const decodedOf = (events: AGUI.Event[]): AGUI.Event[] =>
   events.filter((e) => e.type !== EventType.MESSAGES_SNAPSHOT);
 
 /**
+ * A run with a provider event on every event, as an AG-UI integration attaches
+ * the event it translated from. Each provider event holds its event's index,
+ * so a test can tell which event a `rawEvent` came from.
+ * @param events - The run's events.
+ * @returns The events, each with a `rawEvent` of its index.
+ */
+export const withRawEvents = (events: AGUI.Event[]): AGUI.Event[] =>
+  events.map((e, index) => ({ ...e, rawEvent: { type: 'provider.event', index } }));
+
+/**
  * The event at an index, for a test that knows the fixture has one there.
  * @param events - The events.
  * @param index - The index.

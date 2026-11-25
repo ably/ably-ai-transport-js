@@ -21,6 +21,7 @@ import {
   textRun,
   toolRun,
   wholeEvents,
+  withRawEvents,
 } from './fixtures.js';
 
 /**
@@ -31,16 +32,6 @@ import {
  */
 const wireOf = (codec: Codec<AGUI.Event>, events: AGUI.Event[]): Record<string, unknown>[] =>
   encodeAll(codec, events).map(({ message, ...ops }) => ({ data: message.data as unknown, ...ops }));
-
-/** A provider event, as an AG-UI adapter attaches it to the event it translated. */
-const providerEvent = { type: 'response.output_text.delta', delta: 'It is ' };
-
-/**
- * A run with the provider event attached to every AG-UI event in it.
- * @param events - The run's events.
- * @returns The events, each with a `rawEvent`.
- */
-const withRawEvents = (events: AGUI.Event[]): AGUI.Event[] => events.map((e) => ({ ...e, rawEvent: providerEvent }));
 
 const everyRun = [textRun, toolRun, reasoningRun, chunkRun, wholeEvents];
 
@@ -143,12 +134,29 @@ describe('the AG-UI codec', () => {
       }
     });
 
-    it('encodes an event with a rawEvent exactly as the same event without one', () => {
-      for (const run of everyRun) {
-        expect(encodeAll(codec, withRawEvents(run))).toStrictEqual(encodeAll(codec, run));
-      }
-      // The agent's own events keep their rawEvent.
-      expect(withRawEvents(textRun)[2]).toHaveProperty('rawEvent', providerEvent);
+    it('publishes each event with its rawEvent', () => {
+      const run = withRawEvents(textRun);
+      // A whole event carries its rawEvent in the message body.
+      const [whole] = codec.encode(at(run, 0));
+      expect(whole?.message.data).toStrictEqual({
+        ...at(textRun, 0),
+        rawEvent: { type: 'provider.event', index: 0 },
+      });
+      // A streaming event keeps its text in the message body, so its rawEvent
+      // goes with its other fields under extras.ai.fields.
+      const [streaming] = codec.encode(at(run, 2));
+      expect(streaming?.message.extras).toStrictEqual({
+        ai: {
+          codec: 'ag-ui-events',
+          type: 'TEXT_MESSAGE_CONTENT',
+          fields: {
+            type: 'TEXT_MESSAGE_CONTENT',
+            messageId: 'm1',
+            timestamp: 1,
+            rawEvent: { type: 'provider.event', index: 2 },
+          },
+        },
+      });
     });
 
     it('publishes every chunk whole, and does not append to it', () => {
@@ -187,20 +195,21 @@ describe('the AG-UI codec', () => {
       }
     });
 
-    it('round-trips every run event without its rawEvent', () => {
+    it('round-trips every run event with its rawEvent', () => {
       for (const run of everyRun) {
-        expect(roundTrip(createAGUICodec(), withRawEvents(run))).toStrictEqual(decodedOf(run));
+        expect(roundTrip(createAGUICodec(), withRawEvents(run))).toStrictEqual(withRawEvents(run));
       }
     });
 
     it('decodes history as the sequence the agent produced, with the text deltas joined', () => {
-      const decoded = historyOf(encodeAll(codec, textRun)).flatMap((m) => codec.decode(m));
+      const run = withRawEvents(textRun);
+      const decoded = historyOf(encodeAll(codec, run)).flatMap((m) => codec.decode(m));
       // The message the deltas share keeps the last append's fields, so the
-      // joined delta reads back with the last delta's timestamp.
+      // joined delta reads back with the last delta's timestamp and rawEvent.
       expect(decoded).toStrictEqual([
-        ...decodedOf(textRun).slice(0, 2),
-        { ...at(textRun, 4), delta: 'It is 21°C in London.' },
-        ...textRun.slice(5),
+        ...run.slice(0, 2),
+        { ...at(run, 4), delta: 'It is 21°C in London.' },
+        ...run.slice(5),
       ]);
     });
 

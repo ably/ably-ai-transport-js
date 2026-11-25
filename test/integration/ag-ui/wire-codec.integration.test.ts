@@ -25,6 +25,7 @@ import {
   runInput,
   textRun,
   toolRun,
+  withRawEvents,
 } from '../../ag-ui/codec/fixtures.js';
 import { foldWithAGUIReducer } from '../../helper/ag-ui-fold.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -451,6 +452,30 @@ describe('AG-UI codec over Ably', () => {
       ...history,
       prompt,
       reply,
+    ]);
+  });
+
+  it('carries each event’s rawEvent, live and from history', async () => {
+    const name = uniqueChannelName('ag-ui');
+    const clientChannel = pubsubClient().channels.get(name);
+    const clientDecoder = agUiDecoder();
+    const recorder = createDeliveryRecorder<AGUI.Event>();
+    clientDecoder.onEvent(recorder.record);
+    await clientChannel.subscribe(clientDecoder.receive);
+    const run = withRawEvents(textRun);
+    await adaptorOn(name).pipe(streamOf(...run));
+    await recorder.waitFor((d) => finished(d) === 1);
+
+    // Live, every event arrives with its rawEvent, each text delta included.
+    expect(recorder.events()).toStrictEqual(run);
+
+    // History joins the text deltas into one, and an append replaces the
+    // message's extras, so the joined delta carries the last delta's rawEvent.
+    const stored = await drainHistory(pubsubClient().channels.get(name), agUiDecoder());
+    expect(stored.map((d) => d.event)).toStrictEqual([
+      ...run.slice(0, 2),
+      { ...run[4], delta: 'It is 21°C in London.' },
+      ...run.slice(5),
     ]);
   });
 

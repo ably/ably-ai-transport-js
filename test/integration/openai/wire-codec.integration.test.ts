@@ -64,7 +64,7 @@ describe('OpenAI codec over Ably', () => {
 
     // Each Response's completion is its last publish, so its serial is the pipe's.
     const completed = recorder.deliveries.filter((d) => d.event?.type === 'response.completed');
-    expect([first.serial, second.serial]).toEqual(completed.map((d) => d.message.serial));
+    expect([first.lastPublishSerial, second.lastPublishSerial]).toEqual(completed.map((d) => d.message.serial));
     expect(recorder.events()).toStrictEqual([
       ...decodedOf(toolCallResponse),
       { type: 'input', items },

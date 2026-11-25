@@ -62,7 +62,7 @@ describe('Anthropic codec over Ably', () => {
 
     // Each turn's message_stop is its last publish, so its serial is the pipe's.
     const stopped = recorder.deliveries.filter((d) => d.event?.type === 'message_stop');
-    expect([first.serial, second.serial]).toEqual(stopped.map((d) => d.message.serial));
+    expect([first.lastPublishSerial, second.lastPublishSerial]).toEqual(stopped.map((d) => d.message.serial));
 
     expect(ordered(recorder.events())).toStrictEqual(
       ordered([...toolTurn, { type: 'input', messages: toolResult }, ...searchTurn]),

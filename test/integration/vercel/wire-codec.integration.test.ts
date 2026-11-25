@@ -78,7 +78,7 @@ describe('Vercel codec over Ably', () => {
     await recorder.waitFor(isFinish);
 
     // The finish chunk is the last publish, so its serial is the pipe's.
-    expect(result.serial).toBe(recorder.deliveries.at(-1)?.message.serial);
+    expect(result.lastPublishSerial).toBe(recorder.deliveries.at(-1)?.message.serial);
     expect(recorder.events()).toStrictEqual(turn);
 
     // The raw shape: a plain publish carries the whole chunk as the message

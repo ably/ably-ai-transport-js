@@ -96,7 +96,7 @@ describe('AG-UI codec over Ably', () => {
     await recorder.waitFor((d) => finished(d) === 1);
 
     expect(recorder.events()).toStrictEqual(toolRun);
-    expect(recorder.deliveries.at(-1)?.message.serial).toBe(piped.serial);
+    expect(recorder.deliveries.at(-1)?.message.serial).toBe(piped.lastPublishSerial);
     // Live, the argument deltas share one message: the first creates it and
     // the second appends its fragment on the same serial. The start, the end
     // and the result are each a message of their own. The end carries the

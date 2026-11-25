@@ -41,10 +41,16 @@ import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 
 /**
- * One event, once it is written: what a `pipeEach` loop is handed.
+ * One event, once the adaptor has written it: what a `pipeEach` loop is
+ * handed. Written means the adaptor accepted the event and made the writes
+ * its codec asked for, not that anything reached the channel or was
+ * acknowledged: the event may have published a message, appended to or
+ * updated a stream's message, or, when the codec keeps it off the channel,
+ * made no write at all. A publish is handed back once acknowledged, an append
+ * before its ack.
  * @template E - The codec's event union.
  */
-export interface Published<E> {
+export interface WrittenEvent<E> {
   /** The event, as the caller or the source produced it. */
   event: E;
   /**
@@ -55,6 +61,14 @@ export interface Published<E> {
    */
   serial: string | undefined;
 }
+
+/**
+ * The same type as {@link WrittenEvent}.
+ * @deprecated Use {@link WrittenEvent}. An event is not always published: it
+ * can append to or update a stream's message, or be kept off the channel.
+ * @template E - The codec's event union.
+ */
+export type Published<E> = WrittenEvent<E>;
 
 /** What writing one prepared event came to. */
 export type SinkOutcome =
@@ -125,7 +139,7 @@ export type Attempt<E> =
       /** The event was written. */
       ok: true;
       /** The event, with the serial its last write landed on. */
-      written: Published<E>;
+      written: WrittenEvent<E>;
     }
   | {
       /** The event was not written, or not all of its writes were made. */

@@ -62,6 +62,7 @@ import type {
   Stripped,
   WriterHandoff,
   WriterOptions,
+  WrittenEvent,
 } from '../src/index.js';
 import {
   consoleLogger,
@@ -104,7 +105,9 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<WriterHandoff>().toHaveProperty('streams');
     expectTypeOf<WriterOptions>().toHaveProperty('headers');
     expectTypeOf<AgentAdaptorOptions>().toHaveProperty('headers');
-    expectTypeOf<Published<TestEvent>>().toHaveProperty('serial');
+    expectTypeOf<WrittenEvent<TestEvent>>().toHaveProperty('serial');
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- the test is that the deprecated name is still exported, as the same type
+    expectTypeOf<Published<TestEvent>>().toEqualTypeOf<WrittenEvent<TestEvent>>();
   });
 
   it('exports the codec builder and the decoder', () => {

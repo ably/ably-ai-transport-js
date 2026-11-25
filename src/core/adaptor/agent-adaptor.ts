@@ -39,8 +39,8 @@ import {
   createEventWriter,
   type DefaultEventWriter,
   type EventWriter,
-  type Published,
   type WriterHandoff,
+  type WrittenEvent,
 } from './event-writer.js';
 import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import type { ChannelWriter } from './message-stream.js';
@@ -175,7 +175,7 @@ export interface AgentAdaptor<E> {
    * @returns The events, each with the serial of the message it landed on.
    * @throws {Ably.ErrorInfo} `InvalidArgument`, thrown by this call itself and not from the loop, when a header value is not a string, number, boolean or null; from the loop, `OperationCancelled` when the signal fires and `PipeFailed` when the source throws, the codec cannot encode an event or encodes a message without its `name` and `id`, a publish or update fails, or a repair fails, with the failure as `cause`; `PipeFailed` from the loop's exit when the repair after a `break` or `return` fails.
    */
-  pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<Published<E>>;
+  pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<WrittenEvent<E>>;
   /**
    * Open an event writer: the way to write a stream of events when the
    * caller is handed them one at a time and owns no source to pipe. `write`
@@ -321,7 +321,7 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
     return pipeStream(source, writer, { signal: options?.signal, logger: this._logger });
   }
 
-  pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<Published<E>> {
+  pipeEach(source: PipeSource<E>, options?: PipeOptions): AsyncIterable<WrittenEvent<E>> {
     this._logger.trace('AgentAdaptor.pipeEach();', { headers: Object.keys(options?.headers ?? {}) });
     const writer = this._eventWriter(prepareHeaders(options?.headers, 'pipe'));
     return pipeEachDriver(source, writer, { signal: options?.signal, logger: this._logger });

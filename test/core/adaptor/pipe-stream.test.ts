@@ -2,7 +2,7 @@ import * as Ably from '@ably/pubsub-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCodecSink } from '../../../src/core/adaptor/codec-sink.js';
-import { createEventWriter, type Published } from '../../../src/core/adaptor/event-writer.js';
+import { createEventWriter, type WrittenEvent } from '../../../src/core/adaptor/event-writer.js';
 import type { MessageHeaders } from '../../../src/core/adaptor/headers.js';
 import {
   pipeEach as pipeEachDriver,
@@ -69,7 +69,7 @@ const pipeEach = <E>(
   codec: Codec<E>,
   writer: PipeWriter,
   options: PipeTestOptions = {},
-): AsyncGenerator<Published<E>, void, undefined> => {
+): AsyncGenerator<WrittenEvent<E>, void, undefined> => {
   const { signal, headers, logger } = options;
   return pipeEachDriver(source, createEventWriter(createCodecSink(codec, writer, headers)), { signal, logger });
 };
@@ -558,9 +558,9 @@ const returnThrowing = <E>(state: { returned: boolean }): AsyncIterator<E> => ({
  * @returns What was yielded, and the error the loop threw, if any.
  */
 const drain = async <E>(
-  iterable: AsyncIterable<Published<E>>,
-): Promise<{ yielded: Published<E>[]; error: unknown }> => {
-  const yielded: Published<E>[] = [];
+  iterable: AsyncIterable<WrittenEvent<E>>,
+): Promise<{ yielded: WrittenEvent<E>[]; error: unknown }> => {
+  const yielded: WrittenEvent<E>[] = [];
   try {
     for await (const published of iterable) yielded.push(published);
   } catch (error) {

@@ -21,7 +21,7 @@ import * as Ably from '@ably/pubsub-core';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import type { DefaultEventWriter, Published } from './event-writer.js';
+import type { DefaultEventWriter, WrittenEvent } from './event-writer.js';
 
 /**
  * What `pipe` reads: a `ReadableStream` or any `AsyncIterable` of events. A
@@ -216,14 +216,14 @@ const pullNext = async <E>(
  * @param source - The events to pipe.
  * @param writer - This pipe's event writer, which the pipe drains.
  * @param options - The signal and the logger.
- * @yields {Published<E>} Each event with the serial of the message it landed on.
+ * @yields {WrittenEvent<E>} Each event with the serial of the message it landed on.
  * @throws {Ably.ErrorInfo} `OperationCancelled` when the signal fired; `PipeFailed` when the source, an encode, a write or a repair failed, with the failure as `cause`.
  */
 export async function* pipeEach<E>(
   source: PipeSource<E>,
   writer: DefaultEventWriter<E>,
   options: PipeStreamOptions = {},
-): AsyncGenerator<Published<E>, void, undefined> {
+): AsyncGenerator<WrittenEvent<E>, void, undefined> {
   const { signal, logger } = options;
   logger?.trace('pipeEach();');
   const puller = toPuller(source, logger);

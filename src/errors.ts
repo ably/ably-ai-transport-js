@@ -28,6 +28,16 @@ export enum ErrorCode {
   OperationCancelled = 40033,
 
   /**
+   * A write was made to a stream or writer after it was closed (Ably 40036,
+   * `stream_closed`): here, an event writer's `write` after its `close`.
+   * Nothing is published for the event, and a closed writer does not reopen:
+   * open a new one and hand it the event. The code is in Ably's shared range
+   * rather than this SDK's, so the Pub/Sub SDK's `MessageStream` can report a
+   * write after its `close` with the same code.
+   */
+  StreamClosed = 40036,
+
+  /**
    * Operation not permitted with the provided capability (Ably 40160).
    * Used when the Ably channel rejects a publish for a capability reason.
    */
@@ -46,7 +56,9 @@ export enum ErrorCode {
    * Completing or cancelling a streamed message failed — one of its appends was
    * not published, and the follow-up `updateMessage` that would have repaired it
    * by re-sending the accumulated content also failed. The partial is left on
-   * the channel. The first recovery failure is the `cause`.
+   * the channel. The first recovery failure is the `cause`. It stops an event
+   * writer, whose `flush` and `close` reject with it and whose next `write`
+   * throws it; a pipe rejects with `PipeFailed` and this as the `cause`.
    */
   StreamedMessageFinalizeFailed = 104000,
 

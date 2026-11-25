@@ -18,7 +18,8 @@
  *
  * Under `headers`, the key Ably provides for a publisher's own fields and the
  * one its server-side filtering reads, the builder writes a row's `headers`
- * and the adaptor adds a `send` or `pipe` call's headers, preferring the
+ * and the adaptor adds the headers of a `send` or `pipe` call, or of an event
+ * writer, preferring the
  * row's where both name a key. Ably admits only a flat map of string, number,
  * boolean and null values there (error 40032 otherwise).
  */
@@ -46,7 +47,7 @@ export const STREAM_FIELD = 'stream';
 /** Adaptor: on the message that ends a key, the serial of the message it ends. */
 export const ENDS_FIELD = 'ends';
 
-/** The `extras` key Ably provides for a publisher's own fields, the one its filtering reads. A row's `headers` go under it, over the headers of the `send` or `pipe` call that published the message. */
+/** The `extras` key Ably provides for a publisher's own fields, the one its filtering reads. A row's `headers` go under it, over the headers of the `send` or `pipe` call, or the event writer, that published the message. */
 export const HEADERS_KEY = 'headers';
 
 /** A value Ably admits under `extras.headers` as it is. */

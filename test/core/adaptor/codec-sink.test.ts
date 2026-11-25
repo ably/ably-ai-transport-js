@@ -65,6 +65,16 @@ describe('a codec sink', () => {
     });
   });
 
+  it("checks a prepared event against the pipe writer's key table at reserve", () => {
+    const sink = createCodecSink(createTestCodec(), createPipeWriter(channel));
+    const replace = sink.prepare({ type: 'text-replace', id: 't1', text: 'z' }, 'write event');
+    expect(() => {
+      replace.reserve();
+    }).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+    sink.prepare(delta('a'), 'write event').reserve();
+    sink.prepare({ type: 'text-replace', id: 't1', text: 'z' }, 'write event').reserve();
+  });
+
   it('reports which write failed, with what it threw', async () => {
     const sink = createCodecSink(createTestCodec(), createPipeWriter(channel));
     const refusal = new Ably.ErrorInfo('down', 50000, 500);

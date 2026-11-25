@@ -1,8 +1,10 @@
+import type * as Ably from '@ably/pubsub-core';
+import type * as AGUI from '@ag-ui/core';
 import { EventType } from '@ag-ui/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { agui, createAGUICodec } from '../../../src/ag-ui/codec/index.js';
-import type { AGUIEvent } from '../../../src/ag-ui/index.js';
+import { agUiDecoder } from '../../../src/ag-ui/index.js';
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { foldWithAGUIReducer } from '../../helper/ag-ui-fold.js';
@@ -27,7 +29,7 @@ import {
  * @param events - The events.
  * @returns One entry per encoded message.
  */
-const wireOf = (codec: Codec<AGUIEvent>, events: AGUIEvent[]): Record<string, unknown>[] =>
+const wireOf = (codec: Codec<AGUI.Event>, events: AGUI.Event[]): Record<string, unknown>[] =>
   encodeAll(codec, events).map(({ message, ...ops }) => ({ data: message.data as unknown, ...ops }));
 
 /** A provider event, as an AG-UI adapter attaches it to the event it translated. */
@@ -38,8 +40,7 @@ const providerEvent = { type: 'response.output_text.delta', delta: 'It is ' };
  * @param events - The run's events.
  * @returns The events, each with a `rawEvent`.
  */
-const withRawEvents = (events: AGUIEvent[]): AGUIEvent[] =>
-  events.map((e) => (e.type === 'run-input' ? e : { ...e, rawEvent: providerEvent }));
+const withRawEvents = (events: AGUI.Event[]): AGUI.Event[] => events.map((e) => ({ ...e, rawEvent: providerEvent }));
 
 const everyRun = [textRun, toolRun, reasoningRun, chunkRun, wholeEvents];
 
@@ -47,13 +48,13 @@ const everyRun = [textRun, toolRun, reasoningRun, chunkRun, wholeEvents];
  * A run's start whose input carries only the prompt that started the run, and
  * one whose input repeats the whole conversation.
  */
-const runStarts: AGUIEvent[] = [
+const runStarts: AGUI.Event[] = [
   at(textRun, 0),
   { type: EventType.RUN_STARTED, threadId: 'th1', runId: 'r1', input: { ...runInput, messages: [...history, prompt] } },
 ];
 
 describe('the AG-UI codec', () => {
-  let codec: Codec<AGUIEvent>;
+  let codec: Codec<AGUI.Event>;
 
   beforeEach(() => {
     codec = createAGUICodec();
@@ -151,7 +152,7 @@ describe('the AG-UI codec', () => {
     });
 
     it('publishes every chunk whole, and does not append to it', () => {
-      const chunks: AGUIEvent[] = [
+      const chunks: AGUI.Event[] = [
         ...chunkRun,
         { type: EventType.TEXT_MESSAGE_CHUNK, delta: 'no id' },
         { type: EventType.TOOL_CALL_CHUNK, delta: 'no id' },
@@ -164,18 +165,9 @@ describe('the AG-UI codec', () => {
       expect(wireOf(codec, wholeEvents)).toEqual(wholeEvents.map((e) => ({ data: e })));
     });
 
-    it('carries the run input as the body', () => {
-      const [sent] = codec.encode({ type: 'run-input', input: runInput });
-      expect(sent?.message).toEqual({
-        name: 'ai',
-        data: runInput,
-        extras: { ai: { codec: 'ag-ui-events', type: 'run-input' } },
-      });
-    });
-
     it('throws for an event type with no row', () => {
       // CAST: an event of a type AG-UI does not declare, as a newer release would send.
-      const rogue = { type: 'THINKING_START' } as unknown as AGUIEvent;
+      const rogue = { type: 'THINKING_START' } as unknown as AGUI.Event;
       expect(() => codec.encode(rogue)).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
@@ -275,29 +267,25 @@ describe('the AG-UI codec', () => {
       });
     });
 
-    it('round-trips the run input', () => {
-      const input: AGUIEvent = { type: 'run-input', input: runInput };
-      expect(roundTrip(codec, [input])).toStrictEqual([input]);
-    });
+    it('delivers a run-input message with no event, and reports it on onError', () => {
+      // AG-UI defines no run-input event, so the codec has no row for one, and
+      // a run-input message on the channel decodes to nothing.
+      const decoder = agUiDecoder();
+      const errors: Ably.ErrorInfo[] = [];
+      decoder.onError((error) => {
+        errors.push(error);
+      });
+      const [message] = deliveriesOf([
+        { message: { name: 'ai', data: runInput, extras: { ai: { codec: 'ag-ui-events', type: 'run-input' } } } },
+      ]);
+      if (message === undefined) throw new Error('fixture');
 
-    it('throws for run input that is not a run agent input', () => {
-      const malformed: unknown[] = [
-        'nope',
-        { threadId: 'th1', runId: 'r1', tools: [], context: [] },
-        { threadId: 'th1', messages: [], tools: [], context: [] },
-        { threadId: 'th1', runId: 'r1', messages: [], context: [] },
-        { threadId: 'th1', runId: 'r1', messages: [], tools: [] },
-      ];
-      for (const data of malformed) {
-        const [delivery] = deliveriesOf([
-          { message: { data, extras: { ai: { codec: 'ag-ui-events', type: 'run-input' } } } },
-        ]);
-        if (delivery === undefined) throw new Error('fixture');
-        expect(() => createAGUICodec().decode(delivery)).toThrowErrorInfo({
-          code: ErrorCode.InvalidArgument,
-          message: 'unable to decode run-input; data is not a run agent input',
-        });
-      }
+      expect(decoder.decode(message)).toStrictEqual([{ event: undefined, message }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfo({
+        code: ErrorCode.SessionMessageProcessingFailed,
+        cause: { code: ErrorCode.InvalidArgument, message: "unable to decode message; no row for type 'run-input'" },
+      });
     });
 
     it('does not return an event for a message that is not the codec’s', () => {

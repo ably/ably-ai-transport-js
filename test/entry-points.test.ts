@@ -22,9 +22,9 @@
  */
 
 import type * as Ably from '@ably/pubsub-core';
+import type * as AGUI from '@ag-ui/core';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { AGUIEvent, AGUIRunInput } from '../src/ag-ui/index.js';
 import { agUiAdaptor, agUiDecoder } from '../src/ag-ui/index.js';
 import type { AnthropicEvent, AnthropicInput, AnthropicStreamEvent } from '../src/anthropic/index.js';
 import { anthropicAdaptor, anthropicDecoder } from '../src/anthropic/index.js';
@@ -213,9 +213,9 @@ describe('@ably/ai-transport/ag-ui', () => {
     expect(typeof agUiDecoder().decode).toBe('function');
   });
 
-  it('exports its event types', () => {
-    expectTypeOf<AGUIEvent>().toHaveProperty('type');
-    expectTypeOf<AGUIRunInput>().toHaveProperty('input');
+  it('carries AG-UI’s event union', () => {
+    expectTypeOf(agUiAdaptor(createMockChannel())).toEqualTypeOf<AgentAdaptor<AGUI.Event>>();
+    expectTypeOf(agUiDecoder()).toEqualTypeOf<Decoder<AGUI.Event>>();
   });
 });
 

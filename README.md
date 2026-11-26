@@ -156,13 +156,13 @@ for await (const entry of queue.readFrom(offset)) {
   }
   // A commit point: everything written so far is on the channel once flush resolves.
   // If a write did not reach the channel, flush rejects and nothing is committed.
-  const { serial } = await writer.flush();
-  await queue.commit({ offset: entry.offset, serial });
+  const { serial, handoff } = await writer.flush();
+  await queue.commit({ offset: entry.offset, serial, handoff });
 }
 await writer.close();
 ```
 
-`flush` makes the writes you have already called and waits until what was written is on the channel, repairing it where an append failed, then resolves with the serial of the message the last event landed on. The writer stays open, and a stream that was part-way through carries on. Record how far you have written once `flush` resolves. `close` does what `flush` does and then refuses later writes; it ends no stream. Calling `close` again settles as the first call did. `await using writer = adaptor.newWriter()` closes the writer however the block is left.
+`flush` makes the writes you have already called and waits until what was written is on the channel, repairing it where an append failed, then resolves with the serial of the message the last event landed on and a handoff naming the streams still open. The writer stays open, and a stream that was part-way through carries on. Record how far you have written once `flush` resolves. `close` does what `flush` does and then refuses later writes; it ends no stream. Calling `close` again settles as the first call did. `await using writer = adaptor.newWriter()` closes the writer however the block is left.
 
 An event the codec cannot write throws `InvalidArgument` from its `write`. Nothing is published for it, writing it again fails the same way, and the writer carries on.
 
@@ -173,7 +173,7 @@ A failure to get a write onto the channel stops the writer, with one of these er
 
 Once the writer has stopped, the events queued behind the failed write are not written and nothing more is published. The next `flush` and `close` reject with the error, and the next `write` throws it. Open a new writer and replay from the last point you recorded. A `write` after `close` throws `StreamClosed`.
 
-To carry on in another process, such as after a restart, close the writer, wait for the close, and give the later events to a new writer; a writer you write through before the last one has closed can reach the channel first. A client decodes the same events as if one writer had written them all. Keep one writer for a run of events and flush it where you record progress, rather than opening a writer per event: a writer joins a stream's events only while it is open. A stream stays open in its writer until its end event is written, so close the writer when a stream is cut off before its end, or a later stream that reuses its id would append to the same message.
+To carry on in another process, such as after a restart, store the handoff with the progress you record, and give the later events to a writer that `adaptor.adoptWriter(handoff)` gives out. The handoff is plain JSON. The new writer carries each open stream on in the same message: a later delta appends to it and the stream's end event ends it, so a client decodes the same events, on the same serial, as if one writer had written them all, and history holds the stream as one message. The first write to an adopted stream reads its message back with the channel's `getMessage`, so a failed append can be repaired. Close the first writer and wait for the close before writing through the new one, or the two write to the same messages. A new writer given the later events without the handoff opens new messages for them, and every client keeps its record of the first message open for as long as it runs. Keep one writer for a run of events and flush it where you record progress, rather than opening a writer per event: a writer joins a stream's events only while it is open. A stream stays open in its writer until its end event is written, so close the writer when a stream is cut off before its end, or a later stream that reuses its id would append to the same message.
 
 ### Client
 

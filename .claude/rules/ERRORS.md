@@ -150,6 +150,11 @@ a stop stays an `Ably.ErrorInfo` with that code and has its `name` set to
 `AbortError`, so the framework reads it as a stop. `stoppedError` in
 `src/vercel/chat-transport/stopped.ts` is the instance.
 
+AG-UI marks a stop with an event instead: an `HttpAgent` ends an aborted
+response with a `RUN_ERROR` whose `code` is `abort`. So the AG-UI agent ends
+a run whose request is aborted, as `abortRun()` aborts it, with that event
+and no error (`src/ag-ui/client/ably-agent.ts`).
+
 ## Testing Errors
 
 Use the custom Vitest matchers in a test helper (`test/helper/expectations.ts`):

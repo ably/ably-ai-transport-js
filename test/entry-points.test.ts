@@ -22,9 +22,12 @@
  */
 
 import type * as Ably from '@ably/pubsub-core';
+import type * as AGUIClient from '@ag-ui/client';
 import type * as AGUI from '@ag-ui/core';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
+import type { AblyAgentOptions } from '../src/ag-ui/client/index.js';
+import { createAblyAgent } from '../src/ag-ui/client/index.js';
 import { agUiAdaptor, agUiDecoder } from '../src/ag-ui/index.js';
 import type { AnthropicEvent, AnthropicInput, AnthropicStreamEvent } from '../src/anthropic/index.js';
 import { anthropicAdaptor, anthropicDecoder } from '../src/anthropic/index.js';
@@ -216,6 +219,16 @@ describe('@ably/ai-transport/ag-ui', () => {
   it('carries AG-UI’s event union', () => {
     expectTypeOf(agUiAdaptor(createMockChannel())).toEqualTypeOf<AgentAdaptor<AGUI.Event>>();
     expectTypeOf(agUiDecoder()).toEqualTypeOf<Decoder<AGUI.Event>>();
+  });
+});
+
+describe('@ably/ai-transport/ag-ui/client', () => {
+  it('exports the AG-UI agent factory and its options type', () => {
+    expect(typeof createAblyAgent).toBe('function');
+    expectTypeOf(createAblyAgent).returns.toEqualTypeOf<AGUIClient.HttpAgent>();
+    expectTypeOf<AblyAgentOptions>().toHaveProperty('channel');
+    expectTypeOf<AblyAgentOptions>().toHaveProperty('url');
+    expectTypeOf<AblyAgentOptions>().toHaveProperty('logger');
   });
 });
 

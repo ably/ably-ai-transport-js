@@ -16,12 +16,12 @@ and `vitest.config.integration.ts` (`*.integration.test.ts`).
 
 Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage.
 
-An adapter to a provider's client framework is also tested through that framework's own client, so the framework's reducer, stop and resume run against it: the `useChat` transport has a suite that drives it with the AI SDK's `AbstractChat`, beside its per-module suites.
+An adapter to a provider's client framework is also tested through that framework's own client, so the framework's reducer, stop and resume run against it: the `useChat` transport has a suite that drives it with the AI SDK's `AbstractChat`, beside its per-module suites. The AG-UI agent is AG-UI's own `HttpAgent`, so its suite drives it through AG-UI's own `runAgent()`, `abortRun()` and `connectAgent()`, and AG-UI's event checks and reducer run in every run it reads.
 
 ### Style
 
 - Mock the channel rather than the Ably SDK; shared mocks live in `test/helper/`. `test/helper/mock-channel.ts` is the channel an adaptor writes to: it records publishes, appends and updates. A decoder takes messages, not a channel, so a decoder test hands it fixture messages directly. A client adapter reads the channel it is handed, so its suites get one from `test/helper/read-channel.ts` that serves history and live delivery and moves through its states as ably-js does. `test/helper/test-codec.ts` is a `defineCodec` codec that belongs to no provider.
-- An adapter's backend is replaced at `fetch` with `vi.stubGlobal`, undone in `afterEach`.
+- An adapter's backend is replaced at `fetch`: with `vi.stubGlobal`, undone in `afterEach`, for the `useChat` transport, and through `HttpAgent`'s own `fetch` option for the AG-UI agent.
 - A codec suite round-trips through `test/helper/wire.ts`, which turns what the codec encoded into the inbound messages a subscriber would receive, with the serial bookkeeping the pipe writer does on a real channel, and decodes them back through a fresh decoder core on each call, since a codec holds no state of its own. A client adapter's suites build what its channel carries with the same file's `channelWireOf`, and `channelWireAcross` where the channel holds history, whose serials sort in publish order as Ably's do, since the `useChat` transport and the decoder's version guard compare serials.
 - `flushMicrotasks()` or a `setImmediate` hop (`nextMacrotask()`) to let async work run; never a clock in a test.
 - For streams that stay open, simulate a terminal event to close deterministically, then drain the reader.
@@ -43,7 +43,7 @@ Integration tests are written at three levels:
 
 - **Codec level** (`test/integration/vercel/`, `test/integration/openai/`, `test/integration/ag-ui/`): a provider's fixture stream piped through an adaptor over that codec and decoded by a decoder subscribed to a real channel. Where the provider has a reducer, the decoded sequence is folded with it, which is the proof the wire is one the provider accepts.
 - **Adaptor and decoder level** (`test/integration/core/`): send, both pipes, live and late subscription, history, foreign messages and repair over a real channel, with the test codec so nothing on screen belongs to a provider.
-- **Adapter level** (`test/integration/vercel/chat-transport.integration.test.ts`): the `useChat` transport against a stubbed backend and an agent piping through `vercelAdaptor`, over a real channel.
+- **Adapter level** (`test/integration/vercel/chat-transport.integration.test.ts`, `test/integration/ag-ui/ably-agent.integration.test.ts`): the `useChat` transport, and the AG-UI agent, against a stubbed backend and an agent piping through `vercelAdaptor` or `agUiAdaptor`, over a real channel.
 
 ### Environment
 
@@ -80,7 +80,7 @@ Each one has three jobs, and they matter equally: exercise only the public API (
 
 **Codec level**, in `test/integration/vercel/wire-codec.integration.test.ts`, `test/integration/openai/wire-codec.integration.test.ts` and `test/integration/ag-ui/wire-codec.integration.test.ts`: a tool-calling turn streamed event for event and folded by the AI SDK's own reducer, a user message under the serial `send` returned, a finished turn read from history as the events the agent produced with each stream's deltas joined into one, a transient data part flagged ephemeral on delivery, the two Responses of a function call round-tripped with the call's output published as input, and an AG-UI run's text, tool-call and chunk streams merged by AG-UI's own reducer from live deliveries and from history into the same messages, with a messages snapshot kept off the channel.
 
-**Adapter level**, in `test/integration/vercel/chat-transport.integration.test.ts`: the `useChat` transport sending, rejoining and stopping turns against a stubbed backend and a real agent, attaching a channel that subscribing does not attach, and reading the channel again after a close.
+**Adapter level**, in `test/integration/vercel/chat-transport.integration.test.ts`: the `useChat` transport sending, rejoining and stopping turns against a stubbed backend and a real agent, attaching a channel that subscribing does not attach, and reading the channel again after a close. In `test/integration/ag-ui/ably-agent.integration.test.ts`: the AG-UI agent reading runs off the thread's channel into AG-UI's reducer, back-to-back runs on the channel the first run left attached, a run that waits out a detach the application has in flight, the prompt `RUN_STARTED` carries shown once in the tab that sent it and ahead of the reply in a tab that joins the run through its own `connect()` after detaching the channel its own run left attached, and a stop in either tab whose cancel brings the run's end to the other.
 
 Rather than list the scenarios here (the suite's own `it` titles are the authoritative list), this is what the tier is _for_, and what a new scenario should need to earn a place in it:
 

@@ -31,6 +31,24 @@ export const textRun = (runId: string, messageId: string, deltas: string[]): AGU
 ];
 
 /**
+ * A run whose `RUN_STARTED` carries the user message that started it in
+ * `input.messages`.
+ * @param run - The run's events.
+ * @param prompt - The user message that started the run.
+ * @returns The run's events, with the prompt on its `RUN_STARTED`.
+ */
+export const withPrompt = (run: AGUI.Event[], prompt: AGUI.Message): AGUI.Event[] =>
+  run.map(
+    (event): AGUI.Event =>
+      event.type === EventType.RUN_STARTED
+        ? {
+            ...event,
+            input: { threadId: event.threadId, runId: event.runId, messages: [prompt], tools: [], context: [] },
+          }
+        : event,
+  );
+
+/**
  * The wire for events written with `pipe` or `send` through the AG-UI codec,
  * with serials that sort in publish order.
  * @param events - The events, in order.

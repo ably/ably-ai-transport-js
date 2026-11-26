@@ -34,6 +34,12 @@
       "import": "./dist/ag-ui/ably-ai-transport-ag-ui.js",
       "require": "./dist/ag-ui/ably-ai-transport-ag-ui.umd.cjs"
     },
+    "./ag-ui/client": {
+      "types": "./dist/ag-ui/client/index.d.ts",
+      "react-native": "./dist/ag-ui/client/ably-ai-transport-ag-ui-client.umd.cjs",
+      "import": "./dist/ag-ui/client/ably-ai-transport-ag-ui-client.js",
+      "require": "./dist/ag-ui/client/ably-ai-transport-ag-ui-client.umd.cjs"
+    },
     "./anthropic": {
       "types": "./dist/anthropic/index.d.ts",
       "react-native": "./dist/anthropic/ably-ai-transport-anthropic.umd.cjs",
@@ -43,12 +49,13 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:vercel && pnpm run build:openai && pnpm run build:ag-ui && pnpm run build:anthropic",
+    "build": "pnpm run build:clean && pnpm run build:core && pnpm run build:vercel && pnpm run build:openai && pnpm run build:ag-ui && pnpm run build:ag-ui-client && pnpm run build:anthropic",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
     "build:openai": "vite build --config ./src/openai/vite.config.ts --emptyOutDir",
     "build:ag-ui": "vite build --config ./src/ag-ui/vite.config.ts --emptyOutDir",
+    "build:ag-ui-client": "vite build --config ./src/ag-ui/client/vite.config.ts --emptyOutDir",
     "build:anthropic": "vite build --config ./src/anthropic/vite.config.ts --emptyOutDir",
     "build:cdn": "vite build --config ./src/vite.cdn.config.ts",
     "prepare": "pnpm run build",
@@ -106,16 +113,21 @@
   "peerDependencies": {
     "@ably/pubsub-device": "^3.0.0",
     "@ably/pubsub-server": "^3.0.0",
+    "@ag-ui/client": "^1",
     "@ag-ui/core": "^1",
     "@anthropic-ai/sdk": "^1",
     "ai": "^6 || ^7",
-    "openai": "^6"
+    "openai": "^6",
+    "rxjs": "^7"
   },
   "peerDependenciesMeta": {
     "@ably/pubsub-device": {
       "optional": true
     },
     "@ably/pubsub-server": {
+      "optional": true
+    },
+    "@ag-ui/client": {
       "optional": true
     },
     "@ag-ui/core": {
@@ -128,6 +140,9 @@
       "optional": true
     },
     "openai": {
+      "optional": true
+    },
+    "rxjs": {
       "optional": true
     }
   },

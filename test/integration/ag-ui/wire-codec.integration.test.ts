@@ -765,7 +765,7 @@ describe('AG-UI codec over Ably', () => {
     expect(recorder.deliveries.map((d) => d.event)).toStrictEqual(decodedOf(run));
   });
 
-  it('writes a run event by event through two writers, the second carrying on the text the first stopped in', async () => {
+  it('writes a run event by event through two writers, the second adopting the text the first stopped in', async () => {
     const name = uniqueChannelName('ag-ui');
     const clientChannel = pubsubClient().channels.get(name);
     const decoder = agUiDecoder();
@@ -777,8 +777,8 @@ describe('AG-UI codec over Ably', () => {
     const agent = adaptorOn(name);
     const first = agent.newWriter();
     for (const event of textRun.slice(0, 4)) first.write(event);
-    await first.close();
-    const second = agent.newWriter();
+    const { handoff } = await first.close();
+    const second = agent.adoptWriter(handoff);
     for (const event of textRun.slice(4)) second.write(event);
     await second.close();
     await recorder.waitFor((d) => finished(d) === 1);
@@ -791,10 +791,14 @@ describe('AG-UI codec over Ably', () => {
       { id: 'm1', role: 'assistant', content: 'It is 21°C in London.', metadata: { model: 'm-1' } },
     ]);
 
-    // History holds the text as two messages, one per writer, and AG-UI's
-    // reducer merges them into the message the live subscriber built.
+    // All three text deltas, from both writers, land on one message, so
+    // history holds the text as one delta, and AG-UI's reducer merges it into
+    // the message the live subscriber built.
+    const contents = recorder.deliveries.filter((d) => d.event?.type === EventType.TEXT_MESSAGE_CONTENT);
+    expect(new Set(contents.map((d) => d.message.serial)).size).toBe(1);
     const stored = await drainHistory(pubsubClient().channels.get(name), agUiDecoder());
     const events = stored.map((d) => d.event).filter((e) => e !== undefined);
+    expect(events.filter((e) => e.type === EventType.TEXT_MESSAGE_CONTENT)).toHaveLength(1);
     expect(await foldWithAGUIReducer(events, history)).toStrictEqual(live);
   });
 });

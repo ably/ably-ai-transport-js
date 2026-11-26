@@ -117,7 +117,7 @@ describe('Anthropic codec over Ably', () => {
     );
   });
 
-  it('writes a turn event by event through two writers, the second carrying on the text the first stopped in', async () => {
+  it('writes a turn event by event through two writers, the second adopting the text the first stopped in', async () => {
     const name = uniqueChannelName('anthropic');
     const clientChannel = pubsubClient().channels.get(name);
     const decoder = anthropicDecoder();
@@ -129,8 +129,8 @@ describe('Anthropic codec over Ably', () => {
     const agent = adaptorOn(name);
     const first = agent.newWriter();
     for (const event of toolTurn.slice(0, 8)) first.write(event);
-    await first.close();
-    const second = agent.newWriter();
+    const { handoff } = await first.close();
+    const second = agent.adoptWriter(handoff);
     for (const event of toolTurn.slice(8)) second.write(event);
     await second.close();
     await recorder.waitFor((d) => stops(d) === 1);
@@ -139,15 +139,16 @@ describe('Anthropic codec over Ably', () => {
     const live = await foldWithMessageStream(recorder.events());
     expect(live).toStrictEqual(await foldWithMessageStream(toolTurn));
 
-    // History holds the text as two messages, one per writer, so each delta
-    // reads back as itself, and the SDK's reducer folds them into the Message
-    // the live subscriber built.
+    // Both writers' text deltas land on one message, so history holds the
+    // text as one delta, and the SDK's reducer folds it into the Message the
+    // live subscriber built.
+    const isTextDelta = (e: AnthropicEvent | undefined): boolean =>
+      e?.type === 'content_block_delta' && e.delta.type === 'text_delta';
+    const textDeltas = recorder.deliveries.filter((d) => isTextDelta(d.event));
+    expect(new Set(textDeltas.map((d) => d.message.serial)).size).toBe(1);
     const history = await drainHistory(pubsubClient().channels.get(name), anthropicDecoder());
     const events = history.map((d) => d.event).filter((e): e is AnthropicEvent => e !== undefined);
-    expect(events.filter((e) => e.type === 'content_block_delta' && e.delta.type === 'text_delta')).toStrictEqual([
-      toolTurn[7],
-      toolTurn[8],
-    ]);
+    expect(events.filter((e) => isTextDelta(e))).toHaveLength(1);
     expect(await foldWithMessageStream(events)).toStrictEqual(live);
   });
 });

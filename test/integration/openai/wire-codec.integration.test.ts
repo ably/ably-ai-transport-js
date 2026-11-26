@@ -119,7 +119,7 @@ describe('OpenAI codec over Ably', () => {
     expect(history[2]?.message.data).toBe('It is 21°C in London.');
   });
 
-  it('writes a response event by event through two writers, the second carrying on the text the first stopped in', async () => {
+  it('writes a response event by event through two writers, the second adopting the text the first stopped in', async () => {
     const name = uniqueChannelName('openai');
     const clientChannel = pubsubClient().channels.get(name);
     const decoder = openaiDecoder();
@@ -131,8 +131,8 @@ describe('OpenAI codec over Ably', () => {
     const agent = adaptorOn(name);
     const first = agent.newWriter();
     for (const event of textResponse.slice(0, 4)) first.write(event);
-    await first.close();
-    const second = agent.newWriter();
+    const { handoff } = await first.close();
+    const second = agent.adoptWriter(handoff);
     for (const event of textResponse.slice(4)) second.write(event);
     await second.close();
     await recorder.waitFor((d) => completions(d) === 1);
@@ -140,9 +140,15 @@ describe('OpenAI codec over Ably', () => {
     const expected = decodedOf(textResponse);
     expect(recorder.events()).toStrictEqual(expected);
 
-    // History holds the text as two messages, one per writer, so each delta
-    // reads back as itself.
+    // Both writers' text deltas land on one message, so history holds the
+    // text as one delta carrying all of it, and the other events as they were.
+    const isDelta = (e: OpenAIEvent | undefined): boolean => e?.type === 'response.output_text.delta';
+    const deltas = recorder.deliveries.filter((d) => isDelta(d.event));
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(new Set(deltas.map((d) => d.message.serial)).size).toBe(1);
     const history = await drainHistory(pubsubClient().channels.get(name), openaiDecoder());
-    expect(history.map((d) => d.event)).toStrictEqual(expected);
+    const stored = history.map((d) => d.event);
+    expect(stored.filter((e) => isDelta(e))).toHaveLength(1);
+    expect(stored.filter((e) => !isDelta(e))).toStrictEqual(expected.filter((e) => !isDelta(e)));
   });
 });

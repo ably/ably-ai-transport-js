@@ -378,6 +378,85 @@ describe('createPipeWriter', () => {
     });
   });
 
+  describe('open streams', () => {
+    it('lists each live key with the serial of its message, and forgets a key once it ends', async () => {
+      await writer.write(append('k1', 'a'));
+      await writer.write(append('k2', 'b'));
+      expect(writer.openStreams()).toEqual([
+        { key: 'k1', serial: 'serial-1' },
+        { key: 'k2', serial: 'serial-2' },
+      ]);
+      await writer.write(end('k1'));
+      expect(writer.openStreams()).toEqual([{ key: 'k2', serial: 'serial-2' }]);
+    });
+  });
+
+  describe('adopting another writer’s streams', () => {
+    it('appends to the message the other writer opened, reading it back once first', async () => {
+      await writer.write(append('k1', 'Hel'));
+      const adopting = createPipeWriter(channel, undefined, writer.openStreams());
+      await expect(adopting.write(append('k1', 'lo'))).resolves.toEqual({ serial: 'serial-1', published: false });
+      await adopting.write(append('k1', '!'));
+      expect(channel.getMessage).toHaveBeenCalledTimes(1);
+      expect(channel.getMessage).toHaveBeenCalledWith('serial-1');
+      expect(channel.publishCalls).toHaveLength(1);
+      expect(channel.appendCalls.map((m) => [m.serial, m.data as unknown])).toEqual([
+        ['serial-1', 'lo'],
+        ['serial-1', '!'],
+      ]);
+    });
+
+    it('ends the adopted message, so a decoder forgets it', async () => {
+      await writer.write(append('k1', 'Hel'));
+      const adopting = createPipeWriter(channel, undefined, writer.openStreams());
+      await adopting.write({ message: { name: 'ai', data: '', extras: {} }, ends: 'k1' });
+      expect(channel.publishCalls.at(-1)?.extras).toMatchObject({ ai: { ends: 'serial-1' } });
+      expect(channel.getMessage).not.toHaveBeenCalled();
+      expect(adopting.openStreams()).toEqual([]);
+    });
+
+    it('counts an adopted key as live, so it can be updated but not published under', async () => {
+      await writer.write(append('k1', 'Hel'));
+      const adopting = createPipeWriter(channel, undefined, writer.openStreams());
+      expect(() => {
+        adopting.reserve([publish('k1', 'x')]);
+      }).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+      adopting.reserve([update('k1', 'Hello')]);
+      await expect(adopting.write(update('k1', 'Hello'))).resolves.toEqual({ serial: 'serial-1', published: false });
+      expect(channel.updateCalls.map((m) => [m.serial, m.data as unknown])).toEqual([['serial-1', 'Hello']]);
+    });
+
+    it('repairs an adopted message with the content read back and the appends since', async () => {
+      await writer.write(append('k1', 'Hel'));
+      const adopting = createPipeWriter(channel, undefined, writer.openStreams());
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await adopting.write(append('k1', 'lo'));
+      await adopting.flush();
+      expect(channel.updateCalls.map((m) => [m.serial, m.data as unknown])).toEqual([['serial-1', 'Hello']]);
+    });
+
+    it('passes on an adopted key it never wrote to', async () => {
+      await writer.write(append('k1', 'Hel'));
+      const adopting = createPipeWriter(channel, undefined, writer.openStreams());
+      await adopting.write(append('k2', 'x'));
+      expect(adopting.openStreams()).toEqual([
+        { key: 'k2', serial: 'serial-2' },
+        { key: 'k1', serial: 'serial-1' },
+      ]);
+    });
+
+    it('refuses to write to an adopted key through a channel that cannot read a message', async () => {
+      const unreadable = {
+        publish: channel.publish,
+        appendMessage: channel.appendMessage,
+        updateMessage: channel.updateMessage,
+      };
+      const adopting = createPipeWriter(unreadable, undefined, [{ key: 'k1', serial: 'serial-1' }]);
+      await expect(adopting.write(append('k1', 'lo'))).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      expect(channel.appendMessage).not.toHaveBeenCalled();
+    });
+  });
+
   describe('repair', () => {
     it('warns when an append fails, before the flush repairs it', async () => {
       const logHandler = vi.fn();

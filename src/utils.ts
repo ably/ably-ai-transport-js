@@ -1,9 +1,15 @@
 /**
- * Shared utilities used by the codec, adaptor and decoder layers. They live at the
- * top level so neither layer depends on the other for them.
+ * Shared utilities used by the codec, adaptor and decoder layers, and by the
+ * client adapters. They live at the top level so no layer or provider depends
+ * on another for them.
  */
 
 import * as Ably from '@ably/pubsub-core';
+
+import { ErrorCode } from './errors.js';
+
+/** How many characters of a failed response's body go into an error. */
+const RESPONSE_EXCERPT_CHARS = 200;
 
 /**
  * Extract a human-readable message from an unknown thrown value.
@@ -22,6 +28,52 @@ export const errorMessage = (error: unknown): string => (error instanceof Error 
  */
 export const errorCause = (error: unknown): Ably.ErrorInfo | undefined =>
   error instanceof Ably.ErrorInfo ? error : undefined;
+
+/**
+ * Wrap a failure to read a channel, such as an attach the channel refused
+ * or a history page that could not be fetched. The wrapped error keeps the
+ * failure's code and status, `InternalError` when it has no code, and
+ * carries the failure as its cause. ably-js rejects some reads with a
+ * `PartialErrorInfo`, such as a history request that timed out, and an
+ * `ErrorInfo` takes only an `ErrorInfo` as its cause, so such a failure is
+ * carried as one.
+ * @param error - The failure.
+ * @returns The error to report.
+ */
+export const wrapReadError = (error: unknown): Ably.ErrorInfo => {
+  const cause =
+    error instanceof Ably.PartialErrorInfo
+      ? new Ably.ErrorInfo(
+          error.message,
+          error.code ?? ErrorCode.InternalError,
+          error.statusCode ?? 500,
+          errorCause(error.cause),
+        )
+      : errorCause(error);
+  return new Ably.ErrorInfo(
+    `unable to read the channel; ${errorMessage(error)}`,
+    cause?.code ?? ErrorCode.InternalError,
+    cause?.statusCode ?? 500,
+    cause,
+  );
+};
+
+/**
+ * What a failed response says about itself: the start of its body, or its
+ * status text when the body is empty or cannot be read.
+ * @param response - The response.
+ * @returns The text.
+ */
+export const responseText = async (response: Response): Promise<string> => {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return response.statusText;
+  }
+  if (text === '') return response.statusText;
+  return text.length > RESPONSE_EXCERPT_CHARS ? `${text.slice(0, RESPONSE_EXCERPT_CHARS)}…` : text;
+};
 
 /**
  * Mapped type that converts properties whose type includes `undefined`

@@ -1,7 +1,7 @@
 import * as Ably from '@ably/pubsub-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentAdaptor, MessageHeaders } from '../../../src/core/adaptor/index.js';
+import type { AgentAdaptor, MessageHeaders, WriterHandoff } from '../../../src/core/adaptor/index.js';
 import { createAgentAdaptor } from '../../../src/core/adaptor/index.js';
 import type { Codec } from '../../../src/core/codec/index.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -70,7 +70,7 @@ describe('an event writer', () => {
       const flushed = writer.flush();
       expect(await isSettled(flushed)).toBe(false);
       pending.resolve({ serials: ['first'] });
-      await expect(flushed).resolves.toEqual({ serial: 'first' });
+      await expect(flushed).resolves.toMatchObject({ serial: 'first' });
     });
 
     it("writes an event's messages after those of the events handed over before it", async () => {
@@ -89,7 +89,7 @@ describe('an event writer', () => {
     it('appends the later deltas of a stream to the message its first delta opened', async () => {
       const writer = adaptor.newWriter();
       for (const text of ['a', 'b', 'c']) writer.write(delta(text));
-      await expect(writer.flush()).resolves.toEqual({ serial: 'serial-1' });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: 'serial-1' });
       expect(channel.publishCalls).toMatchObject([{ data: 'a' }]);
       expect(channel.appendCalls.map((m) => [m.serial, m.data as unknown])).toEqual([
         ['serial-1', 'b'],
@@ -120,7 +120,7 @@ describe('an event writer', () => {
       await nextMacrotask();
       expect(channel.publishCalls).toHaveLength(1);
       pending.resolve(ack);
-      await expect(writer.flush()).resolves.toEqual({ serial: 'serial-2' });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: 'serial-2' });
       expect(extrasOf(channel.publishCalls[1]).ai).toMatchObject({ ends: 'serial-1' });
     });
 
@@ -129,7 +129,7 @@ describe('an event writer', () => {
       writer.write(delta('a'));
       writer.write(start);
       writer.write(delta('b'));
-      await expect(writer.flush()).resolves.toEqual({ serial: 'serial-1' });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: 'serial-1' });
       expect(channel.publishCalls).toHaveLength(2);
       expect(channel.appendCalls).toMatchObject([{ serial: 'serial-1', data: 'b' }]);
     });
@@ -154,16 +154,16 @@ describe('an event writer', () => {
   describe('flush', () => {
     it('resolves with the serial of the message the last event landed on', async () => {
       const writer = adaptor.newWriter();
-      await expect(writer.flush()).resolves.toEqual({ serial: undefined });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: undefined });
       writer.write({ type: 'ping' });
-      await expect(writer.flush()).resolves.toEqual({ serial: undefined });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: undefined });
       writer.write({ type: 'note', text: 'one' });
       writer.write({ type: 'ping' });
-      await expect(writer.flush()).resolves.toEqual({ serial: 'serial-1' });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: 'serial-1' });
       writer.write(delta('a'));
       writer.write({ type: 'note', text: 'two' });
       writer.write(delta('b'));
-      await expect(writer.flush()).resolves.toEqual({ serial: 'serial-2' });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: 'serial-2' });
     });
 
     it('keeps the writer and its streams open, so a later delta carries on the same message', async () => {
@@ -197,8 +197,8 @@ describe('an event writer', () => {
       await flushMicrotasks();
       expect(channel.publish).toHaveBeenCalledTimes(1);
       pending.resolve({ serials: ['first'] });
-      await expect(flushed).resolves.toEqual({ serial: 'first' });
-      await expect(writer.flush()).resolves.toEqual({ serial: 'serial-1' });
+      await expect(flushed).resolves.toMatchObject({ serial: 'first' });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: 'serial-1' });
       expect(channel.publish.mock.calls.map(([m]) => m.data as unknown)).toEqual(['before', 'after']);
     });
 
@@ -225,13 +225,13 @@ describe('an event writer', () => {
       const closed = writer.close();
       expect(await isSettled(closed)).toBe(false);
       pending.resolve(ack);
-      await expect(closed).resolves.toEqual({ serial: 'serial-2' });
+      await expect(closed).resolves.toMatchObject({ serial: 'serial-2' });
       expect(channel.publishCalls).toHaveLength(2);
       expect(channel.updateMessage).not.toHaveBeenCalled();
     });
 
     it('resolves for a writer that wrote nothing', async () => {
-      await expect(adaptor.newWriter().close()).resolves.toEqual({ serial: undefined });
+      await expect(adaptor.newWriter().close()).resolves.toMatchObject({ serial: undefined });
       expect(channel.publish).not.toHaveBeenCalled();
     });
 
@@ -278,7 +278,7 @@ describe('an event writer', () => {
       const closed = writer.close();
       expect(await isSettled(closed)).toBe(false);
       pending.resolve({ serials: ['first'] });
-      await expect(closed).resolves.toEqual({ serial: 'serial-1' });
+      await expect(closed).resolves.toMatchObject({ serial: 'serial-1' });
       expect(channel.publish.mock.calls.map(([m]) => m.data as unknown)).toEqual(['one', 'two']);
     });
   });
@@ -313,7 +313,7 @@ describe('an event writer', () => {
     });
   });
 
-  describe('carrying on with a new writer', () => {
+  describe('carrying on with a new writer, without the handoff', () => {
     it('publishes a later delta as a new message and ends it', async () => {
       const first = adaptor.newWriter();
       first.write(start);
@@ -323,7 +323,7 @@ describe('an event writer', () => {
       const second = adaptor.newWriter();
       second.write(delta('b'));
       second.write(delta('c'));
-      await expect(second.flush()).resolves.toEqual({ serial: 'serial-3' });
+      await expect(second.flush()).resolves.toMatchObject({ serial: 'serial-3' });
       second.write(end);
       await second.close();
 
@@ -345,7 +345,7 @@ describe('an event writer', () => {
 
       const second = adaptor.newWriter();
       second.write(end);
-      await expect(second.close()).resolves.toEqual({ serial: 'serial-2' });
+      await expect(second.close()).resolves.toMatchObject({ serial: 'serial-2' });
       expect(extrasOf(channel.publishCalls[1]).ai).not.toHaveProperty('ends');
     });
 
@@ -364,6 +364,104 @@ describe('an event writer', () => {
       await second.close();
       expect(channel.publishCalls).toHaveLength(1);
       expect(channel.updateMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handoff', () => {
+    it('names the streams left open, from flush and from close', async () => {
+      const writer = adaptor.newWriter();
+      writer.write(start);
+      writer.write(delta('a'));
+      await expect(writer.flush()).resolves.toEqual({
+        serial: 'serial-2',
+        handoff: { streams: [{ key: 't1', serial: 'serial-2' }] },
+      });
+      writer.write(end);
+      await expect(writer.close()).resolves.toEqual({ serial: 'serial-3', handoff: { streams: [] } });
+    });
+
+    it('is empty for a writer that wrote nothing', async () => {
+      await expect(adaptor.newWriter().close()).resolves.toEqual({ serial: undefined, handoff: { streams: [] } });
+    });
+  });
+
+  describe('adopting a writer’s open streams', () => {
+    it('carries a stream on in the same message, from a handoff stored as JSON, and ends that message', async () => {
+      const first = adaptor.newWriter();
+      first.write(start);
+      first.write(delta('Hel'));
+      const { handoff } = await first.close();
+
+      // eslint-disable-next-line unicorn/prefer-structured-clone -- the round trip through JSON is the point: a handoff is stored as JSON
+      const second = adaptor.adoptWriter(JSON.parse(JSON.stringify(handoff)) as typeof handoff);
+      second.write(delta('lo'));
+      second.write(end);
+      await expect(second.close()).resolves.toEqual({ serial: 'serial-3', handoff: { streams: [] } });
+
+      expect(channel.publishCalls.map((m) => extrasOf(m).ai?.type)).toEqual(['text-start', 'text-delta', 'text-end']);
+      expect(channel.appendCalls).toMatchObject([{ serial: 'serial-2', data: 'lo' }]);
+      expect(extrasOf(channel.publishCalls[2]).ai).toMatchObject({ type: 'text-end', ends: 'serial-2' });
+      expect(channel.getMessage).toHaveBeenCalledWith('serial-2');
+    });
+
+    it('gives the same writer as newWriter for an empty handoff', async () => {
+      const writer = adaptor.adoptWriter({ streams: [] });
+      writer.write(delta('a'));
+      await expect(writer.close()).resolves.toEqual({
+        serial: 'serial-1',
+        handoff: { streams: [{ key: 't1', serial: 'serial-1' }] },
+      });
+      expect(channel.getMessage).not.toHaveBeenCalled();
+    });
+
+    it('stops with the channel’s error when it cannot read an adopted message back', async () => {
+      const refusal = channelError();
+      channel.getMessage.mockRejectedValueOnce(refusal);
+      const writer = adaptor.adoptWriter({ streams: [{ key: 't1', serial: 'serial-9' }] });
+      writer.write(delta('lo'));
+      await expect(writer.flush()).rejects.toBe(refusal);
+      expect(channel.appendMessage).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no streams array', {}],
+      ['a stream without a serial', { streams: [{ key: 't1' }] }],
+      [
+        'a key named twice',
+        {
+          streams: [
+            { key: 't1', serial: 's1' },
+            { key: 't1', serial: 's2' },
+          ],
+        },
+      ],
+      // eslint-disable-next-line unicorn/no-null -- a handoff read back from JSON can be null
+      ['null', null],
+    ])('throws InvalidArgument for a handoff with %s', (_what, handoff) => {
+      expect(() => adaptor.adoptWriter(handoff as unknown as WriterHandoff)).toThrowErrorInfoWithCode(
+        ErrorCode.InvalidArgument,
+      );
+    });
+
+    it('throws InvalidArgument when the handoff names a stream and the channel cannot read a message', () => {
+      const unreadable = createAgentAdaptor(
+        { publish: channel.publish, appendMessage: channel.appendMessage, updateMessage: channel.updateMessage },
+        createTestCodec(),
+      );
+      expect(() => unreadable.adoptWriter({ streams: [{ key: 't1', serial: 'serial-1' }] })).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: 'unable to adopt writer; the channel has no getMessage, so it cannot read an adopted message back',
+      });
+      expect(() => unreadable.adoptWriter({ streams: [] })).not.toThrow();
+    });
+
+    it("throws InvalidArgument for a header Ably would not store, naming adoptWriter's operation", () => {
+      expect(() =>
+        adaptor.adoptWriter({ streams: [] }, { headers: { meta: { nested: true } } as unknown as MessageHeaders }),
+      ).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: "unable to adopt writer; header 'meta' is not a string, number, boolean or null",
+      });
     });
   });
 
@@ -443,7 +541,7 @@ describe('an event writer', () => {
         writer.write(rogue);
       }).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
       writer.write({ type: 'note', text: 'two' });
-      await expect(writer.flush()).resolves.toEqual({ serial: 'serial-2' });
+      await expect(writer.flush()).resolves.toMatchObject({ serial: 'serial-2' });
       expect(channel.publish.mock.calls.map(([m]) => m.data as unknown)).toEqual(['one', 'two']);
     });
 

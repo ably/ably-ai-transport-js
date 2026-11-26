@@ -35,7 +35,7 @@ export type MessageHeaders = Record<string, HeaderPrimitive>;
  */
 export const prepareHeaders = (
   headers: Record<string, unknown> | undefined,
-  operation: 'send' | 'pipe' | 'create writer' | 'create agent adaptor',
+  operation: 'send' | 'pipe' | 'create writer' | 'adopt writer' | 'create agent adaptor',
 ): MessageHeaders | undefined => {
   if (headers === undefined) return undefined;
   const prepared: MessageHeaders = {};

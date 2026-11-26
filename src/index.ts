@@ -12,6 +12,7 @@ export type {
   Published,
   SendOptions,
   SendResult,
+  WriterHandoff,
   WriterOptions,
 } from './core/adaptor/index.js';
 export { createAgentAdaptor } from './core/adaptor/index.js';

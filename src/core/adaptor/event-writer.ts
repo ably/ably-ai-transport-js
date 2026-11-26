@@ -23,10 +23,10 @@
  * takes them needs no queue of its own. `flush` and `close` wait for the
  * writes already handed over, then for the channel to take what was written,
  * repairing what they must, and write nothing to end a stream that is
- * part-way through. A caller that carries a stream on in another process
- * closes the writer and gives the later events to a new one, which carries it
- * on; with the codec sink, in a new message, and a subscriber decodes the
- * same events either way.
+ * part-way through. Both resolve with a handoff naming the streams left open,
+ * which the sink reports. A caller that carries a stream on in another
+ * process closes the writer, stores the handoff, and gives the later events to
+ * a writer that adopts it, which carries the stream on in the same message.
  *
  * A stream stays open in the writer until the event that ends it is written,
  * so a later event under the same key appends to the same message. A caller
@@ -108,6 +108,12 @@ export interface EventSink<E> {
    * @throws {Ably.ErrorInfo} `StreamedMessageFinalizeFailed` when a repair fails, with the first repair failure as `cause`.
    */
   flush(): Promise<void>;
+  /**
+   * The streams the writes made so far leave open, for a new writer to adopt.
+   * Called once the writes are flushed.
+   * @returns The handoff.
+   */
+  handoff(): WriterHandoff;
 }
 
 /**
@@ -130,6 +136,17 @@ export type Attempt<E> =
       error: unknown;
     };
 
+/**
+ * What a new writer needs to carry on the streams a writer left open, in the
+ * same messages: the writer's {@link EventWriterResult.handoff}, given to the
+ * adaptor's `adoptWriter`. It is plain JSON, so a caller can store it with a
+ * checkpoint and adopt it in another process. Treat it as opaque.
+ */
+export interface WriterHandoff {
+  /** The streams left open: each one's key in the codec, and the serial of its message. */
+  streams: { key: string; serial: string }[];
+}
+
 /** What {@link EventWriter.flush} and {@link EventWriter.close} resolve with. */
 export interface EventWriterResult {
   /**
@@ -139,6 +156,13 @@ export interface EventWriterResult {
    * leaves it as it was, and it is `undefined` until an event has landed.
    */
   serial: string | undefined;
+  /**
+   * The streams the writer has open once everything written is on the
+   * channel. A writer the adaptor's `adoptWriter` opens from it carries them
+   * on in the same messages, so each stream stays on one serial and its end
+   * event ends that serial. Store it beside the progress you record.
+   */
+  handoff: WriterHandoff;
 }
 
 /**
@@ -176,21 +200,23 @@ export interface EventWriter<E> extends AsyncDisposable {
    * are written once it settles. Streams stay open, so a later delta carries
    * on the same stream. Once `flush` resolves, every event handed over before
    * it is on the channel, so a caller that records how far it has written
-   * records it then. After `close` has been called, settles as `close` does.
-   * @returns The serial of the message the last event written landed on.
+   * records it then, with the handoff that lets a new writer carry its open
+   * streams on. After `close` has been called, settles as `close` does.
+   * @returns The serial of the message the last event written landed on, and the handoff.
    * @throws {Ably.ErrorInfo} The error that stopped the writer, whether a write stopped it before or this flush's repair fails (`StreamedMessageFinalizeFailed`, with the first repair failure as `cause`).
    */
   flush(): Promise<EventWriterResult>;
   /**
    * Stop the writer. It does what {@link EventWriter.flush} does, and then
    * refuses every later `write`. It ends no stream: subscribers see a stream
-   * that was part-way through stay open, and a new writer given the stream's
-   * later events carries it on, so a subscriber decodes the same events as
-   * from one writer. Await `close` before writing through the new writer, or
-   * its writes can reach the channel ahead of this one's. A decoder keeps its
-   * record of a stream no writer ended, as it does for a cancelled pipe, for
-   * as long as the decoder lives. A second call settles as the first did, its
-   * failure included.
+   * that was part-way through stay open, and a writer the adaptor's
+   * `adoptWriter` opens from the handoff carries it on in the same message,
+   * so a subscriber decodes the same events, on the same serial, as from one
+   * writer. Await `close` before writing through the new writer, or its writes
+   * can reach the channel ahead of this one's. A stream no writer ever ends
+   * stays open, and a decoder keeps its record of it, as it does for a
+   * cancelled pipe, for as long as the decoder lives. A second call settles as
+   * the first did, its failure included.
    * @returns As {@link EventWriter.flush}.
    * @throws {Ably.ErrorInfo} As {@link EventWriter.flush}.
    */
@@ -402,8 +428,11 @@ export class DefaultEventWriter<E> implements EventWriter<E> {
       });
       throw failure;
     }
-    const result = { serial: this._lastSerial };
-    this._logger?.debug(`DefaultEventWriter.${method}(); done`, result);
+    const result = { serial: this._lastSerial, handoff: this._sink.handoff() };
+    this._logger?.debug(`DefaultEventWriter.${method}(); done`, {
+      serial: result.serial,
+      openStreams: result.handoff.streams.length,
+    });
     return result;
   }
 }

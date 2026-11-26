@@ -60,6 +60,7 @@ import type {
   SendOptions,
   SendResult,
   Stripped,
+  WriterHandoff,
   WriterOptions,
 } from '../src/index.js';
 import {
@@ -95,9 +96,12 @@ describe('@ably/ai-transport', () => {
     expect(typeof createAgentAdaptor).toBe('function');
     expectTypeOf<AgentAdaptor<TestEvent>>().toHaveProperty('pipeEach');
     expectTypeOf<AgentAdaptor<TestEvent>>().toHaveProperty('newWriter');
+    expectTypeOf<AgentAdaptor<TestEvent>>().toHaveProperty('adoptWriter');
     expectTypeOf<EventWriter<TestEvent>>().toHaveProperty('close');
     expectTypeOf<EventWriter<TestEvent>>().toHaveProperty('flush');
     expectTypeOf<EventWriterResult>().toHaveProperty('serial');
+    expectTypeOf<EventWriterResult>().toHaveProperty('handoff');
+    expectTypeOf<WriterHandoff>().toHaveProperty('streams');
     expectTypeOf<WriterOptions>().toHaveProperty('headers');
     expectTypeOf<AgentAdaptorOptions>().toHaveProperty('headers');
     expectTypeOf<Published<TestEvent>>().toHaveProperty('serial');
@@ -165,6 +169,7 @@ describe('@ably/ai-transport/vercel', () => {
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
     expect(typeof adaptor.newWriter).toBe('function');
+    expect(typeof adaptor.adoptWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {
@@ -196,6 +201,7 @@ describe('@ably/ai-transport/openai', () => {
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
     expect(typeof adaptor.newWriter).toBe('function');
+    expect(typeof adaptor.adoptWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {
@@ -217,6 +223,7 @@ describe('@ably/ai-transport/ag-ui', () => {
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
     expect(typeof adaptor.newWriter).toBe('function');
+    expect(typeof adaptor.adoptWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {
@@ -237,6 +244,7 @@ describe('@ably/ai-transport/anthropic', () => {
     expect(typeof adaptor.pipe).toBe('function');
     expect(typeof adaptor.pipeEach).toBe('function');
     expect(typeof adaptor.newWriter).toBe('function');
+    expect(typeof adaptor.adoptWriter).toBe('function');
   });
 
   it('exports a decoder factory', () => {

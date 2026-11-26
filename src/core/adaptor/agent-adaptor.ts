@@ -34,11 +34,17 @@ import { errorCause, errorMessage } from '../../utils.js';
 import type { Codec } from '../codec/codec.js';
 import { assertCodecWrote } from './codec-fields.js';
 import { createCodecSink } from './codec-sink.js';
-import { createEventWriter, type DefaultEventWriter, type EventWriter, type Published } from './event-writer.js';
+import {
+  createEventWriter,
+  type DefaultEventWriter,
+  type EventWriter,
+  type Published,
+  type WriterHandoff,
+} from './event-writer.js';
 import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from './headers.js';
 import type { ChannelWriter } from './message-stream.js';
 import { pipeEach as pipeEachDriver, type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
-import { createPipeWriter } from './pipe-writer.js';
+import { createPipeWriter, type OpenStream } from './pipe-writer.js';
 
 /** Options for an agent adaptor factory. */
 export interface AgentAdaptorOptions {
@@ -182,19 +188,71 @@ export interface AgentAdaptor<E> {
    * `await using` closes the writer too. An event that cannot be written
    * throws at its `write` and the writer carries on; a failure to get a write
    * onto the channel stops the writer, so `flush` and `close` resolve only
-   * when nothing handed over was lost. Keep one writer for
-   * a run of events and flush it where you record progress: a writer joins a
-   * stream's events only while it is open, and a new writer given a stream's
-   * later events carries it on with the same decoded result but not the same
-   * writes. A stream stays open in the writer until its end event is written,
-   * so close the writer before reusing the key of a stream that was never
-   * ended. See {@link EventWriter}.
+   * when nothing handed over was lost. Both also resolve with a handoff naming
+   * the streams left open: to carry a stream on in another writer, in
+   * another process for instance, give the handoff to
+   * {@link AgentAdaptor.adoptWriter}, which writes the stream's later events
+   * to the same message. A new writer given those events without the handoff
+   * opens new messages for them. A stream stays open in the writer until its
+   * end event is written, so close the writer before reusing the key of a
+   * stream that was never ended. See {@link EventWriter}.
    * @param options - The writer's headers.
    * @returns The writer.
    * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null.
    */
   newWriter(options?: WriterOptions): EventWriter<E>;
+  /**
+   * Give out an event writer that carries on the streams another writer left
+   * open, as `newWriter` does otherwise. The handoff comes from that writer's
+   * `flush` or `close`, and may have been stored and read back as JSON. A
+   * later event of an adopted stream appends to the message the other writer
+   * opened, and its end event ends that message, so each stream stays on one
+   * serial and a decoder forgets it once it ends. The first write to an
+   * adopted stream reads its message back with the channel's `getMessage`,
+   * so a failed append can be repaired with the message's whole content; a
+   * failed read stops the writer with the channel's error. Adopt a handoff
+   * once the writer it came from has closed, or both write to the same
+   * messages. An empty handoff gives the same writer as `newWriter`.
+   * @param handoff - The handoff, from {@link EventWriterResult.handoff}.
+   * @param options - The writer's headers.
+   * @returns The writer.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the handoff is not one a writer gave out, when it names a stream and the channel has no `getMessage`, or when a header value is not a string, number, boolean or null.
+   */
+  adoptWriter(handoff: WriterHandoff, options?: WriterOptions): EventWriter<E>;
 }
+
+/**
+ * The streams a handoff names, checked: it may have been stored and read back
+ * as JSON, so it is validated as data from outside.
+ * @param handoff - The handoff.
+ * @returns Its streams.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when it is not an object with a `streams` array of `{ key, serial }` strings, each key named once.
+ */
+const adoptedStreams = (handoff: WriterHandoff): OpenStream[] => {
+  // CAST: the handoff may have been read back from JSON, so its shape is checked rather than trusted.
+  const streams = (handoff as { streams?: unknown } | null | undefined)?.streams;
+  if (!Array.isArray(streams)) {
+    throw new Ably.ErrorInfo(
+      'unable to adopt writer; the handoff has no streams array',
+      ErrorCode.InvalidArgument,
+      400,
+    );
+  }
+  const keys = new Set<string>();
+  return streams.map((entry: unknown): OpenStream => {
+    // CAST: each entry is checked field by field below.
+    const { key, serial } = (entry ?? {}) as { key?: unknown; serial?: unknown };
+    if (typeof key !== 'string' || typeof serial !== 'string' || serial === '' || keys.has(key)) {
+      throw new Ably.ErrorInfo(
+        'unable to adopt writer; each stream in the handoff needs a key of its own and a serial',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    keys.add(key);
+    return { key, serial };
+  });
+};
 
 /**
  * Wrap a publish failure. A capability rejection gets its own code so an
@@ -273,14 +331,32 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
     return this._eventWriter(prepareHeaders(options?.headers, 'create writer'));
   }
 
+  adoptWriter(handoff: WriterHandoff, options?: WriterOptions): EventWriter<E> {
+    const streams = adoptedStreams(handoff);
+    this._logger.trace('AgentAdaptor.adoptWriter();', {
+      streams: streams.length,
+      headers: Object.keys(options?.headers ?? {}),
+    });
+    if (streams.length > 0 && this._channel.getMessage === undefined) {
+      this._logger.error('AgentAdaptor.adoptWriter(); the channel cannot read a message');
+      throw new Ably.ErrorInfo(
+        'unable to adopt writer; the channel has no getMessage, so it cannot read an adopted message back',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    return this._eventWriter(prepareHeaders(options?.headers, 'adopt writer'), streams);
+  }
+
   /**
    * Open an event writer with a key table of its own, writing through the
    * adaptor's codec.
    * @param headers - The call's headers, already checked, laid over the adaptor's defaults.
+   * @param adopted - Streams another writer left open, which this one carries on.
    * @returns The writer.
    */
-  private _eventWriter(headers: MessageHeaders | undefined): DefaultEventWriter<E> {
-    const writer = createPipeWriter(this._channel, this._logger);
+  private _eventWriter(headers: MessageHeaders | undefined, adopted: OpenStream[] = []): DefaultEventWriter<E> {
+    const writer = createPipeWriter(this._channel, this._logger, adopted);
     return createEventWriter(createCodecSink(this._codec, writer, mergeHeaders(this._headers, headers)), {
       logger: this._logger,
     });

@@ -148,13 +148,16 @@ refuses later writes, writing no closer. Failures split as the Pub/Sub message
 stream's do: an event that cannot be written throws at its own `write` and the
 writer carries on, and a failure to get a write onto the channel stops the
 writer, so a later `flush` or `close` rejects with it and a later `write`
-throws it and `flush` resolving means nothing handed over was lost. A new
-writer given a stream's later events carries it on in a new message, since it
-has no key table to append under, and a stream stays open in a writer until
-its closer is written (`src/core/adaptor/event-writer.ts`). The public
-contract promises only that a subscriber decodes the same events, not how many
-messages a stream takes, so the writer can move to the Pub/Sub message stream
-and its patches without a change callers see. `pipeEach` gives an event writer
+throws it and `flush` resolving means nothing handed over was lost. `flush`
+and `close` also resolve with a handoff, the streams left open as plain JSON
+(each key and its message's serial), and `adoptWriter` gives out a writer that
+carries them on in the same messages, as the Pub/Sub message stream's
+`adoptStream` does: one stream stays on one serial, so its end event ends the
+message a decoder remembers and the decoder forgets it. A new writer given a
+stream's later events without the handoff has no key table to append under,
+so it opens a new message and the first stays open on every decoder. A stream
+stays open in a writer until its closer is written
+(`src/core/adaptor/event-writer.ts`). `pipeEach` gives an event writer
 each event a stream or async iterable yields, reading the next only when the
 loop asks for it, and flushes the writer on every exit, leaving the loop early
 included. `pipe` is `pipeEach` run to its end, resolving with the serial of

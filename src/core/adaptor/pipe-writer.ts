@@ -5,6 +5,10 @@
  * index) because it cannot know the serial a publish ack returns. The writer
  * keeps that table for the life of the event writer that holds it, from each
  * key to the message stream that writes its message (`message-stream.ts`).
+ * A writer can start with the streams another writer left open, from that
+ * writer's {@link PipeWriter.openStreams}: their keys are live from the start, on
+ * the messages the other writer opened, and the first write to one reads the
+ * message's content back so the stream can repair it (`adoptMessageStream`).
  * `publish` under a key opens a message stream. `append` to a key that is not
  * live opens one with the message, so a stream's first delta opens the message
  * the later deltas append to; `append` to a live key appends through its
@@ -65,7 +69,13 @@ import type { Logger } from '../../logger.js';
 import { errorCause } from '../../utils.js';
 import type { EncodedMessage } from '../codec/codec.js';
 import { ENDS_FIELD, STREAM_FIELD, withOwnField } from '../wire.js';
-import { type ChannelWriter, type MessageStream, openMessageStream, publishMessage } from './message-stream.js';
+import {
+  adoptMessageStream,
+  type ChannelWriter,
+  type MessageStream,
+  openMessageStream,
+  publishMessage,
+} from './message-stream.js';
 
 /** Where one write landed. */
 export interface WriteResult {
@@ -73,6 +83,14 @@ export interface WriteResult {
   serial: string;
   /** Whether the write was a publish, including the publish an append to a key not yet live becomes. */
   published: boolean;
+}
+
+/** A stream a writer has open: its key in the codec, and the serial of its message. */
+export interface OpenStream {
+  /** The codec's key for the stream. */
+  key: string;
+  /** The serial of the stream's message. */
+  serial: string;
 }
 
 /** One event writer's key table. */
@@ -104,6 +122,12 @@ export interface PipeWriter {
    * @throws {Ably.ErrorInfo} `InvalidArgument` for an update to a key that is not live, or a publish under one that is.
    */
   reserve(messages: EncodedMessage[]): void;
+  /**
+   * The streams the writes made so far leave open, for another writer to
+   * carry on in the same messages. Call it once the writes are flushed.
+   * @returns Each open stream's key and serial.
+   */
+  openStreams(): OpenStream[];
 }
 
 /**
@@ -125,13 +149,19 @@ class DefaultPipeWriter implements PipeWriter {
   private readonly _channel: ChannelWriter;
   private readonly _logger: Logger | undefined;
   private readonly _streams = new Map<string, MessageStream>();
+  /** Streams adopted from another writer and not yet written to: key to serial. The first write reads the message back. */
+  private readonly _adopted = new Map<string, string>();
   private _flushing: Promise<void> | undefined;
   /** The keys the writes reserved so far leave live, which {@link DefaultPipeWriter.reserve} checks against. */
   private readonly _reserved = new Set<string>();
 
-  constructor(channel: ChannelWriter, logger: Logger | undefined) {
+  constructor(channel: ChannelWriter, logger: Logger | undefined, adopted: readonly OpenStream[]) {
     this._channel = channel;
     this._logger = logger?.withContext({ component: 'PipeWriter' });
+    for (const { key, serial } of adopted) {
+      this._adopted.set(key, serial);
+      this._reserved.add(key);
+    }
   }
 
   async write(encoded: EncodedMessage): Promise<WriteResult> {
@@ -143,13 +173,13 @@ class DefaultPipeWriter implements PipeWriter {
     // rolled up with it or overtake it, and a repair sent after it would reach
     // a decoder that has already forgotten the stream.
     if (ends !== undefined) await this._settle(ends);
-    const ended = ends === undefined ? undefined : this._streams.get(ends)?.serial;
+    const ended = ends === undefined ? undefined : this._serialOf(ends);
     const closing = ended === undefined ? message : withOwnField(message, ENDS_FIELD, ended);
     const marked = withOwnField(closing, STREAM_FIELD, true);
 
     if (append !== undefined) {
       // The first append of a stream opens its message; see the module comment.
-      const stream = this._streams.get(append);
+      const stream = await this._live(append);
       if (stream === undefined) {
         result = { serial: await this._open(append, marked), published: true };
       } else {
@@ -170,6 +200,7 @@ class DefaultPipeWriter implements PipeWriter {
       // before the key goes.
       await this._settle(ends);
       this._streams.delete(ends);
+      this._adopted.delete(ends);
       this._logger?.debug('PipeWriter.write(); stream ended', { key: ends, serial: ended });
     }
 
@@ -201,6 +232,13 @@ class DefaultPipeWriter implements PipeWriter {
     for (const key of live) this._reserved.add(key);
   }
 
+  openStreams(): OpenStream[] {
+    return [
+      ...[...this._streams].map(([key, stream]) => ({ key, serial: stream.serial })),
+      ...[...this._adopted].map(([key, serial]) => ({ key, serial })),
+    ];
+  }
+
   async flush(): Promise<void> {
     // Re-entrancy guard: a flush in progress is the flush.
     if (this._flushing) return this._flushing;
@@ -214,7 +252,7 @@ class DefaultPipeWriter implements PipeWriter {
   }
 
   private async _open(key: string, message: Ably.Message): Promise<string> {
-    if (this._streams.has(key)) {
+    if (this._streams.has(key) || this._adopted.has(key)) {
       throw new Ably.ErrorInfo(
         `unable to publish; key '${key}' is still live, use update to replace its content or end it first`,
         ErrorCode.InvalidArgument,
@@ -241,8 +279,35 @@ class DefaultPipeWriter implements PipeWriter {
     await this._repair([stream]);
   }
 
+  /**
+   * The serial a key is live on, adopted or not.
+   * @param key - The stream.
+   * @returns The serial, or `undefined` when the key is not live.
+   */
+  private _serialOf(key: string): string | undefined {
+    return this._streams.get(key)?.serial ?? this._adopted.get(key);
+  }
+
+  /**
+   * The stream a key is live on. An adopted stream is read back from the
+   * channel on its first write, so it can be repaired.
+   * @param key - The stream.
+   * @returns The stream, or `undefined` when the key is not live.
+   * @throws {Ably.ErrorInfo} As {@link adoptMessageStream}.
+   */
+  private async _live(key: string): Promise<MessageStream | undefined> {
+    const serial = this._adopted.get(key);
+    if (serial === undefined) return this._streams.get(key);
+    this._logger?.trace('PipeWriter.write(); reading back an adopted stream', { key, serial });
+    const stream = await adoptMessageStream(this._channel, serial, this._logger?.withContext({ key }));
+    this._adopted.delete(key);
+    this._streams.set(key, stream);
+    this._logger?.debug('PipeWriter.write(); stream adopted', { key, serial });
+    return stream;
+  }
+
   private async _update(key: string, message: Ably.Message): Promise<string> {
-    const stream = this._streams.get(key);
+    const stream = await this._live(key);
     if (stream === undefined) {
       throw new Ably.ErrorInfo(`unable to update; no live stream for key '${key}'`, ErrorCode.InvalidArgument, 400);
     }
@@ -272,7 +337,11 @@ class DefaultPipeWriter implements PipeWriter {
  * Create a pipe writer for one event writer.
  * @param channel - The channel to write to.
  * @param logger - Logger for diagnostics.
+ * @param adopted - Streams another writer left open, which this one carries on in the same messages.
  * @returns A new {@link PipeWriter}.
  */
-export const createPipeWriter = (channel: ChannelWriter, logger?: Logger): PipeWriter =>
-  new DefaultPipeWriter(channel, logger);
+export const createPipeWriter = (
+  channel: ChannelWriter,
+  logger?: Logger,
+  adopted: readonly OpenStream[] = [],
+): PipeWriter => new DefaultPipeWriter(channel, logger, adopted);

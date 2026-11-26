@@ -44,6 +44,14 @@ export interface ChannelWriter {
    * @returns The ack.
    */
   updateMessage(message: Ably.Message): Promise<Ably.UpdateDeleteResult>;
+  /**
+   * Read the latest version of the message named by `serial`, with its whole
+   * content. Only a writer that adopts another writer's open streams needs it,
+   * so it is optional: a channel without it serves every other write.
+   * @param serial - The serial of the message to read.
+   * @returns The message.
+   */
+  getMessage?(serial: string): Promise<Ably.Message>;
 }
 
 const stringOf = (data: unknown): string => (typeof data === 'string' ? data : '');
@@ -152,6 +160,30 @@ export class MessageStream {
     return true;
   }
 }
+
+/**
+ * Carry on writing to a message another writer opened: read its whole content,
+ * so a repair can rebuild it, and return a stream that appends to it.
+ * @param channel - The channel. It must be able to read a message.
+ * @param serial - The serial of the message.
+ * @param logger - Logger for diagnostics.
+ * @returns The stream.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when the channel cannot read a message; whatever the channel throws for the read.
+ */
+export const adoptMessageStream = async (
+  channel: ChannelWriter,
+  serial: string,
+  logger?: Logger,
+): Promise<MessageStream> => {
+  if (channel.getMessage === undefined) {
+    throw new Ably.ErrorInfo(
+      'unable to adopt stream; the channel cannot read a message, so it has no getMessage',
+      ErrorCode.InvalidArgument,
+      400,
+    );
+  }
+  return new MessageStream(channel, serial, await channel.getMessage(serial), logger);
+};
 
 /**
  * Publish a message and return a stream that writes to it.

@@ -276,7 +276,7 @@ describe('agent adaptor and decoder over Ably', () => {
     expect(events.some((e) => e.type === 'note')).toBe(false);
   });
 
-  it('writes a reply one event at a time, and a new writer carries on a message the first stopped part-way through', async () => {
+  it("writes a reply one event at a time, and a writer adopting the first one's handoff carries its message on, on the same serial", async () => {
     const name = uniqueChannelName();
     const clientChannel = pubsubClient().channels.get(name);
     const decoder = createDecoder(createTestCodec());
@@ -291,9 +291,10 @@ describe('agent adaptor and decoder over Ably', () => {
     first.write({ type: 'text-delta', id: 'm1', delta: ' is mild' });
     // Each flush resolves with the serial of the message the last event landed on.
     const opened = await first.flush();
-    const closed = await first.close();
+    const { serial: closedOn, handoff } = await first.close();
 
-    const second = adaptor.newWriter();
+    // The handoff is what a relay stores with its checkpoint.
+    const second = adaptor.adoptWriter(handoff);
     second.write({ type: 'text-delta', id: 'm1', delta: ' today' });
     second.write({ type: 'text-delta', id: 'm1', delta: '.' });
     const carried = await second.flush();
@@ -303,18 +304,16 @@ describe('agent adaptor and decoder over Ably', () => {
 
     // A subscriber decodes what one writer would have written.
     expect(recorder.events()).toEqual(textEvents('m1', 'The weather', ' is mild', ' today', '.'));
-    // The deltas the first writer wrote share the message the first opened,
-    // and the second writer's first delta opens a message of its own.
+    // Every delta, from either writer, lands on the message the first delta opened.
     expect(opened.serial).toBe(recorder.deliveries[1]?.message.serial);
-    expect(closed.serial).toBe(opened.serial);
-    expect(carried.serial).toBe(recorder.deliveries[3]?.message.serial);
-    expect(carried.serial).not.toBe(opened.serial);
+    expect(closedOn).toBe(opened.serial);
+    expect(carried.serial).toBe(opened.serial);
+    expect(recorder.deliveries[3]?.message.serial).toBe(opened.serial);
 
     const history = await drainHistory(pubsubClient().channels.get(name), createDecoder(createTestCodec()));
     expect(history.map((d) => d.event)).toEqual([
       { type: 'text-start', id: 'm1' },
-      { type: 'text-delta', id: 'm1', delta: 'The weather is mild' },
-      { type: 'text-delta', id: 'm1', delta: ' today.' },
+      { type: 'text-delta', id: 'm1', delta: 'The weather is mild today.' },
       { type: 'text-end', id: 'm1' },
     ]);
   });

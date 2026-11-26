@@ -184,7 +184,7 @@ describe('Vercel codec over Ably', () => {
     expect(recorder.deliveries[1]?.message.extras).not.toHaveProperty('ephemeral');
   });
 
-  it('writes a turn chunk by chunk through two writers, the second carrying on the text the first stopped in', async () => {
+  it('writes a turn chunk by chunk through two writers, the second adopting the text the first stopped in', async () => {
     const name = uniqueChannelName('vercel');
     const clientChannel = pubsubClient().channels.get(name);
     const decoder = vercelDecoder();
@@ -196,8 +196,8 @@ describe('Vercel codec over Ably', () => {
     const agent = adaptorOn(name);
     const first = agent.newWriter();
     for (const chunk of turn.slice(0, 9)) first.write(chunk);
-    await first.close();
-    const second = agent.newWriter();
+    const { handoff } = await first.close();
+    const second = agent.adoptWriter(handoff);
     for (const chunk of turn.slice(9)) second.write(chunk);
     await second.close();
     await recorder.waitFor(isFinish);
@@ -206,11 +206,13 @@ describe('Vercel codec over Ably', () => {
     const live = await foldWithProviderReducer(recorder.events().filter(isChunk));
     expect(live?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text).toBe('It is 21°C in London.');
 
-    // History holds the text as two messages, one per writer, and the AI
-    // SDK's reducer folds them into the same text.
+    // Both writers' text deltas land on one message, so history holds the
+    // text as one delta, and the AI SDK's reducer folds it into the same text.
+    const deltas = recorder.deliveries.filter((d) => d.event?.type === 'text-delta');
+    expect(new Set(deltas.map((d) => d.message.serial)).size).toBe(1);
     const history = await drainHistory(pubsubClient().channels.get(name), vercelDecoder());
     const chunks = history.map((d) => d.event).filter((e) => e !== undefined && isChunk(e));
-    expect(chunks.filter((c) => c.type === 'text-delta')).toStrictEqual([turn[8], turn[9]]);
+    expect(chunks.filter((c) => c.type === 'text-delta')).toHaveLength(1);
     const stored = await foldWithProviderReducer(chunks);
     expect(stored?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text).toBe('It is 21°C in London.');
   });

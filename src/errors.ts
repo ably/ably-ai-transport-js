@@ -5,8 +5,8 @@ import * as Ably from '@ably/pubsub-core';
  *
  * The `Session*` member names mirror the canonical identifiers in the
  * ably-common error registry (`session_send_failed`, …), so they are kept even
- * though this SDK has no session. Read `Session` as the adaptor, decoder or
- * `useChat` transport that raised it.
+ * though this SDK has no session. Read `Session` as the adaptor, decoder,
+ * `useChat` transport or AG-UI agent that raised it.
  */
 export enum ErrorCode {
   /**
@@ -53,11 +53,21 @@ export enum ErrorCode {
   /**
    * A publish through an agent adaptor's `send` was rejected. A capability rejection surfaces as
    * {@link ErrorCode.InsufficientCapability} instead. The underlying Ably
-   * failure is the `cause`. The useChat transport uses it too, when the POST
-   * of a turn fails or answers with a status outside 2xx. That error has no
-   * `cause`, and for an answer outside 2xx its `statusCode` is that status.
+   * failure is the `cause`. The useChat transport and the AG-UI agent use it
+   * too, when the POST of a turn or a run fails or answers with a status
+   * outside 2xx. That error has no `cause`, and for an answer outside 2xx its
+   * `statusCode` is that status.
    */
   SessionSendFailed = 104005,
+
+  /**
+   * The channel lost continuity while a run was read from a thread's AG-UI
+   * channel: once attached for the read, it became FAILED or SUSPENDED, or
+   * attached again without resuming, so the run may be missing events. The
+   * read ends with this, and the run fails with it. The state change's
+   * reason, when it has one, is the `cause`.
+   */
+  SessionContinuityNotGuaranteed = 104006,
 
   /**
    * A pipe rejected: the source stream threw (a provider rate limit, a model
@@ -73,7 +83,8 @@ export enum ErrorCode {
    * is still delivered with no event, and the decoder carries on. The thrown
    * value is the `cause`. The useChat transport ends a reply that is reading a
    * turn with this when a message arrives live during that turn and cannot be
-   * decoded. A message it reads from history that cannot be decoded is only
+   * decoded, and the AG-UI agent ends the run it reads the same way. A message
+   * the useChat transport reads from history that cannot be decoded is only
    * logged, and the reply goes on without it.
    */
   SessionMessageProcessingFailed = 104009,

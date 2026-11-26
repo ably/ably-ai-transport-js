@@ -33,17 +33,17 @@ Ably aims to support a wide range of platforms. If you experience any compatibil
 
 This SDK supports the following platforms:
 
-| Platform      | Support                                                                                   |
-| ------------- | ----------------------------------------------------------------------------------------- |
-| Node.js       | Version 22 or newer.                                                                      |
-| Browsers      | All major desktop and mobile browsers, including Chrome, Firefox, Edge, and Safari.       |
-| TypeScript    | Fully supported, the library is written in TypeScript and ships its own type definitions. |
-| Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                    |
-| OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                   |
-| AG-UI         | Version 1 events, through `@ably/ai-transport/ag-ui`.                                     |
-| Anthropic     | The Messages API, `@anthropic-ai/sdk` version 1, through `@ably/ai-transport/anthropic`.  |
+| Platform      | Support                                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Node.js       | Version 22 or newer.                                                                                                 |
+| Browsers      | All major desktop and mobile browsers, including Chrome, Firefox, Edge, and Safari.                                  |
+| TypeScript    | Fully supported, the library is written in TypeScript and ships its own type definitions.                            |
+| Vercel AI SDK | Versions 6 and 7, through `@ably/ai-transport/vercel`.                                                               |
+| OpenAI        | The Responses API, through `@ably/ai-transport/openai`.                                                              |
+| AG-UI         | Version 1 events, through `@ably/ai-transport/ag-ui`, and an AG-UI agent, through `@ably/ai-transport/ag-ui/client`. |
+| Anthropic     | The Messages API, `@anthropic-ai/sdk` version 1, through `@ably/ai-transport/anthropic`.                             |
 
-The Ably Pub/Sub SDK version 3 is required in every case: `@ably/pubsub-server` or `@ably/pubsub-device` to build the client. `ai`, `openai`, `@anthropic-ai/sdk` and `@ag-ui/core` are optional peer dependencies, each needed only by the entry point that uses it.
+The Ably Pub/Sub SDK version 3 is required in every case: `@ably/pubsub-server` or `@ably/pubsub-device` to build the client. `ai`, `openai`, `@anthropic-ai/sdk`, `@ag-ui/core`, `@ag-ui/client` and `rxjs` are optional peer dependencies, each needed only by the entry point that uses it.
 
 ---
 
@@ -251,6 +251,29 @@ The codec does not support `MESSAGES_SNAPSHOT`, and some events change on the wi
 - Every other event travels whole, `RUN_STARTED` with its `input` as your agent emits it. The codec does not check sizes, so a large `RUN_STARTED`, `STATE_SNAPSHOT`, `ACTIVITY_SNAPSHOT`, `TOOL_CALL_RESULT` or `RUN_FINISHED` fails its publish, and `pipe` rejects.
 
 AG-UI's reducer rejects a stream that does not start with `RUN_STARTED`, and its state deltas patch the state the client already holds. So a client must join at a run boundary, with its messages and state loaded from your store. Your agent should pipe one run at a time to a channel.
+
+### AG-UI agent
+
+`@ably/ai-transport/ag-ui/client` ships `createAblyAgent`, an AG-UI `HttpAgent` whose runs arrive over the thread's Ably channel. `runAgent()` posts the run's `RunAgentInput` to your backend as `HttpAgent` does, and reads the run's events from the channel rather than from the response. AG-UI's own reducer builds the agent's messages, so the agent works wherever an `HttpAgent` does. The [AG-UI guide](https://ably.com/docs/ai-transport/frameworks/ag-ui) shows how to restore a thread, stop your agent and join a run in progress.
+
+```typescript
+import { createAblyAgent } from '@ably/ai-transport/ag-ui/client';
+import { createClient } from '@ably/pubsub-device';
+
+const client = createClient({ authUrl: '/api/ably-token' });
+const agent = createAblyAgent({
+  url: '/api/agent',
+  threadId,
+  // The thread's channel, the one your backend pipes the thread's runs onto.
+  channel: client.channels.get(`ai:${threadId}`),
+});
+```
+
+The agent reads every run from the channel it's created with, so create an agent for each thread. Each run attaches the thread's channel if it isn't attached yet, and leaves it attached when the run ends. Detach it yourself when you're done with the thread, for example when the tab stops showing it.
+
+Your backend pipes each run's AG-UI events onto the thread's channel with `agUiAdaptor`. Nothing on the wire beyond AG-UI's events says which run an event belongs to, so the backend publishes a thread's runs one at a time, publishes `RUN_STARTED` with the input's `runId`, ends every run with `RUN_FINISHED` or `RUN_ERROR`, and refuses an input it can't run with a status outside 2xx. It can answer the POST at once and run the agent past the response, so a run goes on when the tab that sent it reloads.
+
+`abortRun()` aborts the run's request, as `HttpAgent`'s does, and ends the run in this tab with `RUN_ERROR` and the code `abort`. An agent that runs past the request goes on, and other tabs read on to the run's end. `connectAgent()` reads nothing, as `HttpAgent`'s does. Pass `logger` to see what the agent logs, such as a run whose request failed.
 
 ### Anthropic
 

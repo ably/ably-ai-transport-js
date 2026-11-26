@@ -7,24 +7,29 @@ directory (`src/vercel/`, `src/openai/`, …): its row table under a `codec/`
 subdirectory, and beside it the adaptor and decoder factories that wrap that
 codec. A provider directory may depend on the generic layer and on its own
 provider SDK, never on another provider. It may also hold an adapter to its
-provider's own client framework, in a subdirectory of its own
-(`src/vercel/chat-transport/`, the `useChat` transport, is the instance). The
-SDK's own identity, the errors,
+provider's own client framework, in a subdirectory of its own: the `useChat`
+transport in `src/vercel/chat-transport/`, and the AG-UI agent in
+`src/ag-ui/client/`. The SDK's own identity, the errors,
 the logger and the event emitter sit at the top of `src/` and `src/core/`.
 Tests mirror `src/` under `test/`.
 
-The package ships five entry points, each with its own `index.ts` (see the
+The package ships six entry points, each with its own `index.ts` (see the
 table). That `index.ts` is the authoritative list of what is public: only
 types and functions it re-exports are public API. A new codec adds a new entry
-point rather than changing an existing one.
+point rather than changing an existing one. An adapter that loads its
+framework's code at runtime gets an entry point of its own as well, so the
+codec's entry point, which backends load, never loads the framework: the
+AG-UI agent extends `@ag-ui/client`'s `HttpAgent`, a class, while the AG-UI
+codec needs only `@ag-ui/core`'s types.
 
-| Entry point                    | Purpose                                                                                                         | Peer deps                             |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `@ably/ai-transport`           | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder                                | a Pub/Sub client                      |
-| `@ably/ai-transport/vercel`    | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s, and a `useChat` transport over the decoder | a Pub/Sub client, `ai`                |
-| `@ably/ai-transport/openai`    | An adaptor and a decoder over OpenAI Responses stream events                                                    | a Pub/Sub client, `openai`            |
-| `@ably/ai-transport/ag-ui`     | An adaptor and a decoder over AG-UI events                                                                      | a Pub/Sub client, `@ag-ui/core`       |
-| `@ably/ai-transport/anthropic` | An adaptor and a decoder over Anthropic Messages stream events                                                  | a Pub/Sub client, `@anthropic-ai/sdk` |
+| Entry point                       | Purpose                                                                                                         | Peer deps                                 |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `@ably/ai-transport`              | The agent adaptor, the decoder, the codec contract and the `defineCodec` builder                                | a Pub/Sub client                          |
+| `@ably/ai-transport/vercel`       | An adaptor and a decoder over the Vercel AI SDK's `UIMessageChunk`s, and a `useChat` transport over the decoder | a Pub/Sub client, `ai`                    |
+| `@ably/ai-transport/openai`       | An adaptor and a decoder over OpenAI Responses stream events                                                    | a Pub/Sub client, `openai`                |
+| `@ably/ai-transport/ag-ui`        | An adaptor and a decoder over AG-UI events                                                                      | a Pub/Sub client, `@ag-ui/core`           |
+| `@ably/ai-transport/ag-ui/client` | An AG-UI agent, an `HttpAgent` that reads its runs from the thread's channel                                    | a Pub/Sub client, `@ag-ui/client`, `rxjs` |
+| `@ably/ai-transport/anthropic`    | An adaptor and a decoder over Anthropic Messages stream events                                                  | a Pub/Sub client, `@anthropic-ai/sdk`     |
 
 Each row's Purpose is a summary, not a symbol list. The entry point's own
 `index.ts` is the authoritative list.
@@ -65,13 +70,17 @@ The application owns the channel. It gets an `Ably.RealtimeChannel` from
 its Pub/Sub client, hands it to an adaptor on the agent side, and on the client side
 subscribes to it with `channel.subscribe(decoder.receive)` and pages its
 history through `decoder.decode`. No part of the SDK resolves a channel or
-holds a client. The one part that attaches and detaches a channel is the
-`useChat` transport, which the application hands its channel: `ChatTransport`
-asks it at any moment which turn is running, so it reads history back to the
-latest turn from where the channel attached, and keeps reading live. It
-attaches the channel when nothing has, and `close()` detaches only a channel
-its own read attached, so the next reader attaches it again and reads history
-from there. A channel the application attached stays attached.
+holds a client. The parts that attach a channel are the client adapters,
+which the application hands its channel. The `useChat` transport's
+`ChatTransport` asks it at any moment which turn is running, so it reads
+history back to the latest turn from where the channel attached, and keeps
+reading live. It attaches the channel when nothing has, and `close()`
+detaches only a channel its own read attached, so the next reader attaches
+it again and reads history from there. The AG-UI agent attaches the channel
+for a run if it isn't attached, and leaves it attached when the run ends:
+AG-UI's agents have no `close()`, so the application detaches the channel
+when it is done with the thread. A channel the application attached stays
+attached.
 
 Codec, adaptor and decoder are distinct. The **codec** owns the wire format:
 which Ably message an event becomes, whether that message is a publish, an
@@ -169,9 +178,13 @@ The adaptor and the decoder are assembled from parts, not class
 hierarchies. An adaptor composes a pipe writer per pipe call (the key table,
 the append chain and the repair) and the pipe driver that reads a source
 through the codec into that writer. A decoder composes the decoder core, the
-codec and one event emitter for deliveries and errors. There is no base class
-anywhere. Each part is constructed and injected, and each layer wires the
-layer below it.
+codec and one event emitter for deliveries and errors. No class extends one of
+the SDK's own. A class extends a dependency's class only where that
+dependency's API is the class: the event emitter extends Pub/Sub's, and the
+AG-UI agent extends AG-UI's `HttpAgent`, since AG-UI's agents are subclasses
+of its `AbstractAgent`, so it works wherever an `HttpAgent` does and replaces
+only where a run's events come from. Each part is constructed and injected,
+and each layer wires the layer below it.
 
 The split follows what a part's state is scoped to. State scoped to one pipe
 (the live keys, the pending appends) lives in that pipe's writer, so an
@@ -191,7 +204,8 @@ until the previous reader on its channel has detached it, even one another
 chat transport opened, and nothing else connects the two.
 Platform globals the runtime provides, such as `fetch` and timers, are called
 directly rather than injected, and a test replaces them with `vi.stubGlobal`
-or fake timers.
+or fake timers. The AG-UI agent posts through `HttpAgent`'s own `fetch`
+option instead, as `HttpAgent` does.
 
 ## Class pattern
 
@@ -204,6 +218,11 @@ The shape a component takes is a choice with a reason, not a single mandate:
 - **Plain internal class or factory-composed object literal** where the
   component is only ever composed by a factory in the same layer. Nothing
   outside names the type, so an interface would be ceremony.
+- **Internal subclass of a framework's class** where the framework's API is
+  a class the framework's own code takes, as AG-UI's agents are: the factory
+  returns the framework's type, and the class stays internal. Fields the
+  framework's own copy of an instance skips, as AG-UI's `clone()` skips the
+  constructor, are set again where it copies, so they cannot be `readonly`.
 
 ### Private state
 
@@ -255,9 +274,12 @@ wire up the internal classes. Consumers never call `new Default*` directly.
    departures from one-to-one.
 4. **Constructor/option injection.** No singletons or service locators; the
    one module-level registry, and why it exists, is under Dependency injection.
-5. **Composition, not inheritance.** Compose features; no class hierarchies.
+5. **Composition, not inheritance.** Compose features. No class extends one
+   of the SDK's own, and a class extends a dependency's only where that
+   dependency's API is the class.
 6. **Interface-first.** Public contracts are interfaces; implementations are
-   internal `Default*` classes, exposed via factory functions.
+   internal `Default*` classes, exposed via factory functions. A subclass of
+   a framework's class is exposed as the framework's type.
 7. **The adaptor owns two wire fields, and the codec three, all under
    `extras.ai`, plus the message name.** A row speaks in `data`, `fields` and `headers`: a plain
    publish carries the event in `data`, and a message that is appended to
@@ -298,18 +320,21 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     configures a channel and never holds a client. An adaptor takes a channel
     to write to and a decoder takes messages, so the application chooses the
     channel's options and lifecycle with its Pub/Sub client and can use the
-    same channel for its own messages. The `useChat` transport is the one part
-    that attaches and detaches the channel it is handed, and why is under
-    Two-layer architecture. Nothing writes Ably-Agent attribution, since that
-    needs the client.
+    same channel for its own messages. The client adapters, the `useChat`
+    transport and the AG-UI agent, are the parts that attach the channel
+    they are handed, and only the `useChat` transport detaches it, on
+    `close()`; why is under Two-layer architecture. Nothing writes
+    Ably-Agent attribution, since that needs the client.
 11. **No message assembly anywhere in the package.** No reducer, no merge
     driver and no projection type. A delivery carries one event, and the
     application groups deliveries by `message.serial`, by the ids the
     provider's own events carry, or by a header the publishing call
     attached, then folds them with the provider's reducer.
-    `demo/minimal/src/app/chat.tsx` is the worked example. The one place the
-    package groups deliveries is the `useChat` transport, because
-    `ChatTransport` hands `useChat` one stream per turn: it cuts the
-    deliveries at each turn's `start` and terminal chunk, and keeps the
-    latest turn's chunks so a later `reconnectToStream` can replay them. It
-    still builds no messages; `useChat`'s own reducer does.
+    `demo/minimal/src/app/chat.tsx` is the worked example. The places the
+    package groups deliveries are the client adapters, because each framework
+    reads one reply at a time. `ChatTransport` hands `useChat` one stream per
+    turn: it cuts the deliveries at each turn's `start` and terminal chunk,
+    and keeps the latest turn's chunks so a later `reconnectToStream` can
+    replay them. The AG-UI agent hands AG-UI one run per `runAgent()`, from
+    the `RUN_STARTED` that carries the input's `runId` to the run's end.
+    Neither builds messages; the framework's own reducer does.

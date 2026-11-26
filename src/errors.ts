@@ -60,6 +60,15 @@ export enum ErrorCode {
   SessionSendFailed = 104005,
 
   /**
+   * The channel lost continuity while a run was read from a thread's AG-UI
+   * channel: once attached for the read, it became FAILED or SUSPENDED, or
+   * attached again without resuming, so the run may be missing events. The
+   * read ends with this, and the run fails with it. The state change's
+   * reason, when it has one, is the `cause`.
+   */
+  SessionContinuityNotGuaranteed = 104006,
+
+  /**
    * A pipe rejected: the source stream threw (a provider rate limit, a model
    * error, a network failure), the codec could not encode an event, a publish
    * or update failed mid-stream, or the repair of a stream whose append failed

@@ -6,19 +6,10 @@ import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { TurnReader } from '../../../src/vercel/chat-transport/turn-reader.js';
 import { TurnStream } from '../../../src/vercel/chat-transport/turn-stream.js';
-import { silentLogger } from '../../helper/logger.js';
+import { recordingLogger, silentLogger } from '../../helper/logger.js';
+import { type ChannelFixture, channelWith, gate, paginated } from '../../helper/read-channel.js';
 import { drain, nextMacrotask } from '../../helper/streams.js';
-import {
-  type ChannelFixture,
-  channelWith,
-  failedToStart,
-  failedTurn,
-  gate,
-  paginated,
-  textTurn,
-  wireAcross,
-  wireOf,
-} from './fixtures.js';
+import { failedToStart, failedTurn, textTurn, wireAcross, wireOf } from './fixtures.js';
 
 /**
  * A reader on the fixture's channel, as the chat transport opens one.
@@ -27,22 +18,6 @@ import {
  */
 const readerOn = (fixture: ChannelFixture): TurnReader =>
   new TurnReader({ channel: fixture.channel, logger: silentLogger });
-
-/**
- * A logger that records the messages it is asked to log at warn level and
- * above.
- * @returns The logger and the messages it recorded.
- */
-const warningLogger = (): { logger: ReturnType<typeof makeLogger>; warnings: string[] } => {
-  const warnings: string[] = [];
-  const logger = makeLogger({
-    logLevel: LogLevel.Warn,
-    logHandler: (message: string) => {
-      warnings.push(message);
-    },
-  });
-  return { logger, warnings };
-};
 
 /**
  * A reader that read the channel and is closing, its detach held until the
@@ -281,7 +256,7 @@ describe('TurnReader', () => {
     });
 
     it('warns of a chunk written outside any turn, but not of what the AI SDK writes after an error', async () => {
-      const { logger, warnings } = warningLogger();
+      const { logger, messages: warnings } = recordingLogger(LogLevel.Warn);
       const fixture = channelWith();
       const reader = new TurnReader({ channel: fixture.channel, logger });
       await reader.ready;
@@ -619,7 +594,7 @@ describe('TurnReader', () => {
     });
 
     it('warns when the channel was attached before the reader subscribed, and only then', async () => {
-      const { logger, warnings } = warningLogger();
+      const { logger, messages: warnings } = recordingLogger(LogLevel.Warn);
       const attached = channelWith();
       attached.channel.state = 'attached';
       await new TurnReader({ channel: attached.channel, logger }).ready;

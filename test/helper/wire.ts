@@ -9,7 +9,7 @@ import type * as Ably from '@ably/pubsub-core';
 
 import type { Codec, EncodedMessage } from '../../src/core/codec/index.js';
 import { createDecoder } from '../../src/core/decoder/index.js';
-import { ENDS_FIELD, STREAM_FIELD, withOwnField } from '../../src/core/wire.js';
+import { ENDS_FIELD, readOwnExtras, STREAM_FIELD, withOwnField } from '../../src/core/wire.js';
 
 /**
  * Encode every event to the messages it produces.
@@ -111,3 +111,66 @@ export const decodeAll = <E>(codec: Codec<E>, messages: Ably.InboundMessage[]): 
  */
 export const roundTrip = <E>(codec: Codec<E>, events: E[]): E[] =>
   decodeAll(codec, deliveriesOf(encodeAll(codec, events)));
+
+/**
+ * The fixture wire names serials `s1`, `s2`… and version serials `s1:v1`,
+ * `s1:v2`…; Ably's serials sort in publish order, so pad each number to a
+ * fixed width to sort these the same way.
+ * @param serial - A fixture serial or version serial.
+ * @returns The same serial, padded.
+ */
+const sortable = (serial: string): string => serial.replaceAll(/\d+/g, (n) => n.padStart(4, '0'));
+
+/**
+ * A fixture message with every serial it carries made sortable: its own, its
+ * version's, and the one a closer names under `extras.ai.ends`.
+ * @param message - The fixture message.
+ * @returns The message with sortable serials.
+ */
+const withSortableSerials = (message: Ably.InboundMessage): Ably.InboundMessage => {
+  const ends = readOwnExtras(message.extras)?.[ENDS_FIELD];
+  const stamped: Ably.Message = typeof ends === 'string' ? withOwnField(message, ENDS_FIELD, sortable(ends)) : message;
+  // CAST: the stamped copy keeps every field of the inbound message it was made from.
+  return {
+    ...stamped,
+    serial: sortable(message.serial ?? ''),
+    version: { ...message.version, serial: sortable(message.version.serial ?? '') },
+  } as Ably.InboundMessage;
+};
+
+/** Events on a channel: what history stores and what a live subscriber receives. */
+export interface ChannelWire {
+  /** What history holds for the events, oldest first: one stored message per serial, appends joined. */
+  stored: Ably.InboundMessage[];
+  /** What a live subscriber receives for the events, in order: a create per message, then its appends. */
+  live: Ably.InboundMessage[];
+}
+
+/**
+ * The wire for events written with `pipe` or `send` through a codec, with
+ * serials that sort in publish order.
+ * @param codec - The codec.
+ * @param events - The events, in order.
+ * @returns What history stores and what live delivery carries.
+ */
+export const channelWireOf = <E>(codec: Codec<E>, events: E[]): ChannelWire => {
+  const encoded = encodeAll(codec, events);
+  return {
+    stored: historyOf(encoded).map((message) => withSortableSerials(message)),
+    live: deliveriesOf(encoded).map((message) => withSortableSerials(message)),
+  };
+};
+
+/**
+ * The wire for events written before and after a subscriber attached: what
+ * history holds for those before, and what live delivery carries for those
+ * after, numbered as one run of writes.
+ * @param codec - The codec.
+ * @param before - The events already on the channel.
+ * @param after - The events written once the subscriber is live.
+ * @returns History for `before`, live delivery for `after`.
+ */
+export const channelWireAcross = <E>(codec: Codec<E>, before: E[], after: E[]): ChannelWire => {
+  const earlier = channelWireOf(codec, before);
+  return { stored: earlier.stored, live: channelWireOf(codec, [...before, ...after]).live.slice(earlier.live.length) };
+};

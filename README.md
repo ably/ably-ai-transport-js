@@ -175,6 +175,22 @@ Once the writer has stopped, the events queued behind the failed write are not w
 
 To carry on in another process, such as after a restart, store the handoff with the progress you record, and give the later events to a writer that `adaptor.adoptWriter(handoff)` gives out. The handoff is plain JSON. The new writer carries each open stream on in the same message: a later delta appends to it and the stream's end event ends it, so a client decodes the same events, on the same serial, as if one writer had written them all, and history holds the stream as one message. The first write to an adopted stream reads its message back with the channel's `getMessage`, so a failed append can be repaired. Close the first writer and wait for the close before writing through the new one, or the two write to the same messages. A new writer given the later events without the handoff opens new messages for them, and every client keeps its record of the first message open for as long as it runs. Keep one writer for a run of events and flush it where you record progress, rather than opening a writer per event: a writer joins a stream's events only while it is open. A stream stays open in its writer until its end event is written, so close the writer when a stream is cut off before its end, or a later stream that reuses its id would append to the same message.
 
+#### Relaying a Temporal Workflow Stream
+
+A Temporal workflow cannot publish to Ably itself, since workflow code must be deterministic. It can publish to a [Workflow Stream](https://github.com/temporalio/sdk-typescript/tree/main/contrib/workflow-streams) instead, and let the relay in `@ably/pubsub-server/temporal` put the stream's events on the channel. `createRelayAdaptor(codec)` gives the relay an adaptor that writes a codec's events. Register it with the relay's worker plugin, and name it in the routes whose topics carry those events:
+
+```typescript
+import { AblyRelayPlugin } from '@ably/pubsub-server/temporal';
+import { createRelayAdaptor } from '@ably/ai-transport';
+
+new AblyRelayPlugin({ pool, adaptors: { agent: createRelayAdaptor(codec) } });
+
+// In the agent workflow:
+// startAblyRelay(stream, { routes: [{ topics: ['agent'], adaptor: 'agent', channel: `chat:${chatId}` }] });
+```
+
+Each relay activity writes through an event writer, and the relay stores the writer's handoff with its checkpoint, so a response that a checkpoint or a retry cuts carries on in the same message, and a client decodes it as one writer's. A retried activity writes the events since its last checkpoint again, so a client can decode some events twice. An event of a type the codec has no row for, such as one from a producer newer than the codec, is reported to the relay as unsupported, which asks the relay to skip it, log it and count it; any other event the codec cannot write fails the route rather than being retried.
+
 ### Client
 
 The client subscribes to the channel through the Ably Pub/Sub SDK and passes every message to a decoder. The decoder gives each message back as deliveries holding the decoded event, and the application merges the events into whatever it renders from.

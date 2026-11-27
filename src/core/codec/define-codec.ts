@@ -59,6 +59,31 @@ import type { Codec, EncodedMessage } from './codec.js';
 /** The suffix that makes a row key match every type sharing its prefix (`data-*` matches `data-weather`). */
 const WILDCARD_SUFFIX = '-*';
 
+/** The `detail.reason` of the error a codec throws for an event of a type it has no row for. */
+const NO_ROW_REASON = 'noRow';
+
+/**
+ * The error for an event of a type the codec has no row for, such as one a
+ * producer newer than the codec sends. Its `detail` marks it, so a caller
+ * that can skip one such event, as a relay can, tells it from an event that
+ * is malformed.
+ * @param type - The event's type.
+ * @returns The error.
+ */
+export const noRowError = (type: string): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(`unable to encode event; no row for type '${type}'`, ErrorCode.InvalidArgument, 400, undefined, {
+    reason: NO_ROW_REASON,
+    type,
+  });
+
+/**
+ * Whether an error is the one {@link noRowError} makes.
+ * @param error - The error.
+ * @returns Whether it is.
+ */
+export const isNoRowError = (error: unknown): error is Ably.ErrorInfo =>
+  error instanceof Ably.ErrorInfo && error.detail?.reason === NO_ROW_REASON;
+
 /**
  * The event types a row key selects. A wildcard key `p-*` selects the
  * template `p-${string}`; any other key selects itself.
@@ -316,7 +341,7 @@ export const defineCodec = <E, K extends string>(config: DefineCodecConfig<E, K>
       const type = config.typeOf(event);
       const row = findRow(type);
       if (row === undefined) {
-        throw new Ably.ErrorInfo(`unable to encode event; no row for type '${type}'`, ErrorCode.InvalidArgument, 400);
+        throw noRowError(type);
       }
       // CAST: `findRow` selected the row by this event's type, so the event is
       // the member the row's `encode` is typed to receive.

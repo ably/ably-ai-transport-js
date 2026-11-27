@@ -1,6 +1,7 @@
 import * as Ably from '@ably/pubsub-core';
 import { beforeEach, describe, expect, expectTypeOf, it } from 'vitest';
 
+import { isNoRowError } from '../../../src/core/codec/define-codec.js';
 import type {
   Codec,
   DecodedRow,
@@ -266,13 +267,23 @@ describe('defineCodec', () => {
       });
     });
 
-    it('throws for an event type with no row', () => {
+    it('throws for an event type with no row, marked so a caller can tell it from a malformed event', () => {
       // CAST: force a type the table does not list past the compile-time check.
       const rogue = { type: 'rogue' } as unknown as TestEvent;
       expect(() => testCodec.encode(rogue)).toThrowErrorInfo({
         code: ErrorCode.InvalidArgument,
         message: "unable to encode event; no row for type 'rogue'",
       });
+      let thrown: unknown;
+      try {
+        testCodec.encode(rogue);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(isNoRowError(thrown)).toBe(true);
+      expect(isNoRowError(new Ably.ErrorInfo('unable to encode event; bad', ErrorCode.InvalidArgument, 400))).toBe(
+        false,
+      );
     });
 
     it('throws when a row sets more than one destination', () => {

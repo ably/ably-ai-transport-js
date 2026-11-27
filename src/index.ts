@@ -11,13 +11,18 @@ export type {
   PipeSource,
   // eslint-disable-next-line @typescript-eslint/no-deprecated -- Published stays exported as a deprecated alias of WrittenEvent, so code that names it still compiles
   Published,
+  RelayAdaptor,
+  RelayAdaptorFactory,
+  RelayAdaptorResult,
+  RelayEvent,
+  RelayJsonValue,
   SendOptions,
   SendResult,
   WriterHandoff,
   WriterOptions,
   WrittenEvent,
 } from './core/adaptor/index.js';
-export { createAgentAdaptor } from './core/adaptor/index.js';
+export { createAgentAdaptor, createRelayAdaptor } from './core/adaptor/index.js';
 
 // Codec contract and builder
 export type {

@@ -178,6 +178,20 @@ error through rather than wrapping it, so nothing has to tell the channel's
 errors from the writer's own, which codes cannot do. See the module doc
 comment on `src/core/adaptor/agent-adaptor.ts` for the current contract.
 
+`createRelayAdaptor(codec)` returns the adaptor factory the Pub/Sub SDK's Temporal Workflow Streams relay
+(`@ably/pubsub-server/temporal`) calls once per activity attempt. It is an
+event writer in the relay's shape, nothing more: a `null` handoff opens a
+writer and any other adopts it, `flush` and `close` hand the writer's handoff
+back as the relay's JSON (`null` when no stream is open), and `abort` is the
+writer's. The relay's types are declared structurally in
+`src/core/adaptor/relay-adaptor.ts` rather than imported, so the package takes
+no Temporal dependency; a factory stays assignable to the relay's
+`RelayAdaptorFactory`, which the relay's own `RelayEvent` fields keep true.
+An event of a type the codec has no row for (`noRowError` in
+`src/core/codec/define-codec.ts` marks the error) is thrown to the relay as
+one it skips, since the relay's own taxonomy cannot otherwise tell a producer
+newer than the codec from a malformed event.
+
 `createDecoder(codec)`, or a provider's `vercelDecoder()` and its siblings,
 returns a decoder. `receive` is a bound arrow property for
 `channel.subscribe(decoder.receive)`, and emits each delivery to the `onEvent`

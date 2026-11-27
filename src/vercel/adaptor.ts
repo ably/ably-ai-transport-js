@@ -1,11 +1,7 @@
 import type * as AI from 'ai';
 
-import {
-  type AgentAdaptor,
-  type AgentAdaptorOptions,
-  type ChannelWriter,
-  createAgentAdaptor,
-} from '../core/adaptor/index.js';
+import { createProviderAdaptor } from '../core/adaptor/agent-adaptor.js';
+import { type AgentAdaptor, type AgentAdaptorOptions, type ChannelWriter } from '../core/adaptor/index.js';
 import type { VercelEvent } from './codec/events.js';
 import { createVercelCodec } from './codec/index.js';
 
@@ -29,4 +25,4 @@ export const vercelAdaptor = <
   channel: ChannelWriter,
   options?: AgentAdaptorOptions,
 ): AgentAdaptor<VercelEvent<TMetadata, TDataParts, TTools>> =>
-  createAgentAdaptor(channel, createVercelCodec<TMetadata, TDataParts, TTools>(), options);
+  createProviderAdaptor(channel, createVercelCodec<TMetadata, TDataParts, TTools>(), 'ai-transport-vercel', options);

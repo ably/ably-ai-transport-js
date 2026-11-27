@@ -1,11 +1,7 @@
 import type * as AGUI from '@ag-ui/core';
 
-import {
-  type AgentAdaptor,
-  type AgentAdaptorOptions,
-  type ChannelWriter,
-  createAgentAdaptor,
-} from '../core/adaptor/index.js';
+import { createProviderAdaptor } from '../core/adaptor/agent-adaptor.js';
+import { type AgentAdaptor, type AgentAdaptorOptions, type ChannelWriter } from '../core/adaptor/index.js';
 import { agui } from './codec/index.js';
 
 /**
@@ -16,4 +12,4 @@ import { agui } from './codec/index.js';
  * @throws {Ably.ErrorInfo} `InvalidArgument` when a default header value is not a string, number, boolean or null.
  */
 export const agUiAdaptor = (channel: ChannelWriter, options?: AgentAdaptorOptions): AgentAdaptor<AGUI.Event> =>
-  createAgentAdaptor(channel, agui, options);
+  createProviderAdaptor(channel, agui, 'ai-transport-ag-ui', options);

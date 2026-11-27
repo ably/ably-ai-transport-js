@@ -152,7 +152,26 @@ const toRelayResult = (result: EventWriterResult): RelayAdaptorResult => {
  * @returns The factory.
  * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null.
  */
-export const createRelayAdaptor = <E>(codec: Codec<E>, options: AgentAdaptorOptions = {}): RelayAdaptorFactory<E> => {
+export const createRelayAdaptor = <E>(codec: Codec<E>, options: AgentAdaptorOptions = {}): RelayAdaptorFactory<E> =>
+  createMappedRelayAdaptor(codec, options, (data: E) => data);
+
+/**
+ * Create a relay adaptor factory that turns each event's `data` into the
+ * codec's event before writing it, for a producer whose Workflow Stream
+ * carries something other than the codec's events.
+ * @template D - What the relay's events carry as `data`.
+ * @template E - The codec's event union.
+ * @param codec - The codec that turns events into Ably messages.
+ * @param options - As for {@link createRelayAdaptor}.
+ * @param toEvent - Turns an event's `data` into the codec's event, or into `undefined` for one with nothing to write, which the adaptor skips. Whatever it throws, `write` throws, and an error from the codec's `noRowError` as the relay's unsupported event.
+ * @returns The factory.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when a header value is not a string, number, boolean or null.
+ */
+export const createMappedRelayAdaptor = <D, E>(
+  codec: Codec<E>,
+  options: AgentAdaptorOptions,
+  toEvent: (data: D) => E | undefined,
+): RelayAdaptorFactory<D> => {
   // Checked here, so a bad header fails when the worker registers the factory
   // rather than on the route's first attempt.
   prepareHeaders(options.headers, 'create relay adaptor');
@@ -168,9 +187,14 @@ export const createRelayAdaptor = <E>(codec: Codec<E>, options: AgentAdaptorOpti
     // narrows to a WriterHandoff; adoptWriter checks its shape before use.
     const writer = handoff === null ? adaptor.newWriter() : adaptor.adoptWriter(handoff as unknown as WriterHandoff);
     return {
-      write: ({ data }) => {
+      write: ({ topic, offset, data }) => {
         try {
-          writer.write(data);
+          const event = toEvent(data);
+          if (event === undefined) {
+            logger.debug('RelayAdaptor.write(); nothing to write for the event', { topic, offset });
+            return;
+          }
+          writer.write(event);
         } catch (error) {
           throw isNoRowError(error) ? unsupportedEvent(error) : error;
         }

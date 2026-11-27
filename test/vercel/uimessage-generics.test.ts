@@ -13,7 +13,13 @@ import type * as AI from 'ai';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { createVercelCodec } from '../../src/vercel/codec/index.js';
-import { type AblyChatTransport, vercelAdaptor, vercelDecoder, type VercelEvent } from '../../src/vercel/index.js';
+import {
+  type AblyChatTransport,
+  vercelAdaptor,
+  vercelDecoder,
+  type VercelEvent,
+  vercelTemporalRelayAdaptor,
+} from '../../src/vercel/index.js';
 import { createMockChannel } from '../helper/mock-channel.js';
 
 interface MyMetadata {
@@ -45,6 +51,14 @@ describe('Vercel UIMessage generic threading', () => {
   it('types the events the adaptor publishes with the consumer’s message type', () => {
     const adaptor = vercelAdaptor<MyMetadata, MyDataParts, MyTools>(createMockChannel());
     type Input = Parameters<typeof adaptor.send>[0];
+    expectTypeOf<Extract<Input, { type: 'user-message' }>['message']>().toEqualTypeOf<MyMessage>();
+    expect(adaptor).toBeDefined();
+  });
+
+  it('types the events the Temporal relay adaptor writes with the consumer’s message type', () => {
+    // eslint-disable-next-line unicorn/no-null -- the relay passes null when a route starts
+    const adaptor = vercelTemporalRelayAdaptor<MyMetadata, MyDataParts, MyTools>()(createMockChannel(), null);
+    type Input = Parameters<typeof adaptor.write>[0]['data'];
     expectTypeOf<Extract<Input, { type: 'user-message' }>['message']>().toEqualTypeOf<MyMessage>();
     expect(adaptor).toBeDefined();
   });

@@ -8,7 +8,9 @@ subdirectory, and beside it the adaptor and decoder factories that wrap that
 codec. A provider directory may depend on the generic layer and on its own
 provider SDK, never on another provider. It may also hold an adapter to its
 provider's own client framework, in a subdirectory of its own
-(`src/vercel/chat-transport/`, the `useChat` transport, is the instance). The
+(`src/vercel/chat-transport/`, the `useChat` transport, is the instance), or
+an adapter to a server framework built on its provider
+(`src/vercel/temporal/`, for Temporal's AI SDK plugin). The
 SDK's own identity, the errors,
 the logger and the event emitter sit at the top of `src/` and `src/core/`.
 Tests mirror `src/` under `test/`.
@@ -191,6 +193,15 @@ An event of a type the codec has no row for (`noRowError` in
 `src/core/codec/define-codec.ts` marks the error) is thrown to the relay as
 one it skips, since the relay's own taxonomy cannot otherwise tell a producer
 newer than the codec from a malformed event.
+A producer whose Workflow Stream carries something other than a codec's
+events maps each event's data first (`createMappedRelayAdaptor`), part by
+part with no state, so nothing about the mapping needs to cross a
+checkpoint. `vercelTemporalRelayAdaptor()` is the instance: Temporal's AI SDK
+plugin publishes the model's stream parts as bytes, which it turns into the
+`UIMessageChunk`s `toUIMessageStream` would give, and the workflow publishes
+the chunks that frame the reply as objects on the same route, so one writer
+keeps them in order (`src/vercel/temporal/`). The wire stays the Vercel
+codec's, so a client reads it as it reads `vercelAdaptor()`.
 
 `createDecoder(codec)`, or a provider's `vercelDecoder()` and its siblings,
 returns a decoder. `receive` is a bound arrow property for

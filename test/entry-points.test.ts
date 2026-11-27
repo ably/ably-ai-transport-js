@@ -91,7 +91,7 @@ import type {
   VercelEvent,
   VercelUserMessage,
 } from '../src/vercel/index.js';
-import { createChatTransport, vercelAdaptor, vercelDecoder } from '../src/vercel/index.js';
+import { createChatTransport, vercelAdaptor, vercelDecoder, vercelTemporalRelayAdaptor } from '../src/vercel/index.js';
 import { createMockChannel } from './helper/mock-channel.js';
 import { createTestCodec, type TestEvent } from './helper/test-codec.js';
 
@@ -192,6 +192,12 @@ describe('@ably/ai-transport/vercel', () => {
     expect(typeof adaptor.pipeEach).toBe('function');
     expect(typeof adaptor.newWriter).toBe('function');
     expect(typeof adaptor.adoptWriter).toBe('function');
+  });
+
+  it("exports the relay adaptor factory for Temporal's AI SDK plugin", () => {
+    expectTypeOf(vercelTemporalRelayAdaptor).returns.toEqualTypeOf<RelayAdaptorFactory<VercelEvent | Uint8Array>>();
+    // eslint-disable-next-line unicorn/no-null -- the relay passes null when a route starts
+    expect(typeof vercelTemporalRelayAdaptor()(createMockChannel(), null).write).toBe('function');
   });
 
   it('exports a decoder factory', () => {

@@ -191,6 +191,27 @@ new AblyRelayPlugin({ pool, adaptors: { agent: createRelayAdaptor(codec) } });
 
 Each relay activity writes through an event writer, and the relay stores the writer's handoff with its checkpoint, so a response that a checkpoint or a retry cuts carries on in the same message, and a client decodes it as one writer's. A retried activity writes the events since its last checkpoint again, so a client can decode some events twice. An event of a type the codec has no row for, such as one from a producer newer than the codec, is reported to the relay as unsupported, which asks the relay to skip it, log it and count it; any other event the codec cannot write fails the route rather than being retried.
 
+With [Temporal's AI SDK plugin](https://www.npmjs.com/package/@temporalio/vercel-ai-sdk), use `vercelTemporalRelayAdaptor()` from `@ably/ai-transport/vercel`. The workflow calls `streamText` with a model whose `streamingTopic` is set, and the plugin's model Activity publishes each part of the model's stream to that topic as it arrives. Those parts are the model's, not `UIMessageChunk`s, and the workflow sees the call's result only once it ends, so the adaptor converts each part as the relay reads it, into the chunk `toUIMessageStream` would give for it. A client reads the reply with `vercelDecoder()` or the `useChat` transport, as it would from `vercelAdaptor()`. A model call is one step. The chunks that open and end the reply, `start` and `finish`, and the output of a tool the workflow runs, are the workflow's to publish, as objects, on a topic the same route reads, so they reach the channel in order with the model's parts:
+
+```typescript
+import { AblyRelayPlugin } from '@ably/pubsub-server/temporal';
+import { vercelTemporalRelayAdaptor } from '@ably/ai-transport/vercel';
+
+new AblyRelayPlugin({ pool, adaptors: { vercel: vercelTemporalRelayAdaptor() } });
+
+// In the agent workflow:
+const relay = await startAblyRelay(stream, {
+  routes: [{ topics: ['turn', 'model'], adaptor: 'vercel', channel: `chat:${chatId}` }],
+});
+const model = new TemporalProvider({ languageModel: { streamingTopic: 'model' } }).languageModel('gpt-4o-mini');
+stream.topic('turn').publish({ type: 'start', messageId });
+const result = streamText({ model, messages });
+await result.consumeStream();
+stream.topic('turn').publish({ type: 'finish', finishReason: await result.finishReason });
+```
+
+A retried model Activity publishes its parts again after the failed attempt's, so a client can decode some text twice. A part with no chunk here, such as a `file`, or a chunk from an AI SDK release newer than this package, is reported to the relay as unsupported.
+
 ### Client
 
 The client subscribes to the channel through the Ably Pub/Sub SDK and passes every message to a decoder. The decoder gives each message back as deliveries holding the decoded event, and the application merges the events into whatever it renders from.

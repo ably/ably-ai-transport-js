@@ -75,6 +75,7 @@ import {
   type MessageStream,
   openMessageStream,
   publishMessage,
+  streamAborted,
 } from './message-stream.js';
 
 /** Where one write landed. */
@@ -128,6 +129,14 @@ export interface PipeWriter {
    * @returns Each open stream's key and serial.
    */
   openStreams(): OpenStream[];
+  /**
+   * Stop every stream immediately. Do not wait for an ack, repair anything,
+   * or end anything. A write in progress makes no further channel call. Every
+   * later `write` and `flush` throws `OperationCancelled`, and a flush in
+   * progress does too. The keys stay open on the channel for a writer that
+   * adopts them. Calling it again does nothing.
+   */
+  abort(): void;
 }
 
 /**
@@ -154,6 +163,7 @@ class DefaultPipeWriter implements PipeWriter {
   private _flushing: Promise<void> | undefined;
   /** The keys the writes reserved so far leave live, which {@link DefaultPipeWriter.reserve} checks against. */
   private readonly _reserved = new Set<string>();
+  private _aborted = false;
 
   constructor(channel: ChannelWriter, logger: Logger | undefined, adopted: readonly OpenStream[]) {
     this._channel = channel;
@@ -167,12 +177,14 @@ class DefaultPipeWriter implements PipeWriter {
   async write(encoded: EncodedMessage): Promise<WriteResult> {
     const { message, publish, append, update, ends } = encoded;
     let result: WriteResult;
+    this._assertRunning();
 
     // The message that ends a stream lands after the stream's appends and the
     // repair of any that failed: sent behind an unacked delta it could be
     // rolled up with it or overtake it, and a repair sent after it would reach
     // a decoder that has already forgotten the stream.
     if (ends !== undefined) await this._settle(ends);
+    this._assertRunning();
     const ended = ends === undefined ? undefined : this._serialOf(ends);
     const closing = ended === undefined ? message : withOwnField(message, ENDS_FIELD, ended);
     const marked = withOwnField(closing, STREAM_FIELD, true);
@@ -239,7 +251,15 @@ class DefaultPipeWriter implements PipeWriter {
     ];
   }
 
+  abort(): void {
+    if (this._aborted) return;
+    this._logger?.debug('PipeWriter.abort(); aborted', { streams: this._streams.size + this._adopted.size });
+    this._aborted = true;
+    for (const stream of this._streams.values()) stream.abort();
+  }
+
   async flush(): Promise<void> {
+    this._assertRunning();
     // Re-entrancy guard: a flush in progress is the flush.
     if (this._flushing) return this._flushing;
     this._logger?.trace('PipeWriter.flush();', { streams: this._streams.size });
@@ -249,6 +269,14 @@ class DefaultPipeWriter implements PipeWriter {
     } finally {
       this._flushing = undefined;
     }
+  }
+
+  /**
+   * Refuse a channel call after the writer was aborted.
+   * @throws {Ably.ErrorInfo} `OperationCancelled` after {@link DefaultPipeWriter.abort} was called.
+   */
+  private _assertRunning(): void {
+    if (this._aborted) throw streamAborted('write');
   }
 
   private async _open(key: string, message: Ably.Message): Promise<string> {
@@ -300,6 +328,8 @@ class DefaultPipeWriter implements PipeWriter {
     if (serial === undefined) return this._streams.get(key);
     this._logger?.trace('PipeWriter.write(); reading back an adopted stream', { key, serial });
     const stream = await adoptMessageStream(this._channel, serial, this._logger?.withContext({ key }));
+    // The read is the one wait between a write's start and its append or update.
+    this._assertRunning();
     this._adopted.delete(key);
     this._streams.set(key, stream);
     this._logger?.debug('PipeWriter.write(); stream adopted', { key, serial });
@@ -323,6 +353,8 @@ class DefaultPipeWriter implements PipeWriter {
    */
   private async _repair(streams: MessageStream[]): Promise<void> {
     const results = await Promise.allSettled(streams.map(async (stream) => stream.flush()));
+    // An abort while waiting fails each stream's flush, which is no failed repair.
+    this._assertRunning();
     const failures: unknown[] = [];
     let repaired = 0;
     for (const result of results) {

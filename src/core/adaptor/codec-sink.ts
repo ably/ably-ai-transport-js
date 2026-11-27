@@ -50,4 +50,7 @@ export const createCodecSink = <E>(codec: Codec<E>, writer: PipeWriter, headers?
   },
   flush: async () => writer.flush(),
   handoff: () => ({ streams: writer.openStreams() }),
+  abort: () => {
+    writer.abort();
+  },
 });

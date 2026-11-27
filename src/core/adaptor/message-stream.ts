@@ -10,9 +10,10 @@
  *
  * It stands in for the Pub/Sub SDK's message stream and has its shape where
  * the pipes' behaviour allows: `append` returns without waiting, `flush`
- * waits for the appends and repairs, and `serial` names the message. An
- * `update` is awaited and its failure thrown, where the SDK repairs a failed
- * one, since a pipe reports a failed update.
+ * waits for appends and repairs, `abort` stops without waiting or repairing,
+ * and `serial` identifies the message. An `update` waits for its ack and
+ * throws its failure, since a pipe reports a failed update. The SDK's message
+ * stream repairs a failed update instead.
  */
 
 import * as Ably from '@ably/pubsub-core';
@@ -57,6 +58,15 @@ export interface ChannelWriter {
 const stringOf = (data: unknown): string => (typeof data === 'string' ? data : '');
 
 /**
+ * The error that a write or flush throws after its stream, or the writer that
+ * holds it, was aborted.
+ * @param operation - The call that was refused.
+ * @returns The error.
+ */
+export const streamAborted = (operation: string): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(`unable to ${operation}; the stream was aborted`, ErrorCode.OperationCancelled, 400);
+
+/**
  * Publish one message and return its serial.
  * @param channel - The channel.
  * @param message - The message.
@@ -86,6 +96,7 @@ export class MessageStream {
   private _extras: unknown;
   /** The appends sent and not yet collected by a flush. */
   private _pending: Promise<Ably.UpdateDeleteResult>[] = [];
+  private _aborted = false;
 
   constructor(channel: ChannelWriter, serial: string, message: Ably.Message, logger: Logger | undefined) {
     this._channel = channel;
@@ -100,8 +111,10 @@ export class MessageStream {
    * Append to the message. Returns without waiting for the ack; a flush
    * collects it, and repairs the message if it failed.
    * @param message - The fragment. Its `serial` is ignored.
+   * @throws {Ably.ErrorInfo} `OperationCancelled` after the stream was aborted.
    */
   append(message: Ably.Message): void {
+    if (this._aborted) throw streamAborted('append');
     this._data += stringOf(message.data);
     this._name = message.name;
     this._extras = message.extras;
@@ -109,8 +122,9 @@ export class MessageStream {
     // Not awaited here: the ack is collected by flush. The catch keeps an
     // early rejection from surfacing as unhandled before flush collects it,
     // and warns, since the channel is missing that text until the flush
-    // repairs the message.
+    // repairs the message. An aborted stream does not repair anything, so it does not warn.
     promise.catch((error: unknown) => {
+      if (this._aborted) return;
       this._logger?.warn('MessageStream.append(); append failed, the next flush repairs the stream', {
         serial: this.serial,
         error: errorMessage(error),
@@ -122,10 +136,11 @@ export class MessageStream {
   /**
    * Replace the message's content, and wait for the ack.
    * @param message - The new content. Its `serial` is ignored.
-   * @throws Whatever the channel throws.
+   * @throws Whatever the channel throws; `OperationCancelled` after the stream was aborted.
    */
   async update(message: Ably.Message): Promise<void> {
     this._logger?.trace('MessageStream.update();', { serial: this.serial });
+    if (this._aborted) throw streamAborted('update');
     await this._channel.updateMessage({ ...message, serial: this.serial });
     this._data = stringOf(message.data);
     this._name = message.name;
@@ -136,13 +151,16 @@ export class MessageStream {
    * Wait for the appends sent so far and, if one failed, repair the message
    * with one update that carries its whole content.
    * @returns Whether a failed append made it repair the message.
-   * @throws Whatever the channel throws for the repair.
+   * @throws Whatever the channel throws for the repair; `OperationCancelled` when the stream is aborted before or while it waits, with no repair made.
    */
   async flush(): Promise<boolean> {
+    if (this._aborted) throw streamAborted('flush');
     const pending = this._pending;
     this._pending = [];
     if (pending.length === 0) return false;
     const results = await Promise.allSettled(pending);
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abort() may run during the await above, and TypeScript's narrowing does not account for that
+    if (this._aborted) throw streamAborted('flush');
     if (!results.some((result) => result.status === 'rejected')) return false;
 
     this._logger?.warn('MessageStream.flush(); repairing the message after a failed append', { serial: this.serial });
@@ -158,6 +176,21 @@ export class MessageStream {
       throw error;
     }
     return true;
+  }
+
+  /**
+   * Stop the stream without waiting. Appends already sent may still land, but
+   * their acks are ignored and nothing is repaired. Every later `append`,
+   * `update` and `flush` throws `OperationCancelled`. A flush waiting on the
+   * appends also throws it. Calling it again does nothing.
+   */
+  abort(): void {
+    if (this._aborted) return;
+    this._logger?.debug('MessageStream.abort(); aborted', { serial: this.serial, unacked: this._pending.length });
+    this._aborted = true;
+    // Each dropped append already has the catch `append` attached, so its
+    // failure cannot surface as an unhandled rejection.
+    this._pending = [];
   }
 }
 

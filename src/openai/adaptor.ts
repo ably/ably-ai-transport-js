@@ -1,9 +1,5 @@
-import {
-  type AgentAdaptor,
-  type AgentAdaptorOptions,
-  type ChannelWriter,
-  createAgentAdaptor,
-} from '../core/adaptor/index.js';
+import { createProviderAdaptor } from '../core/adaptor/agent-adaptor.js';
+import { type AgentAdaptor, type AgentAdaptorOptions, type ChannelWriter } from '../core/adaptor/index.js';
 import type { OpenAIEvent } from './codec/events.js';
 import { openai } from './codec/index.js';
 
@@ -16,4 +12,4 @@ import { openai } from './codec/index.js';
  * @throws {Ably.ErrorInfo} `InvalidArgument` when a default header value is not a string, number, boolean or null.
  */
 export const openaiAdaptor = (channel: ChannelWriter, options?: AgentAdaptorOptions): AgentAdaptor<OpenAIEvent> =>
-  createAgentAdaptor(channel, openai, options);
+  createProviderAdaptor(channel, openai, 'ai-transport-openai', options);

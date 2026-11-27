@@ -347,8 +347,13 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     channel's options and lifecycle with its Pub/Sub client and can use the
     same channel for its own messages. The `useChat` transport is the one part
     that attaches and detaches the channel it is handed, and why is under
-    Two-layer architecture. Nothing writes Ably-Agent attribution, since that
-    needs the client.
+    Two-layer architecture. The one place the SDK reaches the client is
+    usage reporting: on an adaptor's first write it reads the channel's
+    `client`, an ably-js internal, adds the SDK's and the adaptor's Ably-Agent
+    entries to its options and sends one `/time` request, so the analytics
+    that already count Ably-Agent strings count them, with nothing to attach
+    (`src/core/adaptor/usage.ts`). A channel without such a client is written
+    to as usual and reports nothing.
 11. **No message assembly anywhere in the package.** No reducer, no merge
     driver and no projection type. A delivery carries one event, and the
     application groups deliveries by `message.serial`, by the ids the

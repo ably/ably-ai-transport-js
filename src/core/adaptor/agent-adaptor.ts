@@ -22,6 +22,10 @@
  * Every message carries the call's headers over the adaptor's default
  * headers, with a codec row's own headers winning over both.
  *
+ * On its first write the adaptor reports which adaptor and SDK release the
+ * agent runs, through the channel's client's Ably-Agent string
+ * (`./usage.ts`).
+ *
  * The adaptor holds no resource of its own, so it has no `close`. A pipe
  * flushes and repairs what its writer wrote on every exit: its source ending,
  * its signal, a failure, and for `pipeEach` the loop leaving early.
@@ -46,6 +50,7 @@ import { mergeHeaders, type MessageHeaders, prepareHeaders, withHeaders } from '
 import type { ChannelWriter } from './message-stream.js';
 import { pipeEach as pipeEachDriver, type PipeResult, type PipeSource, pipeStream } from './pipe-stream.js';
 import { createPipeWriter, type OpenStream } from './pipe-writer.js';
+import { withUsageReport } from './usage.js';
 
 /** Options for an agent adaptor factory. */
 export interface AgentAdaptorOptions {
@@ -282,13 +287,13 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
   private readonly _headers: MessageHeaders | undefined;
   private readonly _logger: Logger;
 
-  constructor(channel: ChannelWriter, codec: Codec<E>, options: AgentAdaptorOptions) {
-    this._channel = channel;
+  constructor(channel: ChannelWriter, codec: Codec<E>, options: AgentAdaptorOptions, adaptorAgent: string) {
     this._codec = codec;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'AgentAdaptor',
       codec: codec.id,
     });
+    this._channel = withUsageReport(channel, adaptorAgent, this._logger);
     this._headers = prepareHeaders(options.headers, 'create agent adaptor');
   }
 
@@ -388,9 +393,17 @@ class DefaultAgentAdaptor<E> implements AgentAdaptor<E> {
   }
 }
 
+/** The Ably-Agent identifier an adaptor over an application's own codec reports. */
+const CUSTOM_ADAPTOR_AGENT = 'ai-transport-custom';
+
 /**
  * Create an agent adaptor over a codec and a channel the application got from
  * ably-js. Use one of the provider factories for a shipped codec.
+ *
+ * On its first write the adaptor adds this SDK's Ably-Agent entries to the
+ * channel's client, so that client's later requests carry them, and sends one
+ * `/time` request to report them, unless the client already carries them.
+ * The request does not delay the write, and its failure affects nothing.
  * @param channel - The channel to publish on. An `Ably.RealtimeChannel` satisfies it.
  * @param codec - The codec that turns events into Ably messages.
  * @param options - See {@link AgentAdaptorOptions}.
@@ -401,4 +414,21 @@ export const createAgentAdaptor = <E>(
   channel: ChannelWriter,
   codec: Codec<E>,
   options: AgentAdaptorOptions = {},
-): AgentAdaptor<E> => new DefaultAgentAdaptor(channel, codec, options);
+): AgentAdaptor<E> => new DefaultAgentAdaptor(channel, codec, options, CUSTOM_ADAPTOR_AGENT);
+
+/**
+ * Create a provider's agent adaptor: {@link createAgentAdaptor}, reporting
+ * the provider's own Ably-Agent identifier.
+ * @param channel - The channel to publish on.
+ * @param codec - The provider's codec.
+ * @param adaptorAgent - The provider adaptor's Ably-Agent identifier.
+ * @param options - See {@link AgentAdaptorOptions}.
+ * @returns The adaptor.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when a default header value is not a string, number, boolean or null.
+ */
+export const createProviderAdaptor = <E>(
+  channel: ChannelWriter,
+  codec: Codec<E>,
+  adaptorAgent: string,
+  options: AgentAdaptorOptions = {},
+): AgentAdaptor<E> => new DefaultAgentAdaptor(channel, codec, options, adaptorAgent);

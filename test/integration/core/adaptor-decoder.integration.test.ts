@@ -9,9 +9,10 @@
  */
 
 import type * as Ably from '@ably/pubsub-core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAgentAdaptor, createDecoder, type Delivery, ErrorCode, type WrittenEvent } from '../../../src/index.js';
+import { VERSION } from '../../../src/version.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { closeAllClients, pubsubClient } from '../../helper/pubsub-client.js';
 import { createTestCodec, streamOf, type TestEvent, textEvents } from '../../helper/test-codec.js';
@@ -316,5 +317,20 @@ describe('agent adaptor and decoder over Ably', () => {
       { type: 'text-delta', id: 'm1', delta: 'The weather is mild today.' },
       { type: 'text-end', id: 'm1' },
     ]);
+  });
+
+  it('reports the SDK and its adaptor through the Ably-Agent string of one time request on the first write', async () => {
+    const client = pubsubClient();
+    const time = vi.spyOn(client, 'time');
+    const adaptor = createAgentAdaptor(client.channels.get(uniqueChannelName()), createTestCodec());
+
+    await adaptor.send({ type: 'note', text: 'one' });
+    await adaptor.send({ type: 'note', text: 'two' });
+
+    expect(time).toHaveBeenCalledTimes(1);
+    await expect(time.mock.results[0]?.value).resolves.toEqual(expect.any(Number));
+    // CAST: `options` is an ably-js internal the public client type does not name; the agents are what the request carried.
+    const { agents } = (client as unknown as { options: { agents?: Record<string, unknown> } }).options;
+    expect(agents).toMatchObject({ 'ai-transport-js': VERSION, 'ai-transport-custom': undefined });
   });
 });

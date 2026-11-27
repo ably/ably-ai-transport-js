@@ -1,9 +1,5 @@
-import {
-  type AgentAdaptor,
-  type AgentAdaptorOptions,
-  type ChannelWriter,
-  createAgentAdaptor,
-} from '../core/adaptor/index.js';
+import { createProviderAdaptor } from '../core/adaptor/agent-adaptor.js';
+import { type AgentAdaptor, type AgentAdaptorOptions, type ChannelWriter } from '../core/adaptor/index.js';
 import type { AnthropicEvent } from './codec/events.js';
 import { anthropic } from './codec/index.js';
 
@@ -16,4 +12,4 @@ import { anthropic } from './codec/index.js';
  * @throws {Ably.ErrorInfo} `InvalidArgument` when a default header value is not a string, number, boolean or null.
  */
 export const anthropicAdaptor = (channel: ChannelWriter, options?: AgentAdaptorOptions): AgentAdaptor<AnthropicEvent> =>
-  createAgentAdaptor(channel, anthropic, options);
+  createProviderAdaptor(channel, anthropic, 'ai-transport-anthropic', options);

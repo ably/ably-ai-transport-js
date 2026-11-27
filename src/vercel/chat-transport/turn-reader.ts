@@ -39,9 +39,8 @@ import type * as AI from 'ai';
 
 import type { Delivery } from '../../core/codec/codec.js';
 import type { Decoder } from '../../core/decoder/index.js';
-import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause, errorMessage } from '../../utils.js';
+import { errorMessage, wrapReadError } from '../../utils.js';
 import type { VercelEvent } from '../codec/events.js';
 import { vercelDecoder } from '../decoder.js';
 import { CLOSED, stoppedError } from './stopped.js';
@@ -164,35 +163,6 @@ const isContinuityLost = (stateChange: Ably.ChannelStateChange): boolean => {
   const { current, resumed } = stateChange;
   return (
     current === 'failed' || current === 'suspended' || current === 'detached' || (current === 'attached' && !resumed)
-  );
-};
-
-/**
- * Wrap a failure to read the channel, such as an attach the channel refused
- * or a history page that could not be fetched. The wrapped error keeps the
- * failure's code and status, `InternalError` when it has no code, and
- * carries the failure as its cause. ably-js rejects some reads with a
- * `PartialErrorInfo`, such as a history request that timed out, and an
- * `ErrorInfo` takes only an `ErrorInfo` as its cause, so such a failure is
- * carried as one.
- * @param error - The failure.
- * @returns The error to report.
- */
-const wrapReadError = (error: unknown): Ably.ErrorInfo => {
-  const cause =
-    error instanceof Ably.PartialErrorInfo
-      ? new Ably.ErrorInfo(
-          error.message,
-          error.code ?? ErrorCode.InternalError,
-          error.statusCode ?? 500,
-          errorCause(error.cause),
-        )
-      : errorCause(error);
-  return new Ably.ErrorInfo(
-    `unable to read the channel; ${errorMessage(error)}`,
-    cause?.code ?? ErrorCode.InternalError,
-    cause?.statusCode ?? 500,
-    cause,
   );
 };
 

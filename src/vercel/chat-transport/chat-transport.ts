@@ -21,7 +21,7 @@ import type { ChatTransport } from 'ai';
 
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
-import { errorCause, errorMessage } from '../../utils.js';
+import { errorCause, errorMessage, responseText } from '../../utils.js';
 import { ABORTED, CLOSED, LOST_CONTINUITY, stoppedError } from './stopped.js';
 import { TurnReader } from './turn-reader.js';
 import { TurnStream } from './turn-stream.js';
@@ -217,9 +217,6 @@ export interface AblyChatTransport extends ChatTransport<AI.UIMessage> {
 /** The endpoint a turn is posted to when the options name none. */
 const DEFAULT_API = '/api/chat';
 
-/** How many characters of a failed response's body go into the error. */
-const RESPONSE_EXCERPT_CHARS = 200;
-
 /** What `useChat` passes to `sendMessages`. */
 type SendMessagesOptions = Parameters<AblyChatTransport['sendMessages']>[0];
 
@@ -264,23 +261,6 @@ const untilAborted = async <T>(work: Promise<T>, signal: AbortSignal | undefined
   } finally {
     if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
   }
-};
-
-/**
- * What a failed response says about itself: the start of its body, or its
- * status text when the body is empty or cannot be read.
- * @param response - The response.
- * @returns The text.
- */
-const responseText = async (response: Response): Promise<string> => {
-  let text: string;
-  try {
-    text = await response.text();
-  } catch {
-    return response.statusText;
-  }
-  if (text === '') return response.statusText;
-  return text.length > RESPONSE_EXCERPT_CHARS ? `${text.slice(0, RESPONSE_EXCERPT_CHARS)}…` : text;
 };
 
 /**

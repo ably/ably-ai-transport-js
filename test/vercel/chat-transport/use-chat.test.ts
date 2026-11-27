@@ -14,16 +14,9 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vite
 
 import { ErrorCode } from '../../../src/errors.js';
 import { type AblyChatTransport, type ChatTransportOptions, createChatTransport } from '../../../src/vercel/index.js';
+import { type ChannelFixture, channelWith } from '../../helper/read-channel.js';
 import { nextMacrotask } from '../../helper/streams.js';
-import {
-  type ChannelFixture,
-  channelWith,
-  failedToStart,
-  failedTurn,
-  textTurn,
-  wireAcross,
-  wireOf,
-} from './fixtures.js';
+import { failedToStart, failedTurn, textTurn, wireAcross, wireOf } from './fixtures.js';
 
 /**
  * A chat's state as a plain list, with a way to wait for a change to it. Like

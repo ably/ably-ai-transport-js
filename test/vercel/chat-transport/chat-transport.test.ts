@@ -3,19 +3,12 @@ import type * as AI from 'ai';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
 import { ErrorCode } from '../../../src/errors.js';
-import { type Logger, LogLevel, makeLogger } from '../../../src/logger.js';
+import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { type AblyChatTransport, type ChatTransportOptions, createChatTransport } from '../../../src/vercel/index.js';
+import { recordingLogger } from '../../helper/logger.js';
+import { type ChannelFixture, channelWith, gate, paginated } from '../../helper/read-channel.js';
 import { drain, flushMicrotasks, nextMacrotask } from '../../helper/streams.js';
-import {
-  type ChannelFixture,
-  channelWith,
-  failedToStart,
-  gate,
-  paginated,
-  textTurn,
-  wireAcross,
-  wireOf,
-} from './fixtures.js';
+import { failedToStart, textTurn, wireAcross, wireOf } from './fixtures.js';
 
 type SendMessagesOptions = Parameters<AblyChatTransport['sendMessages']>[0];
 const prompt: AI.UIMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'Hello?' }] };
@@ -34,21 +27,6 @@ const sendOptions = (overrides: Partial<SendMessagesOptions> = {}): SendMessages
   abortSignal: undefined,
   ...overrides,
 });
-
-/**
- * A logger that records what it is asked to log at error level.
- * @returns The logger and the messages it recorded.
- */
-const recordingLogger = (): { logger: Logger; errors: string[] } => {
-  const errors: string[] = [];
-  const logger = makeLogger({
-    logLevel: LogLevel.Error,
-    logHandler: (message: string) => {
-      errors.push(message);
-    },
-  });
-  return { logger, errors };
-};
 
 let fetchMock: Mock<typeof fetch>;
 
@@ -585,7 +563,7 @@ describe('close', () => {
   });
 
   it('logs no error when it closes while the first read of the channel is in flight', async () => {
-    const { logger, errors } = recordingLogger();
+    const { logger, messages: errors } = recordingLogger(LogLevel.Error);
     const { transport, fixture } = setup([], { logger });
     const page = Promise.withResolvers<Ably.PaginatedResult<Ably.InboundMessage>>();
     fixture.channel.history.mockReturnValueOnce(page.promise);

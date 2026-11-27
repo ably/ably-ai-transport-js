@@ -27,6 +27,8 @@
  * which the sink reports. A caller that carries a stream on in another
  * process closes the writer, stores the handoff, and gives the later events to
  * a writer that adopts it, which carries the stream on in the same message.
+ * `abort` stops the writer without waiting for the channel: it drops the
+ * writes not yet made, repairs nothing and ends no stream.
  *
  * A stream stays open in the writer until the event that ends it is written,
  * so a later event under the same key appends to the same message. A caller
@@ -128,6 +130,12 @@ export interface EventSink<E> {
    * @returns The handoff.
    */
   handoff(): WriterHandoff;
+  /**
+   * Stop immediately. Make no further channel call, wait for no ack, repair
+   * nothing, and end nothing. A write or flush in progress, and every later
+   * one, fails. Calling it again does nothing.
+   */
+  abort(): void;
 }
 
 /**
@@ -203,7 +211,7 @@ export interface EventWriter<E> extends AsyncDisposable {
    * more is published, and the next `write`, `flush` and `close` throw or
    * reject with it.
    * @param event - The event.
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when the event cannot be written as the codec encoded it: the codec could not encode it (an `InvalidArgument` the codec throws, as a `defineCodec` codec does, is passed on, and anything else is wrapped with it as `cause`), encoded a message without its `name` and `id`, encoded an update to a stream this writer has not opened, or a publish under a stream that is still open. Writing it again fails the same way. Once the writer has stopped, the error that stopped it: the channel's own error, as it threw it, when the channel refused a publish or update; `StreamedMessageFinalizeFailed` when a repair failed; `InternalError` when a publish's ack carried no serial. After `close` has been called, `StreamClosed`.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the event cannot be written as encoded by the codec: the codec could not encode it (an `InvalidArgument` thrown by a codec, as by a `defineCodec` codec, is passed on, and anything else is wrapped with it as `cause`), the codec encoded a message without its `name` and `id`, it encoded an update to a stream this writer has not opened, or it encoded a publish under a stream that is still open. Writing the event again fails the same way. After the writer stops, this is the error that stopped it: the channel's own error, as thrown by the channel, when the channel refused a publish or update; `StreamedMessageFinalizeFailed` when a repair failed; or `InternalError` when a publish's ack had no serial. After `close` or `abort` has been called, the error is `StreamClosed`.
    */
   write(event: E): void;
   /**
@@ -217,7 +225,7 @@ export interface EventWriter<E> extends AsyncDisposable {
    * records it then, with the handoff that lets a new writer carry its open
    * streams on. After `close` has been called, settles as `close` does.
    * @returns The serial of the message the last event written landed on, and the handoff.
-   * @throws {Ably.ErrorInfo} The error that stopped the writer, whether a write stopped it before or this flush's repair fails (`StreamedMessageFinalizeFailed`, with the first repair failure as `cause`).
+   * @throws {Ably.ErrorInfo} The error that stopped the writer, if a write stopped it before this call or this flush's repair fails (`StreamedMessageFinalizeFailed`, with the first repair failure as `cause`). After `abort` is called, this is `OperationCancelled`, unless a failure stopped the writer first.
    */
   flush(): Promise<EventWriterResult>;
   /**
@@ -236,9 +244,21 @@ export interface EventWriter<E> extends AsyncDisposable {
    */
   close(): Promise<EventWriterResult>;
   /**
+   * Stop the writer immediately, without waiting for the channel. Events not
+   * yet written are dropped. The writer does not wait for acks or repair a
+   * failed write, so a write already sent may still land and a failed append
+   * stays missing. Like {@link EventWriter.close}, it ends no stream.
+   *
+   * A pending or later `flush` or `close` rejects with `OperationCancelled`,
+   * or with the failure that stopped the writer first. A later `write` throws
+   * `StreamClosed`. Calling it again does nothing.
+   */
+  abort(): void;
+  /**
    * Close the writer as {@link EventWriter.close} does, for `await using`, so
    * the writer is closed however the block is left, and the error that
-   * stopped it is thrown from the block's exit.
+   * stopped it is thrown when the block exits. After the writer was aborted,
+   * it does nothing.
    * @throws {Ably.ErrorInfo} As {@link EventWriter.close}.
    */
   [Symbol.asyncDispose](): Promise<void>;
@@ -297,6 +317,18 @@ const asErrorInfo = (error: unknown): Ably.ErrorInfo =>
         500,
       );
 
+/** The value that {@link DefaultEventWriter}'s abort signal resolves with, distinct from a flush's result. */
+const ABORTED = Symbol('aborted');
+
+/**
+ * The error that a `flush` or `close` rejects with after the writer was
+ * aborted.
+ * @param method - The call.
+ * @returns The error.
+ */
+const writerAborted = (method: 'flush' | 'close'): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(`unable to ${method} writer; the writer was aborted`, ErrorCode.OperationCancelled, 400);
+
 /**
  * The event writer. A pipe driver holds the class, for {@link DefaultEventWriter.attempt}
  * and {@link DefaultEventWriter.lastPublishSerial}; a caller of `newWriter`
@@ -314,6 +346,15 @@ export class DefaultEventWriter<E> implements EventWriter<E> {
   private _stopped: Ably.ErrorInfo | undefined;
   /** The serial of the message the last event written landed on. */
   private _lastSerial: string | undefined;
+  private _aborted = false;
+  /** Resolves {@link DefaultEventWriter._abortion}. */
+  private _signalAbort: (() => void) | undefined;
+  /** Resolves when `abort` is called, so a flush or close waiting for the channel settles immediately. */
+  private readonly _abortion = new Promise<typeof ABORTED>((resolve) => {
+    this._signalAbort = () => {
+      resolve(ABORTED);
+    };
+  });
 
   constructor(sink: EventSink<E>, options: EventWriterOptions = {}) {
     this._sink = sink;
@@ -354,6 +395,10 @@ export class DefaultEventWriter<E> implements EventWriter<E> {
   write(event: E): void {
     this._logger?.trace('DefaultEventWriter.write();');
     if (this._stopped !== undefined) throw this._stopped;
+    if (this._aborted) {
+      this._logger?.error('DefaultEventWriter.write(); the writer was aborted');
+      throw new Ably.ErrorInfo('unable to write event; the writer was aborted', ErrorCode.StreamClosed, 400);
+    }
     if (this._closing !== undefined) {
       this._logger?.error('DefaultEventWriter.write(); the writer is closed');
       throw new Ably.ErrorInfo('unable to write event; the writer is closed', ErrorCode.StreamClosed, 400);
@@ -375,18 +420,28 @@ export class DefaultEventWriter<E> implements EventWriter<E> {
     this._logger?.trace('DefaultEventWriter.flush();');
     if (this._closing !== undefined) return this._closing;
     // Chained like a write, so writes handed over after it wait for it.
-    const flushed = this._drainAfter(this._lastWrite, 'flush');
+    const flushed = this._unlessAborted(this._drainAfter(this._lastWrite, 'flush'), 'flush');
     this._lastWrite = this._quietly(flushed);
     return flushed;
   }
 
   async close(): Promise<EventWriterResult> {
     this._logger?.trace('DefaultEventWriter.close();');
-    this._closing ??= this._drainAfter(this._lastWrite, 'close');
+    this._closing ??= this._unlessAborted(this._drainAfter(this._lastWrite, 'close'), 'close');
     return this._closing;
   }
 
+  abort(): void {
+    this._logger?.trace('DefaultEventWriter.abort();');
+    if (this._aborted) return;
+    this._aborted = true;
+    this._sink.abort();
+    this._signalAbort?.();
+    this._logger?.debug('DefaultEventWriter.abort(); aborted');
+  }
+
   async [Symbol.asyncDispose](): Promise<void> {
+    if (this._aborted) return;
     await this.close();
   }
 
@@ -401,14 +456,17 @@ export class DefaultEventWriter<E> implements EventWriter<E> {
 
   private async _writeAfter(previous: Promise<void>, prepared: PreparedEvent): Promise<void> {
     await previous;
-    // An event queued behind the one that stopped the writer is not written.
-    if (this._stopped !== undefined) return;
+    // An event queued after the event that stopped the writer, or after an abort, is not written.
+    if (this._stopped !== undefined || this._aborted) return;
     const outcome = await prepared.write();
     if (outcome.ok) {
       if (outcome.serial !== undefined) this._lastSerial = outcome.serial;
       if (outcome.publishedSerial !== undefined) this._lastPublishSerial = outcome.publishedSerial;
       return;
     }
+    // A write the abort cut short failed because of it, not the channel.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abort() may run during the await above, and TypeScript's narrowing does not account for that
+    if (this._aborted) return;
     this._stopped = writeFailure(outcome.error);
     // The error names no event content, so it is logged as it is.
     this._logger?.error('DefaultEventWriter.write(); write failed, the writer has stopped', {
@@ -432,9 +490,13 @@ export class DefaultEventWriter<E> implements EventWriter<E> {
   private async _drainAfter(previous: Promise<void>, method: 'flush' | 'close'): Promise<EventWriterResult> {
     await previous;
     if (this._stopped !== undefined) throw this._stopped;
+    if (this._aborted) throw writerAborted(method);
     try {
       await this.drain();
     } catch (error) {
+      // A drain the abort cut short failed because of it, not the channel.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abort() may run during the drain, and TypeScript's narrowing does not account for that
+      if (this._aborted) throw writerAborted(method);
       const failure = asErrorInfo(error);
       this._stopped = failure;
       this._logger?.error(`DefaultEventWriter.${method}(); repair failed, the writer has stopped`, {
@@ -448,6 +510,23 @@ export class DefaultEventWriter<E> implements EventWriter<E> {
       openStreams: result.handoff.streams.length,
     });
     return result;
+  }
+
+  /**
+   * Settle a flush or close immediately when `abort` is called, instead of
+   * waiting for the channel.
+   * @param drained - The flush or close.
+   * @param method - The call, named in the error.
+   * @returns What the flush or close resolves with.
+   * @throws {Ably.ErrorInfo} The error from the flush or close. After abort, this is the failure that stopped the writer before the abort, or `OperationCancelled`.
+   */
+  private async _unlessAborted(
+    drained: Promise<EventWriterResult>,
+    method: 'flush' | 'close',
+  ): Promise<EventWriterResult> {
+    const settled = await Promise.race([drained, this._abortion]);
+    if (settled !== ABORTED) return settled;
+    throw this._stopped ?? writerAborted(method);
   }
 }
 

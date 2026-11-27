@@ -313,6 +313,150 @@ describe('an event writer', () => {
     });
   });
 
+  describe('abort', () => {
+    it('rejects a waiting flush with OperationCancelled at once, and writes none of the events queued behind', async () => {
+      const writer = adaptor.newWriter();
+      const pending = Promise.withResolvers<Ably.PublishResult>();
+      channel.publish.mockReturnValueOnce(pending.promise);
+      writer.write({ type: 'note', text: 'one' });
+      writer.write({ type: 'note', text: 'two' });
+      const flushed = writer.flush();
+      await nextMacrotask();
+      expect(channel.publish).toHaveBeenCalledTimes(1);
+      writer.abort();
+      await expect(flushed).rejects.toBeErrorInfo({
+        code: ErrorCode.OperationCancelled,
+        message: 'unable to flush writer; the writer was aborted',
+      });
+      pending.resolve({ serials: ['first'] });
+      await nextMacrotask();
+      expect(channel.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('repairs no append that failed, and reports no failure for it', async () => {
+      const logHandler = vi.fn();
+      const logger = makeLogger({ logLevel: LogLevel.Error, logHandler });
+      const writer = createAgentAdaptor(channel, createTestCodec(), { logger }).newWriter();
+      writer.write(delta('a'));
+      const pending = Promise.withResolvers<Ably.UpdateDeleteResult>();
+      channel.appendMessage.mockReturnValueOnce(pending.promise);
+      writer.write(delta('b'));
+      const flushed = writer.flush();
+      await nextMacrotask();
+      writer.abort();
+      pending.reject(channelError());
+      await expect(flushed).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      await nextMacrotask();
+      expect(channel.updateMessage).not.toHaveBeenCalled();
+      expect(logHandler).not.toHaveBeenCalled();
+    });
+
+    it('throws StreamClosed at a later write, and rejects a later flush and close with OperationCancelled', async () => {
+      const writer = adaptor.newWriter();
+      writer.write(delta('a'));
+      writer.abort();
+      writer.abort();
+      expect(() => {
+        writer.write(delta('b'));
+      }).toThrowErrorInfo({ code: ErrorCode.StreamClosed, message: 'unable to write event; the writer was aborted' });
+      await expect(writer.flush()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      await expect(writer.close()).rejects.toBeErrorInfo({
+        code: ErrorCode.OperationCancelled,
+        message: 'unable to close writer; the writer was aborted',
+      });
+      expect(channel.appendMessage).not.toHaveBeenCalled();
+    });
+
+    it('goes on reporting the failure that stopped the writer before it', async () => {
+      const writer = adaptor.newWriter();
+      const refusal = channelError();
+      channel.publish.mockRejectedValueOnce(refusal);
+      writer.write({ type: 'note', text: 'one' });
+      await expect(writer.flush()).rejects.toBe(refusal);
+      writer.abort();
+      expect(() => {
+        writer.write({ type: 'note', text: 'two' });
+      }).toThrow(refusal);
+      await expect(writer.close()).rejects.toBe(refusal);
+    });
+
+    it('leaves a close that has resolved resolved', async () => {
+      const writer = adaptor.newWriter();
+      writer.write(delta('a'));
+      const closed = await writer.close();
+      writer.abort();
+      await expect(writer.close()).resolves.toEqual(closed);
+    });
+
+    it("throws nothing from an `await using` block's exit", async () => {
+      const pending = Promise.withResolvers<Ably.PublishResult>();
+      channel.publish.mockReturnValueOnce(pending.promise);
+      const leave = async (): Promise<void> => {
+        await using writer = adaptor.newWriter();
+        writer.write({ type: 'note', text: 'one' });
+        writer.abort();
+      };
+      await expect(leave()).resolves.toBeUndefined();
+    });
+
+    it('ends no stream, so a writer that adopts the last handoff carries it on in the same message', async () => {
+      const first = adaptor.newWriter();
+      first.write(start);
+      first.write(delta('Hel'));
+      const { handoff } = await first.flush();
+      channel.appendMessage.mockRejectedValueOnce(channelError());
+      first.write(delta('lo'));
+      await nextMacrotask();
+      first.abort();
+
+      const second = adaptor.adoptWriter(handoff);
+      second.write(delta('!'));
+      second.write(end);
+      await expect(second.close()).resolves.toEqual({ serial: 'serial-3', handoff: { streams: [] } });
+      expect(channel.publishCalls.map((m) => extrasOf(m).ai?.type)).toEqual(['text-start', 'text-delta', 'text-end']);
+      expect(extrasOf(channel.publishCalls[2]).ai).toMatchObject({ ends: 'serial-2' });
+      expect(channel.appendMessage.mock.calls.map(([m]) => [m.serial, m.data as unknown])).toEqual([
+        ['serial-2', 'lo'],
+        ['serial-2', '!'],
+      ]);
+      expect(channel.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('makes none of the writes left to an event part-way through, and reports no failure for it', async () => {
+      const logHandler = vi.fn();
+      const logger = makeLogger({ logLevel: LogLevel.Error, logHandler });
+      const read = Promise.withResolvers<Ably.Message>();
+      channel.getMessage.mockReturnValueOnce(read.promise);
+      const writer = createAgentAdaptor(channel, createTestCodec(), { logger }).adoptWriter({
+        streams: [{ key: 't1', serial: 'serial-9' }],
+      });
+      writer.write(delta('lo'));
+      await nextMacrotask();
+      expect(channel.getMessage).toHaveBeenCalledWith('serial-9');
+      writer.abort();
+      read.resolve({ serial: 'serial-9', data: 'Hel' });
+      await nextMacrotask();
+      expect(channel.appendMessage).not.toHaveBeenCalled();
+      expect(() => {
+        writer.write(end);
+      }).toThrowErrorInfoWithCode(ErrorCode.StreamClosed);
+      expect(logHandler).toHaveBeenCalledTimes(1);
+      expect(logHandler).toHaveBeenCalledWith(
+        expect.stringContaining('DefaultEventWriter.write(); the writer was aborted'),
+        LogLevel.Error,
+        expect.objectContaining({ component: 'EventWriter' }),
+      );
+    });
+
+    it('drops an event handed over just before it, before any of its writes', async () => {
+      const writer = adaptor.newWriter();
+      writer.write({ type: 'note', text: 'one' });
+      writer.abort();
+      await nextMacrotask();
+      expect(channel.publish).not.toHaveBeenCalled();
+    });
+  });
+
   describe('carrying on with a new writer, without the handoff', () => {
     it('publishes a later delta as a new message and ends it', async () => {
       const first = adaptor.newWriter();

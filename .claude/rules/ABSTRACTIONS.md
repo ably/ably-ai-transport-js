@@ -153,7 +153,10 @@ and `close` also resolve with a handoff, the streams left open as plain JSON
 (each key and its message's serial), and `adoptWriter` gives out a writer that
 carries them on in the same messages, as the Pub/Sub message stream's
 `adoptStream` does: one stream stays on one serial, so its end event ends the
-message a decoder remembers and the decoder forgets it. A new writer given a
+message a decoder remembers and the decoder forgets it. `abort` stops a
+writer as the Pub/Sub message stream's `abort` does with no message: it waits
+for no ack, repairs nothing and ends no stream, so a retry can adopt the last
+handoff with nothing more from the old writer reaching the channel. A new writer given a
 stream's later events without the handoff has no key table to append under,
 so it opens a new message and the first stays open on every decoder. A stream
 stays open in a writer until its closer is written

@@ -391,6 +391,65 @@ describe('createPipeWriter', () => {
     });
   });
 
+  describe('abort', () => {
+    it('makes no repair for a failed append, and refuses a flush with OperationCancelled', async () => {
+      await writer.write(append('k1', 'a'));
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      await writer.write(append('k1', 'b'));
+      writer.abort();
+      await expect(writer.flush()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      await settle();
+      expect(channel.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('refuses every later write with OperationCancelled, sending nothing', async () => {
+      await writer.write(append('k1', 'a'));
+      writer.abort();
+      writer.abort();
+      for (const message of [publish(), publish('k2'), append('k1', 'b'), update('k1', 'x'), end('k1')]) {
+        await expect(writer.write(message)).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      }
+      expect(channel.publishCalls).toHaveLength(1);
+      expect(channel.appendMessage).not.toHaveBeenCalled();
+      expect(channel.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('sends no closer once the appends it waited for are acknowledged', async () => {
+      const releases = holdAppends(channel);
+      await writer.write(append('k1', 'a'));
+      await writer.write(append('k1', 'b'));
+      const ending = writer.write({ message: { name: 'ai', data: '', extras: {} }, ends: 'k1' });
+      await settle();
+      writer.abort();
+      for (const release of releases) release();
+      await expect(ending).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      expect(channel.publishCalls).toHaveLength(1);
+    });
+
+    it('sends no append to an adopted message once it has been read back', async () => {
+      await writer.write(append('k1', 'Hel'));
+      const adopting = createPipeWriter(channel, undefined, writer.openStreams());
+      const read = Promise.withResolvers<Ably.Message>();
+      channel.getMessage.mockReturnValueOnce(read.promise);
+      const writing = adopting.write(append('k1', 'lo'));
+      adopting.abort();
+      read.resolve({ serial: 'serial-1', data: 'Hel' });
+      await expect(writing).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      expect(channel.appendMessage).toHaveBeenCalledTimes(0);
+    });
+
+    it('leaves every stream open, adopted ones included', async () => {
+      await writer.write(append('k1', 'a'));
+      const adopting = createPipeWriter(channel, undefined, [{ key: 'k0', serial: 'serial-0' }]);
+      await adopting.write(append('k1', 'x'));
+      adopting.abort();
+      expect(adopting.openStreams()).toEqual([
+        { key: 'k1', serial: 'serial-2' },
+        { key: 'k0', serial: 'serial-0' },
+      ]);
+    });
+  });
+
   describe('adopting another writer’s streams', () => {
     it('appends to the message the other writer opened, reading it back once first', async () => {
       await writer.write(append('k1', 'Hel'));

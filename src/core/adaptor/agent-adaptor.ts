@@ -185,7 +185,8 @@ export interface AgentAdaptor<E> {
    * and nothing is published until the first `write`. Its `flush` waits until
    * what was written is on the channel, keeps the writer open and resolves
    * with the serial of the message the last event landed on; its `close`
-   * does the same and then refuses later writes, ending no open stream.
+   * does the same, then rejects later writes. It ends no open stream. Its
+   * `abort` stops it immediately. It waits for nothing and ends no stream.
    * `await using` closes the writer too. An event that cannot be written
    * throws at its `write` and the writer carries on; a failure to get a write
    * onto the channel stops the writer, so `flush` and `close` resolve only
@@ -212,8 +213,9 @@ export interface AgentAdaptor<E> {
    * adopted stream reads its message back with the channel's `getMessage`,
    * so a failed append can be repaired with the message's whole content; a
    * failed read stops the writer with the channel's error. Adopt a handoff
-   * once the writer it came from has closed, or both write to the same
-   * messages. An empty handoff gives the same writer as `newWriter`.
+   * once the writer it came from has closed or been aborted. Otherwise both
+   * writers write to the same messages. An empty handoff returns the same
+   * writer as `newWriter`.
    * @param handoff - The handoff, from {@link EventWriterResult.handoff}.
    * @param options - The writer's headers.
    * @returns The writer.

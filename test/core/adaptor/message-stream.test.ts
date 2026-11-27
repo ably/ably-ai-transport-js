@@ -104,6 +104,47 @@ describe('a message stream', () => {
     await expect(stream.update({ data: 'A' })).rejects.toBe(refusal);
   });
 
+  describe('abort', () => {
+    it('stops a flush waiting on an append that then fails, making no repair', async () => {
+      const stream = await openMessageStream(channel, { data: 'The' });
+      const pending = Promise.withResolvers<Ably.UpdateDeleteResult>();
+      channel.appendMessage.mockReturnValueOnce(pending.promise);
+      stream.append({ data: ' weather' });
+      const flushing = stream.flush();
+      stream.abort();
+      pending.reject(new Error('network'));
+      await expect(flushing).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      expect(channel.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('refuses every later append, update and flush with OperationCancelled, sending nothing', async () => {
+      const stream = await openMessageStream(channel, { data: 'The' });
+      stream.abort();
+      stream.abort();
+      expect(() => {
+        stream.append({ data: ' weather' });
+      }).toThrowErrorInfoWithCode(ErrorCode.OperationCancelled);
+      await expect(stream.update({ data: 'A' })).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      await expect(stream.flush()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+      expect(channel.appendMessage).not.toHaveBeenCalled();
+      expect(channel.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not warn of a repair for an append that fails after it', async () => {
+      const logHandler = vi.fn();
+      const stream = await openMessageStream(
+        channel,
+        { data: 'The' },
+        makeLogger({ logLevel: LogLevel.Warn, logHandler }),
+      );
+      channel.appendMessage.mockRejectedValueOnce(new Error('network'));
+      stream.append({ data: ' weather' });
+      stream.abort();
+      await flushMicrotasks();
+      expect(logHandler).not.toHaveBeenCalled();
+    });
+  });
+
   it('warns when an append fails', async () => {
     const logHandler = vi.fn();
     const stream = await openMessageStream(

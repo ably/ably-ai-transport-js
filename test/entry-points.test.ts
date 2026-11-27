@@ -54,6 +54,11 @@ import type {
   PipeResult,
   PipeSource,
   Published,
+  RelayAdaptor,
+  RelayAdaptorFactory,
+  RelayAdaptorResult,
+  RelayEvent,
+  RelayJsonValue,
   RowEvent,
   RowEventType,
   RowMessage,
@@ -68,6 +73,7 @@ import {
   consoleLogger,
   createAgentAdaptor,
   createDecoder,
+  createRelayAdaptor,
   defineCodec,
   ErrorCode,
   errorInfoIs,
@@ -108,6 +114,19 @@ describe('@ably/ai-transport', () => {
     expectTypeOf<WrittenEvent<TestEvent>>().toHaveProperty('serial');
     // eslint-disable-next-line @typescript-eslint/no-deprecated -- the test is that the deprecated name is still exported, as the same type
     expectTypeOf<Published<TestEvent>>().toEqualTypeOf<WrittenEvent<TestEvent>>();
+  });
+
+  it('exports the relay adaptor factory and its types', () => {
+    // eslint-disable-next-line unicorn/no-null -- the relay passes null when a route starts
+    const adaptor = createRelayAdaptor(createTestCodec())(createMockChannel(), null);
+    expect(typeof adaptor.write).toBe('function');
+    expect(typeof adaptor.flush).toBe('function');
+    expect(typeof adaptor.close).toBe('function');
+    expect(typeof adaptor.abort).toBe('function');
+    expectTypeOf(createRelayAdaptor<TestEvent>).returns.toEqualTypeOf<RelayAdaptorFactory<TestEvent>>();
+    expectTypeOf<RelayAdaptorFactory<TestEvent>>().returns.toEqualTypeOf<RelayAdaptor<TestEvent>>();
+    expectTypeOf<RelayEvent<TestEvent>>().toHaveProperty('data');
+    expectTypeOf<RelayAdaptorResult['handoff']>().toEqualTypeOf<RelayJsonValue | null>();
   });
 
   it('exports the codec builder and the decoder', () => {

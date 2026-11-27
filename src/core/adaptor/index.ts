@@ -12,3 +12,11 @@ export type { EventWriter, EventWriterResult, Published, WriterHandoff, WrittenE
 export type { MessageHeaders } from './headers.js';
 export type { ChannelWriter } from './message-stream.js';
 export type { PipeResult, PipeSource } from './pipe-stream.js';
+export type {
+  RelayAdaptor,
+  RelayAdaptorFactory,
+  RelayAdaptorResult,
+  RelayEvent,
+  RelayJsonValue,
+} from './relay-adaptor.js';
+export { createRelayAdaptor } from './relay-adaptor.js';

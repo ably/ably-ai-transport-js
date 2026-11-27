@@ -1,0 +1,33 @@
+# Supply chain hardening: only allow build scripts for known packages.
+allowBuilds:
+  # Rust-based module resolver used by eslint-plugin-import-x.
+  unrs-resolver: true
+  # Image-processing native binary used by Next.js for image optimisation.
+  sharp: true
+  # Install-time checks only: esbuild (used by tsx) and @swc/core (used by
+  # Temporal's workflow bundler) get their binaries from optional
+  # dependencies, and protobufjs's script checks versions. None is needed.
+  esbuild: false
+  '@swc/core': false
+  protobufjs: false
+
+# Reject packages published less than 7 days ago, except for Ably-owned
+# packages, which we trust without a cooldown, and the Temporal packages,
+# pinned to the exact release the Workflow Streams relay needs: all of them
+# must be one version, and 1.27.0 is the first with Workflow Streams.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - '@ably/*'
+  - '@temporalio/*'
+
+# Temporal's workflow bundle refuses a second copy of a @temporalio package,
+# and the AI SDK plugin asks for ^1.24, so every copy resolves to the pinned
+# release.
+overrides:
+  '@temporalio/activity': 1.27.0
+  '@temporalio/client': 1.27.0
+  '@temporalio/common': 1.27.0
+  '@temporalio/plugin': 1.27.0
+  '@temporalio/worker': 1.27.0
+  '@temporalio/workflow': 1.27.0
+  '@temporalio/workflow-streams': 1.27.0

@@ -212,6 +212,8 @@ stream.topic('turn').publish({ type: 'finish', finishReason: await result.finish
 
 A retried model Activity publishes its parts again after the failed attempt's, so a client can decode some text twice. A part with no chunk here, such as a `file`, or a chunk from an AI SDK release newer than this package, is reported to the relay as unsupported.
 
+`demo/temporal` in this repository is a chat built this way, with the worker, the workflow and a `useChat` page.
+
 ### Client
 
 The client subscribes to the channel through the Ably Pub/Sub SDK and passes every message to a decoder. The decoder gives each message back as deliveries holding the decoded event, and the application merges the events into whatever it renders from.
